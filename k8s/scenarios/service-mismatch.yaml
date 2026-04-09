@@ -1,0 +1,40 @@
+# =============================================================================
+# SCENARIO 10: Service Selector Mismatch - Tank Monitor Routing Failure
+# =============================================================================
+# After a "v2 upgrade" the tank-monitor Service selector was changed to
+# target pods labeled 'tank-monitor-v2', but actual pods still have
+# 'tank-monitor'. This causes a silent outage.
+#
+# This is a subtle, realistic networking issue:
+# - All pods show Running/Ready (no crashes, no restarts)
+# - Customer portal loads fine (it's a client-side app)
+# - But submitting tank level readings fails silently (tank-monitor unreachable)
+# - SRE Agent must check Service endpoints, not just pod status
+#
+# SRE Agent can diagnose: Empty endpoints, selector mismatch between Service
+# and Deployment labels, recommend correcting the selector.
+#
+# HOW TO BREAK:
+# kubectl apply -f k8s/scenarios/service-mismatch.yaml
+#
+# HOW TO FIX:
+# kubectl apply -f k8s/base/application.yaml
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tank-monitor
+  namespace: propane
+  labels:
+    scenario: service-mismatch
+    sre-demo: breakable
+spec:
+  selector:
+    # BREAKING CHANGE: Selector doesn't match any existing pods
+    # Real pods have label: app=tank-monitor
+    # This selector looks for app=tank-monitor-v2 (doesn't exist)
+    app: tank-monitor-v2
+  ports:
+    - port: 3000
+      targetPort: 3000

@@ -1,0 +1,61 @@
+# =============================================================================
+# SCENARIO 4: High CPU - Demand Forecast Overload
+# =============================================================================
+# Peak heating season triggers intensive demand forecasting calculations,
+# consuming excessive CPU and affecting other workloads.
+#
+# SRE Agent can diagnose: High CPU usage, resource contention, recommend
+# scaling, resource limits, or investigating the workload.
+#
+# HOW TO BREAK:
+# kubectl apply -f k8s/scenarios/high-cpu.yaml
+#
+# HOW TO FIX:
+# kubectl delete deployment demand-forecast-overload -n propane
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demand-forecast-overload
+  namespace: propane
+  labels:
+    app: demand-forecast-overload
+    scenario: high-cpu
+    sre-demo: breakable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demand-forecast-overload
+  template:
+    metadata:
+      labels:
+        app: demand-forecast-overload
+        scenario: high-cpu
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: stress
+          image: mcr.microsoft.com/mirror/docker/library/alpine:latest
+          # BREAKING: Infinite CPU-intensive demand forecasting calculation
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |
+              echo "Starting demand forecast calculation overload..."
+              while true; do
+                # CPU-intensive calculation simulating demand forecasting
+                for i in $(seq 1 10000); do
+                  echo "scale=1000; 4*a(1)" | bc -l > /dev/null 2>&1 || true
+                done
+              done
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "100m"
+            # Intentionally high to allow resource consumption
+            limits:
+              memory: "64Mi"
+              cpu: "2000m"

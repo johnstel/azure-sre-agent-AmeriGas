@@ -1,0 +1,1132 @@
+# =============================================================================
+# AmeriGas Propane Distribution Platform - Base Application Deployment
+# =============================================================================
+# This is the healthy baseline deployment of the AmeriGas Propane Distribution
+# Platform for demonstrating Azure SRE Agent diagnosis capabilities.
+#
+# Architecture:
+# - customer-portal: Vue.js customer self-service portal
+# - dispatch-console: Vue.js fleet dispatch & operations console
+# - tank-monitor: Node.js IoT tank level monitoring API
+# - inventory-service: Rust-based propane inventory & pricing API
+# - order-service: Go order fulfillment & processing
+# - demand-service: Python propane demand forecasting (optional)
+# - usage-simulator: Customer propane usage pattern generator
+# - order-worker: Order processing worker
+#
+# Data Services (in-cluster):
+# - rabbitmq: Event bus (tank alerts, order events, fulfillment updates)
+# - mongodb: Tank readings, delivery records, customer data
+# =============================================================================
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: propane
+  labels:
+    app.kubernetes.io/part-of: amerigas-propane-demo
+    sre-agent-demo: "true"
+
+---
+# =============================================================================
+# RabbitMQ - Event bus (tank alerts, order events, fulfillment updates)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: propane
+  labels:
+    app: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.11-management-alpine
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 15672
+              name: management
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "check_port_connectivity"]
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "check_port_connectivity"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: "guest"
+            - name: RABBITMQ_DEFAULT_PASS
+              value: "guest"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: propane
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+
+---
+# =============================================================================
+# MongoDB - Tank readings, delivery records, customer data (Azure Managed Disk via CSI driver)
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-data-pvc
+  namespace: propane
+  labels:
+    app: mongodb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: managed-csi # Uses Azure Managed Disk CSI driver (default in AKS)
+  resources:
+    requests:
+      storage: 8Gi
+
+---
+# =============================================================================
+# MongoDB - Tank & Delivery Database
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: propane
+  labels:
+    app: mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: mongodb
+          image: mongo:4.4
+          ports:
+            - containerPort: 27017
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+      volumes:
+        - name: mongodb-data
+          persistentVolumeClaim:
+            claimName: mongodb-data-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: propane
+spec:
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
+
+---
+# =============================================================================
+# Inventory Service - Rust-based propane inventory & pricing API
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: propane
+  labels:
+    app: inventory-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inventory-service
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: inventory-service
+          image: ghcr.io/azure-samples/aks-store-demo/product-service:latest
+          ports:
+            - containerPort: 3002
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          env:
+            - name: AI_SERVICE_URL
+              value: "http://demand-service:5001/"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+  namespace: propane
+spec:
+  selector:
+    app: inventory-service
+  ports:
+    - port: 3002
+      targetPort: 3002
+
+---
+# =============================================================================
+# Tank Monitor - Node.js IoT tank level monitoring API
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tank-monitor
+  namespace: propane
+  labels:
+    app: tank-monitor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tank-monitor
+  template:
+    metadata:
+      labels:
+        app: tank-monitor
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: tank-monitor
+          image: ghcr.io/azure-samples/aks-store-demo/order-service:latest
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          env:
+            - name: ORDER_QUEUE_HOSTNAME
+              value: "rabbitmq"
+            - name: ORDER_QUEUE_PORT
+              value: "5672"
+            - name: ORDER_QUEUE_USERNAME
+              value: "guest"
+            - name: ORDER_QUEUE_PASSWORD
+              value: "guest"
+            - name: ORDER_QUEUE_NAME
+              value: "tank-events"
+            - name: FASTIFY_ADDRESS
+              value: "0.0.0.0"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tank-monitor
+  namespace: propane
+spec:
+  selector:
+    app: tank-monitor
+  ports:
+    - port: 3000
+      targetPort: 3000
+
+---
+# =============================================================================
+# Order Service - Go order fulfillment & processing
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: propane
+  labels:
+    app: order-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: order-service
+          image: ghcr.io/azure-samples/aks-store-demo/makeline-service:latest
+          ports:
+            - containerPort: 3001
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          env:
+            - name: ORDER_QUEUE_URI
+              value: "amqp://guest:guest@rabbitmq:5672/"
+            - name: ORDER_QUEUE_USERNAME
+              value: "guest"
+            - name: ORDER_QUEUE_PASSWORD
+              value: "guest"
+            - name: ORDER_QUEUE_NAME
+              value: "tank-events"
+            - name: ORDER_DB_URI
+              value: "mongodb://mongodb:27017"
+            - name: ORDER_DB_NAME
+              value: "propanedb"
+            - name: ORDER_DB_COLLECTION_NAME
+              value: "tank_readings"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: propane
+spec:
+  selector:
+    app: order-service
+  ports:
+    - port: 3001
+      targetPort: 3001
+
+---
+# =============================================================================
+# Customer Portal - Customer self-service portal (nginx serving custom HTML)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: customer-portal-html
+  namespace: propane
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AmeriGas Customer Portal</title>
+    <style>
+      :root { --bg: #0f172a; --card: #1e293b; --accent: #003DA5; --orange: #FF6900; --green: #34d399; --amber: #fbbf24; --red: #f87171; --text: #e2e8f0; --muted: #94a3b8; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+      header { background: linear-gradient(135deg, #001d52 0%, #003DA5 100%); border-bottom: 2px solid var(--orange); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+      header h1 { font-size: 1.4rem; font-weight: 600; display: flex; align-items: center; gap: .6rem; }
+      header h1 span.icon { font-size: 1.6rem; }
+      .status-bar { display: flex; gap: 1.5rem; font-size: .85rem; }
+      .status-bar .item { display: flex; align-items: center; gap: .4rem; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+      .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+      .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+      .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+      main { padding: 1.5rem 2rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; margin-bottom: 1.5rem; }
+      .card { background: var(--card); border-radius: 10px; padding: 1.2rem; border: 1px solid #334155; }
+      .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .8rem; }
+      .metric { font-size: 2rem; font-weight: 700; }
+      .metric.cyan { color: var(--orange); }
+      .metric.green { color: var(--green); }
+      .metric.amber { color: var(--amber); }
+      .metric sub { font-size: .7rem; font-weight: 400; color: var(--muted); }
+      .section-title { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .8rem; color: var(--orange); border-bottom: 1px solid #334155; padding-bottom: .4rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid #334155; font-size: .85rem; }
+      th { color: var(--muted); text-transform: uppercase; font-size: .75rem; letter-spacing: .06em; }
+      .badge { padding: .15rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+      .badge.online { background: #064e3b; color: var(--green); }
+      .badge.offline { background: #7f1d1d; color: var(--red); }
+      .badge.warning { background: #78350f; color: var(--amber); }
+      #assets-table tbody tr { transition: background .2s; }
+      #assets-table tbody tr:hover { background: #334155; }
+      .footer { text-align: center; padding: 2rem; color: var(--muted); font-size: .75rem; }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+      .loading { animation: pulse 1.5s infinite; color: var(--muted); }
+    </style>
+    </head>
+    <body>
+    <header>
+      <h1><span class="icon">&#128293;</span> AmeriGas Propane - Customer Portal</h1>
+      <div class="status-bar">
+        <div class="item"><span class="dot green"></span> Service Active</div>
+        <div class="item" id="clock"></div>
+      </div>
+    </header>
+    <main>
+      <div class="grid">
+        <div class="card">
+          <h3>Active Deliveries</h3>
+          <div class="metric cyan" id="active-deliveries">--</div>
+        </div>
+        <div class="card">
+          <h3>Available Inventory</h3>
+          <div class="metric green" id="avail-inventory">--<sub> gal</sub></div>
+        </div>
+        <div class="card">
+          <h3>Connected Tanks</h3>
+          <div class="metric cyan" id="connected-tanks">--</div>
+        </div>
+        <div class="card">
+          <h3>Avg Fill Level</h3>
+          <div class="metric green" id="avg-fill">--<sub> %</sub></div>
+        </div>
+        <div class="card">
+          <h3>Pending Orders</h3>
+          <div class="metric amber" id="pending-orders">--<sub> orders</sub></div>
+        </div>
+        <div class="card">
+          <h3>Avg Response Time</h3>
+          <div class="metric cyan" id="response-time">--<sub> ms</sub></div>
+        </div>
+      </div>
+
+      <h2 class="section-title">&#128667; Fleet &amp; Assets</h2>
+      <div class="card" style="overflow-x:auto;">
+        <table id="assets-table">
+          <thead><tr><th>Asset ID</th><th>Name</th><th>Type</th><th>Capacity</th><th>Status</th></tr></thead>
+          <tbody id="assets-body"><tr><td colspan="5" class="loading">Loading fleet &amp; assets...</td></tr></tbody>
+        </table>
+      </div>
+
+      <h2 class="section-title">&#128202; Recent Tank Readings</h2>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Timestamp</th><th>Tank ID</th><th>Region</th><th>Level (%)</th><th>Status</th></tr></thead>
+          <tbody id="readings-body"></tbody>
+        </table>
+      </div>
+
+      <h2 class="section-title">&#128506; Service Health</h2>
+      <div class="grid" id="health-cards"></div>
+    </main>
+    <div class="footer">AmeriGas &mdash; Propane Distribution Platform &mdash; Azure SRE Agent Demo Lab</div>
+
+    <script>
+    const SERVICES = [
+      { name: 'Inventory Service', url: '/api/inventory/health', port: 3002 },
+      { name: 'Tank Monitor', url: '/api/tanks/health', port: 3000 },
+      { name: 'Order Service', url: '/api/orders/health', port: 3001 },
+      { name: 'MongoDB', url: null },
+      { name: 'RabbitMQ', url: null },
+    ];
+
+    const REGIONS = ['PA - East', 'PA - Central', 'NJ - North', 'NJ - South', 'DE - Statewide'];
+    const ASSET_TYPES = ['Bulk Storage', 'Delivery Truck', 'Customer Tank', 'Filling Station', 'Cylinder Rack', 'Distribution Center'];
+    const ASSET_NAMES = ['King of Prussia Depot', 'Allentown Bulk Terminal', 'Route 422 Fill Station', 'Valley Forge Distribution', 'Exton Cylinder Exchange', 'Lansdale Propane Center', 'Pottstown Supply Hub', 'Collegeville Fleet Yard', 'Norristown Fill Plant', 'Malvern Bulk Storage'];
+
+    function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+    function fmt(n) { return n.toLocaleString(); }
+
+    function updateClock() {
+      document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+    }
+
+    function updateMetrics() {
+      document.getElementById('active-deliveries').textContent = fmt(rand(12, 48));
+      document.getElementById('avail-inventory').innerHTML = fmt(rand(150000, 350000)) + '<sub> gal</sub>';
+      document.getElementById('connected-tanks').textContent = fmt(rand(14200, 15800));
+      document.getElementById('avg-fill').innerHTML = (rand(55, 78)) + '<sub> %</sub>';
+      document.getElementById('pending-orders').innerHTML = rand(12, 85) + '<sub> orders</sub>';
+      document.getElementById('response-time').innerHTML = rand(18, 120) + '<sub> ms</sub>';
+    }
+
+    function loadAssets() {
+      fetch('/api/inventory/')
+        .then(r => r.json())
+        .then(items => {
+          const tbody = document.getElementById('assets-body');
+          tbody.innerHTML = '';
+          items.forEach((item, i) => {
+            const type = ASSET_TYPES[i % ASSET_TYPES.length];
+            const assetName = ASSET_NAMES[i % ASSET_NAMES.length];
+            const capacity = rand(5000, 30000) + ' gal';
+            const statusRoll = Math.random();
+            const status = statusRoll > 0.15 ? 'online' : statusRoll > 0.05 ? 'warning' : 'offline';
+            const label = status === 'online' ? 'Online' : status === 'warning' ? 'Degraded' : 'Offline';
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td>AG-' + String(item.id || i+1).padStart(4,'0') + '</td>' +
+              '<td>' + assetName + '</td>' +
+              '<td>' + type + '</td><td>' + capacity + '</td>' +
+              '<td><span class="badge ' + status + '">' + label + '</span></td>';
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(() => {
+          document.getElementById('assets-body').innerHTML =
+            '<tr><td colspan="5" style="color:var(--red)">&#9888; Unable to reach Inventory Service</td></tr>';
+        });
+    }
+
+    function loadReadings() {
+      const tbody = document.getElementById('readings-body');
+      tbody.innerHTML = '';
+      for (let i = 0; i < 8; i++) {
+        const d = new Date(Date.now() - i * rand(30000, 120000));
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + d.toLocaleTimeString() + '</td>' +
+          '<td>TK-' + rand(10000,99999) + '</td>' +
+          '<td>' + REGIONS[rand(0, REGIONS.length-1)] + '</td>' +
+          '<td>' + rand(15, 95) + '</td>' +
+          '<td><span class="badge online">OK</span></td>';
+        tbody.appendChild(tr);
+      }
+    }
+
+    function loadHealth() {
+      const container = document.getElementById('health-cards');
+      container.innerHTML = '';
+      SERVICES.forEach(svc => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        if (svc.url) {
+          card.innerHTML = '<h3>' + svc.name + '</h3><div class="loading">Checking...</div>';
+          fetch(svc.url, { signal: AbortSignal.timeout(3000) })
+            .then(r => { card.innerHTML = '<h3>' + svc.name + '</h3><div class="metric green" style="font-size:1.2rem"><span class="dot green"></span> Healthy</div>'; })
+            .catch(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div class="metric" style="font-size:1.2rem;color:var(--red)"><span class="dot red"></span> Unreachable</div>'; });
+        } else {
+          card.innerHTML = '<h3>' + svc.name + '</h3><div class="metric" style="font-size:1.2rem;color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
+        }
+        container.appendChild(card);
+      });
+    }
+
+    updateClock(); updateMetrics(); loadAssets(); loadReadings(); loadHealth();
+    setInterval(updateClock, 1000);
+    setInterval(updateMetrics, 5000);
+    setInterval(loadReadings, 15000);
+    setInterval(loadHealth, 30000);
+    setInterval(loadAssets, 60000);
+    </script>
+    </body>
+    </html>
+
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: customer-portal-nginx
+  namespace: propane
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        resolver kube-dns.kube-system.svc.cluster.local valid=5s;
+
+        location /health {
+            access_log off;
+            return 200 '{"status":"ok"}';
+            add_header Content-Type application/json;
+        }
+        location /api/inventory/ {
+            set $asset_backend http://inventory-service.propane.svc.cluster.local:3002;
+            proxy_pass $asset_backend/;
+        }
+        location /api/tanks/ {
+            set $meter_backend http://tank-monitor.propane.svc.cluster.local:3000;
+            proxy_pass $meter_backend/;
+        }
+        location /api/orders/ {
+            set $dispatch_backend http://order-service.propane.svc.cluster.local:3001;
+            proxy_pass $dispatch_backend/;
+        }
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-portal
+  namespace: propane
+  labels:
+    app: customer-portal
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: customer-portal
+  template:
+    metadata:
+      labels:
+        app: customer-portal
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: customer-portal
+          image: nginx:alpine
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: html
+          configMap:
+            name: customer-portal-html
+        - name: nginx-conf
+          configMap:
+            name: customer-portal-nginx
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-portal
+  namespace: propane
+spec:
+  type: LoadBalancer
+  selector:
+    app: customer-portal
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+# =============================================================================
+# Dispatch Console - Fleet dispatch & operations console (nginx serving custom HTML)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dispatch-console-html
+  namespace: propane
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AmeriGas Operations Console</title>
+    <style>
+      :root { --bg: #0f172a; --card: #1e293b; --accent: #a78bfa; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee; --text: #e2e8f0; --muted: #94a3b8; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+      header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); border-bottom: 2px solid var(--accent); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+      header h1 { font-size: 1.4rem; font-weight: 600; display: flex; align-items: center; gap: .6rem; }
+      .status-bar { display: flex; gap: 1.5rem; font-size: .85rem; }
+      .status-bar .item { display: flex; align-items: center; gap: .4rem; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+      .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+      .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+      .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+      main { padding: 1.5rem 2rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; margin-bottom: 1.5rem; }
+      .card { background: var(--card); border-radius: 10px; padding: 1.2rem; border: 1px solid #334155; }
+      .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .8rem; }
+      .metric { font-size: 2rem; font-weight: 700; }
+      .metric sub { font-size: .7rem; font-weight: 400; color: var(--muted); }
+      .section-title { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .8rem; color: var(--accent); border-bottom: 1px solid #334155; padding-bottom: .4rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid #334155; font-size: .85rem; }
+      th { color: var(--muted); text-transform: uppercase; font-size: .75rem; letter-spacing: .06em; }
+      .badge { padding: .15rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+      .badge.online { background: #064e3b; color: var(--green); }
+      .badge.offline { background: #7f1d1d; color: var(--red); }
+      .badge.warning { background: #78350f; color: var(--amber); }
+      .badge.processing { background: #1e1b4b; color: var(--accent); }
+      .footer { text-align: center; padding: 2rem; color: var(--muted); font-size: .75rem; }
+      .log-box { background: #0d1117; border: 1px solid #334155; border-radius: 8px; padding: 1rem; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .8rem; max-height: 220px; overflow-y: auto; line-height: 1.6; }
+      .log-box .ts { color: var(--muted); }
+      .log-box .info { color: var(--cyan); }
+      .log-box .warn { color: var(--amber); }
+      .log-box .err { color: var(--red); }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+      .loading { animation: pulse 1.5s infinite; color: var(--muted); }
+    </style>
+    </head>
+    <body>
+    <header>
+      <h1>&#9881; AmeriGas Operations Console</h1>
+      <div class="status-bar">
+        <div class="item"><span class="dot green"></span> Dispatcher Mode</div>
+        <div class="item" id="clock"></div>
+      </div>
+    </header>
+    <main>
+      <div class="grid">
+        <div class="card">
+          <h3>Delivery Queue</h3>
+          <div class="metric" style="color:var(--accent)" id="queue-depth">--</div>
+        </div>
+        <div class="card">
+          <h3>In-Transit Orders</h3>
+          <div class="metric" style="color:var(--cyan)" id="active-routes">--</div>
+        </div>
+        <div class="card">
+          <h3>Fleet Utilization</h3>
+          <div class="metric" style="color:var(--green)" id="fleet-util">--<sub> %</sub></div>
+        </div>
+        <div class="card">
+          <h3>Alerts (24h)</h3>
+          <div class="metric" style="color:var(--amber)" id="alert-count">--</div>
+        </div>
+      </div>
+
+      <h2 class="section-title">&#128667; Active Orders</h2>
+      <div class="card" style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Order ID</th><th>Type</th><th>Region</th><th>Priority</th><th>Status</th><th>Assigned To</th></tr></thead>
+          <tbody id="dispatch-body"></tbody>
+        </table>
+      </div>
+
+      <h2 class="section-title">&#127981; Fleet &amp; Storage Inventory</h2>
+      <div class="card" style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Asset ID</th><th>Name</th><th>Type</th><th>Capacity</th><th>Status</th></tr></thead>
+          <tbody id="assets-body"><tr><td colspan="5" class="loading">Loading assets...</td></tr></tbody>
+        </table>
+      </div>
+
+      <h2 class="section-title">&#128195; Operations Log</h2>
+      <div class="log-box" id="ops-log"></div>
+
+      <h2 class="section-title">&#128506; Platform Health</h2>
+      <div class="grid" id="health-grid"></div>
+    </main>
+    <div class="footer">AmeriGas &mdash; Dispatch Operations Console &mdash; Azure SRE Agent Demo Lab</div>
+
+    <script>
+    const REGIONS = ['PA - East', 'PA - Central', 'NJ - North', 'NJ - South', 'DE - Statewide'];
+    const DISPATCH_TYPES = ['Scheduled Fill', 'Emergency Refill', 'New Install', 'Tank Swap', 'Bulk Transfer', 'Cylinder Drop', 'Safety Check'];
+    const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
+    const ASSET_TYPES = ['Bulk Storage', 'Delivery Truck', 'Customer Tank', 'Filling Station', 'Cylinder Rack', 'Distribution Center'];
+    const ASSET_NAMES = ['King of Prussia Depot', 'Allentown Bulk Terminal', 'Route 422 Fill Station', 'Valley Forge Distribution', 'Exton Cylinder Exchange', 'Lansdale Propane Center', 'Pottstown Supply Hub', 'Collegeville Fleet Yard', 'Norristown Fill Plant', 'Malvern Bulk Storage'];
+
+    function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
+
+    function updateMetrics() {
+      document.getElementById('queue-depth').textContent = rand(5, 42);
+      document.getElementById('active-routes').textContent = rand(3, 18);
+      document.getElementById('fleet-util').innerHTML = (72 + Math.random() * 22).toFixed(1) + '<sub> %</sub>';
+      document.getElementById('alert-count').textContent = rand(2, 15);
+    }
+
+    function loadDispatches() {
+      const tbody = document.getElementById('dispatch-body');
+      tbody.innerHTML = '';
+      const count = rand(5, 10);
+      for (let i = 0; i < count; i++) {
+        const priority = PRIORITIES[rand(0, 3)];
+        const pclass = priority === 'Critical' ? 'offline' : priority === 'High' ? 'warning' : 'online';
+        const statuses = ['Processing', 'Queued', 'Executing', 'Completed'];
+        const status = statuses[rand(0, 3)];
+        const sclass = status === 'Completed' ? 'online' : status === 'Executing' ? 'processing' : 'warning';
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>DEL-' + rand(10000, 99999) + '</td>' +
+          '<td>' + DISPATCH_TYPES[rand(0, DISPATCH_TYPES.length - 1)] + '</td>' +
+          '<td>' + REGIONS[rand(0, REGIONS.length - 1)] + '</td>' +
+          '<td><span class="badge ' + pclass + '">' + priority + '</span></td>' +
+          '<td><span class="badge ' + sclass + '">' + status + '</span></td>' +
+          '<td>Team-' + rand(1, 20) + '</td>';
+        tbody.appendChild(tr);
+      }
+    }
+
+    function loadAssets() {
+      fetch('/api/inventory/')
+        .then(r => r.json())
+        .then(items => {
+          const tbody = document.getElementById('assets-body');
+          tbody.innerHTML = '';
+          items.forEach((item, i) => {
+            const type = ASSET_TYPES[i % ASSET_TYPES.length];
+            const assetName = ASSET_NAMES[i % ASSET_NAMES.length];
+            const capacity = rand(5000, 30000) + ' gal';
+            const statusRoll = Math.random();
+            const status = statusRoll > 0.1 ? 'online' : statusRoll > 0.03 ? 'warning' : 'offline';
+            const label = status === 'online' ? 'Running' : status === 'warning' ? 'Degraded' : 'Offline';
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td>AG-' + String(item.id || i + 1).padStart(4, '0') + '</td>' +
+              '<td>' + assetName + '</td>' +
+              '<td>' + type + '</td><td>' + capacity + '</td>' +
+              '<td><span class="badge ' + status + '">' + label + '</span></td>';
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(() => {
+          document.getElementById('assets-body').innerHTML =
+            '<tr><td colspan="5" style="color:var(--red)">&#9888; Inventory Service unavailable</td></tr>';
+        });
+    }
+
+    const LOG_MESSAGES = [
+      { level: 'info', msg: 'Delivery DEL-{id} completed for {zone}' },
+      { level: 'info', msg: 'Tank batch processed: {n} readings ingested' },
+      { level: 'info', msg: 'Order processor adjusted fulfillment for {zone}' },
+      { level: 'warn', msg: 'High latency detected on tank-monitor ({n}ms)' },
+      { level: 'warn', msg: 'Queue depth elevated: {n} pending orders' },
+      { level: 'info', msg: 'Asset AG-{id} health check passed' },
+      { level: 'err',  msg: 'Connection timeout to MongoDB replica' },
+      { level: 'info', msg: 'Tank fill levels normalized across fleet' },
+      { level: 'warn', msg: 'Delivery backlog growing in {zone}' },
+      { level: 'info', msg: 'RabbitMQ consumer reconnected successfully' },
+    ];
+
+    function addLogEntry() {
+      const box = document.getElementById('ops-log');
+      const tmpl = LOG_MESSAGES[rand(0, LOG_MESSAGES.length - 1)];
+      const ts = new Date().toLocaleTimeString();
+      const text = tmpl.msg.replace('{id}', rand(1000, 9999)).replace('{zone}', REGIONS[rand(0, 4)]).replace('{n}', rand(10, 500));
+      const line = document.createElement('div');
+      line.innerHTML = '<span class="ts">[' + ts + ']</span> <span class="' + tmpl.level + '">[' + tmpl.level.toUpperCase() + ']</span> ' + text;
+      box.prepend(line);
+      if (box.children.length > 50) box.removeChild(box.lastChild);
+    }
+
+    function loadHealth() {
+      const grid = document.getElementById('health-grid');
+      grid.innerHTML = '';
+      const svcs = [
+        { name: 'Inventory Service', url: '/api/inventory/health' },
+        { name: 'Tank Monitor', url: '/api/tanks/health' },
+        { name: 'Order Service', url: '/api/orders/health' },
+        { name: 'MongoDB', url: null },
+        { name: 'RabbitMQ', url: null },
+      ];
+      svcs.forEach(svc => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        if (svc.url) {
+          card.innerHTML = '<h3>' + svc.name + '</h3><div class="loading">Checking...</div>';
+          fetch(svc.url, { signal: AbortSignal.timeout(3000) })
+            .then(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--green)"><span class="dot green"></span> Healthy</div>'; })
+            .catch(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--red)"><span class="dot red"></span> Unreachable</div>'; });
+        } else {
+          card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
+        }
+        grid.appendChild(card);
+      });
+    }
+
+    updateClock(); updateMetrics(); loadDispatches(); loadAssets(); loadHealth();
+    for (let i = 0; i < 10; i++) addLogEntry();
+    setInterval(updateClock, 1000);
+    setInterval(updateMetrics, 5000);
+    setInterval(loadDispatches, 10000);
+    setInterval(addLogEntry, 3000);
+    setInterval(loadHealth, 30000);
+    setInterval(loadAssets, 60000);
+    </script>
+    </body>
+    </html>
+
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dispatch-console-nginx
+  namespace: propane
+data:
+  default.conf: |
+    server {
+        listen 8081;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        resolver kube-dns.kube-system.svc.cluster.local valid=5s;
+
+        location /health {
+            access_log off;
+            return 200 '{"status":"ok"}';
+            add_header Content-Type application/json;
+        }
+        location /api/inventory/ {
+            set $asset_backend http://inventory-service.propane.svc.cluster.local:3002;
+            proxy_pass $asset_backend/;
+        }
+        location /api/tanks/ {
+            set $meter_backend http://tank-monitor.propane.svc.cluster.local:3000;
+            proxy_pass $meter_backend/;
+        }
+        location /api/orders/ {
+            set $dispatch_backend http://order-service.propane.svc.cluster.local:3001;
+            proxy_pass $dispatch_backend/;
+        }
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatch-console
+  namespace: propane
+  labels:
+    app: dispatch-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dispatch-console
+  template:
+    metadata:
+      labels:
+        app: dispatch-console
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: dispatch-console
+          image: nginx:alpine
+          ports:
+            - containerPort: 8081
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: html
+          configMap:
+            name: dispatch-console-html
+        - name: nginx-conf
+          configMap:
+            name: dispatch-console-nginx
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatch-console
+  namespace: propane
+spec:
+  type: LoadBalancer
+  selector:
+    app: dispatch-console
+  ports:
+    - port: 80
+      targetPort: 8081
+
+---
+# =============================================================================
+# Usage Simulator - Customer propane usage pattern generator
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usage-simulator
+  namespace: propane
+  labels:
+    app: usage-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: usage-simulator
+  template:
+    metadata:
+      labels:
+        app: usage-simulator
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: usage-simulator
+          image: ghcr.io/azure-samples/aks-store-demo/virtual-customer:latest
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "25m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
+          env:
+            - name: ORDER_SERVICE_URL
+              value: "http://tank-monitor:3000/"
+            - name: ORDERS_PER_HOUR
+              value: "100"
+
+---
+# =============================================================================
+# Order Worker - Order processing worker (disabled by default)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-worker
+  namespace: propane
+  labels:
+    app: order-worker
+spec:
+  replicas: 0 # Disabled: AMQP protocol mismatch with RabbitMQ 3.11
+  selector:
+    matchLabels:
+      app: order-worker
+  template:
+    metadata:
+      labels:
+        app: order-worker
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: order-worker
+          image: ghcr.io/azure-samples/aks-store-demo/virtual-worker:latest
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "25m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
+          env:
+            - name: MAKELINE_SERVICE_URL
+              value: "http://order-service:3001"
+            - name: ORDERS_PER_HOUR
+              value: "100"

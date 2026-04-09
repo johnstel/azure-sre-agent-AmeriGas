@@ -1,0 +1,77 @@
+# =============================================================================
+# Breakable Scenarios for Azure SRE Agent AmeriGas Propane Demo
+# =============================================================================
+# This file contains a failure scenario that can be applied to the
+# AmeriGas Propane Distribution Platform for demonstrating Azure SRE Agent
+# diagnosis capabilities.
+#
+# Apply with: kubectl apply -f k8s/scenarios/oom-killed.yaml
+#
+# See docs/BREAKABLE-SCENARIOS.md for detailed instructions.
+# =============================================================================
+
+# =============================================================================
+# SCENARIO 1: OOMKilled - Tank Monitor Memory Exhaustion
+# =============================================================================
+# Winter peak demand overwhelms tank-monitor with IoT tank level readings.
+# SRE Agent can diagnose: "Pod is OOMKilled", recommend increasing memory limits.
+#
+# HOW TO BREAK:
+# kubectl apply -f k8s/scenarios/oom-killed.yaml
+#
+# HOW TO FIX:
+# kubectl apply -f k8s/base/application.yaml
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tank-monitor
+  namespace: propane
+  labels:
+    app: tank-monitor
+    scenario: oom-killed
+    sre-demo: breakable
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tank-monitor
+  template:
+    metadata:
+      labels:
+        app: tank-monitor
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: tank-monitor
+          image: ghcr.io/azure-samples/aks-store-demo/order-service:latest
+          ports:
+            - containerPort: 3000
+          # BREAKING CHANGE: Memory limit is way too low for IoT tank level data processing
+          resources:
+            requests:
+              memory: "8Mi" # Extremely low
+              cpu: "100m"
+            limits:
+              memory: "16Mi" # This will cause OOMKilled
+              cpu: "200m"
+          env:
+            - name: ORDER_QUEUE_HOSTNAME
+              value: "rabbitmq"
+            - name: ORDER_QUEUE_PORT
+              value: "5672"
+            - name: ORDER_QUEUE_USERNAME
+              value: "guest"
+            - name: ORDER_QUEUE_PASSWORD
+              value: "guest"
+            - name: ORDER_QUEUE_NAME
+              value: "tank-events"
+            - name: FASTIFY_ADDRESS
+              value: "0.0.0.0"
+            # Force memory allocation to trigger OOM faster
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=64"

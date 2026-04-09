@@ -1,0 +1,64 @@
+# =============================================================================
+# SCENARIO 9: MongoDB Down - Tank Database Outage (Cascading Failure)
+# =============================================================================
+# Tank readings database goes offline, causing cascading failures:
+# order-service can't process readings, tank data queues in RabbitMQ
+# indefinitely. New readings can still be submitted but never processed.
+#
+# This is the most realistic scenario because it requires SRE Agent to trace
+# the dependency chain: order-service → MongoDB → scaled to 0.
+#
+# SRE Agent can diagnose: Dependency failures, cascading impact, service
+# health correlation, and recommend scaling MongoDB back up.
+#
+# HOW TO BREAK:
+# kubectl apply -f k8s/scenarios/mongodb-down.yaml
+#
+# HOW TO FIX:
+# kubectl apply -f k8s/base/application.yaml
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: propane
+  labels:
+    app: mongodb
+    scenario: mongodb-down
+    sre-demo: breakable
+spec:
+  # BREAKING CHANGE: Scale to 0 replicas - tank database goes offline
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+        scenario: mongodb-down
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: mongodb
+          image: mongo:4.4
+          ports:
+            - containerPort: 27017
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+      volumes:
+        - name: mongodb-data
+          persistentVolumeClaim:
+            claimName: mongodb-data-pvc

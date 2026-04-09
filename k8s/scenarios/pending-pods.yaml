@@ -1,0 +1,49 @@
+# =============================================================================
+# SCENARIO 5: Pending Pods - Fleet Telemetry Monitor Can't Schedule
+# =============================================================================
+# New fleet telemetry monitoring pods request more resources than available,
+# remaining stuck in Pending state — cluster capacity exhausted.
+#
+# SRE Agent can diagnose: Pods pending due to insufficient resources,
+# recommend scaling the cluster or reducing resource requests.
+#
+# HOW TO BREAK:
+# kubectl apply -f k8s/scenarios/pending-pods.yaml
+#
+# HOW TO FIX:
+# kubectl delete deployment fleet-telemetry-monitor -n propane
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-telemetry-monitor
+  namespace: propane
+  labels:
+    app: fleet-telemetry-monitor
+    scenario: pending-pods
+    sre-demo: breakable
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: fleet-telemetry-monitor
+  template:
+    metadata:
+      labels:
+        app: fleet-telemetry-monitor
+        scenario: pending-pods
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: fleet-telemetry-monitor
+          image: mcr.microsoft.com/mirror/docker/library/nginx:alpine
+          resources:
+            # BREAKING CHANGE: Requesting more resources than available
+            requests:
+              memory: "32Gi" # Excessive memory request
+              cpu: "8" # Excessive CPU request
+            limits:
+              memory: "64Gi"
+              cpu: "16"

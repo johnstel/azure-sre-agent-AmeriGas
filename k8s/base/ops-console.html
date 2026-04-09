@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grid Operations Console</title>
+<style>
+  :root { --bg: #0f172a; --card: #1e293b; --accent: #a78bfa; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee; --text: #e2e8f0; --muted: #94a3b8; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); border-bottom: 2px solid var(--accent); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 1.4rem; font-weight: 600; display: flex; align-items: center; gap: .6rem; }
+  .status-bar { display: flex; gap: 1.5rem; font-size: .85rem; }
+  .status-bar .item { display: flex; align-items: center; gap: .4rem; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+  .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  main { padding: 1.5rem 2rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; margin-bottom: 1.5rem; }
+  .card { background: var(--card); border-radius: 10px; padding: 1.2rem; border: 1px solid #334155; }
+  .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .8rem; }
+  .metric { font-size: 2rem; font-weight: 700; }
+  .metric sub { font-size: .7rem; font-weight: 400; color: var(--muted); }
+  .section-title { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .8rem; color: var(--accent); border-bottom: 1px solid #334155; padding-bottom: .4rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid #334155; font-size: .85rem; }
+  th { color: var(--muted); text-transform: uppercase; font-size: .75rem; letter-spacing: .06em; }
+  .badge { padding: .15rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+  .badge.online { background: #064e3b; color: var(--green); }
+  .badge.offline { background: #7f1d1d; color: var(--red); }
+  .badge.warning { background: #78350f; color: var(--amber); }
+  .badge.processing { background: #1e1b4b; color: var(--accent); }
+  .footer { text-align: center; padding: 2rem; color: var(--muted); font-size: .75rem; }
+  .log-box { background: #0d1117; border: 1px solid #334155; border-radius: 8px; padding: 1rem; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: .8rem; max-height: 220px; overflow-y: auto; line-height: 1.6; }
+  .log-box .ts { color: var(--muted); }
+  .log-box .info { color: var(--cyan); }
+  .log-box .warn { color: var(--amber); }
+  .log-box .err { color: var(--red); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+  .loading { animation: pulse 1.5s infinite; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9881; Grid Operations Console</h1>
+  <div class="status-bar">
+    <div class="item"><span class="dot green"></span> Operator Mode</div>
+    <div class="item" id="clock"></div>
+  </div>
+</header>
+<main>
+  <div class="grid">
+    <div class="card">
+      <h3>Dispatch Queue Depth</h3>
+      <div class="metric" style="color:var(--accent)" id="queue-depth">--</div>
+    </div>
+    <div class="card">
+      <h3>Active Dispatches</h3>
+      <div class="metric" style="color:var(--cyan)" id="active-dispatches">--</div>
+    </div>
+    <div class="card">
+      <h3>Grid Efficiency</h3>
+      <div class="metric" style="color:var(--green)" id="efficiency">--<sub> %</sub></div>
+    </div>
+    <div class="card">
+      <h3>Alert Count (24h)</h3>
+      <div class="metric" style="color:var(--amber)" id="alert-count">--</div>
+    </div>
+  </div>
+
+  <h2 class="section-title">&#128640; Active Dispatch Orders</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Dispatch ID</th><th>Type</th><th>Zone</th><th>Priority</th><th>Status</th><th>Assigned</th></tr></thead>
+      <tbody id="dispatch-body"></tbody>
+    </table>
+  </div>
+
+  <h2 class="section-title">&#127981; Energy Asset Inventory</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Asset ID</th><th>Name</th><th>Type</th><th>Output</th><th>Efficiency</th><th>Status</th></tr></thead>
+      <tbody id="assets-body"><tr><td colspan="6" class="loading">Loading assets...</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2 class="section-title">&#128195; Operations Log</h2>
+  <div class="log-box" id="ops-log"></div>
+
+  <h2 class="section-title">&#128506; Platform Health</h2>
+  <div class="grid" id="health-grid"></div>
+</main>
+<div class="footer">Contoso Energy &mdash; Grid Operations Console &mdash; Azure SRE Agent Demo Lab</div>
+
+<script>
+const ZONES = ['Zone-A North', 'Zone-B Central', 'Zone-C South', 'Zone-D East', 'Zone-E West'];
+const DISPATCH_TYPES = ['Load Balance', 'Frequency Adj', 'Capacity Shift', 'Emergency Shed', 'Reserve Activate', 'Ramp Up', 'Ramp Down'];
+const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
+const ASSET_TYPES = ['Solar Farm', 'Wind Array', 'Gas Turbine', 'Hydroelectric', 'Battery Bank', 'Substation'];
+const ASSET_NAMES = ['Ridgeline Solar Alpha', 'Cedar Wind Farm', 'Riverside Gas Unit 3', 'Lakeview Hydro Station', 'Eastport Battery Grid', 'Northgate Substation 7', 'Summit Solar Bravo', 'Pinecrest Wind Array', 'Valley Gas Peaker 1', 'Harbor Hydro Complex'];
+
+function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
+
+function updateMetrics() {
+  document.getElementById('queue-depth').textContent = rand(5, 42);
+  document.getElementById('active-dispatches').textContent = rand(3, 18);
+  document.getElementById('efficiency').innerHTML = (92 + Math.random() * 7).toFixed(1) + '<sub> %</sub>';
+  document.getElementById('alert-count').textContent = rand(2, 15);
+}
+
+function loadDispatches() {
+  const tbody = document.getElementById('dispatch-body');
+  tbody.innerHTML = '';
+  const count = rand(5, 10);
+  for (let i = 0; i < count; i++) {
+    const priority = PRIORITIES[rand(0, 3)];
+    const pclass = priority === 'Critical' ? 'offline' : priority === 'High' ? 'warning' : 'online';
+    const statuses = ['Processing', 'Queued', 'Executing', 'Completed'];
+    const status = statuses[rand(0, 3)];
+    const sclass = status === 'Completed' ? 'online' : status === 'Executing' ? 'processing' : 'warning';
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>DSP-' + rand(10000, 99999) + '</td>' +
+      '<td>' + DISPATCH_TYPES[rand(0, DISPATCH_TYPES.length - 1)] + '</td>' +
+      '<td>' + ZONES[rand(0, ZONES.length - 1)] + '</td>' +
+      '<td><span class="badge ' + pclass + '">' + priority + '</span></td>' +
+      '<td><span class="badge ' + sclass + '">' + status + '</span></td>' +
+      '<td>Unit-' + rand(1, 20) + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+function loadAssets() {
+  fetch('/api/assets/')
+    .then(r => r.json())
+    .then(items => {
+      const tbody = document.getElementById('assets-body');
+      tbody.innerHTML = '';
+      items.forEach((item, i) => {
+        const type = ASSET_TYPES[i % ASSET_TYPES.length];
+        const assetName = ASSET_NAMES[i % ASSET_NAMES.length];
+        const output = rand(20, 450) + ' MW';
+        const eff = (85 + Math.random() * 14).toFixed(1) + '%';
+        const statusRoll = Math.random();
+        const status = statusRoll > 0.1 ? 'online' : statusRoll > 0.03 ? 'warning' : 'offline';
+        const label = status === 'online' ? 'Running' : status === 'warning' ? 'Degraded' : 'Offline';
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>EGA-' + String(item.id || i + 1).padStart(4, '0') + '</td>' +
+          '<td>' + assetName + '</td>' +
+          '<td>' + type + '</td><td>' + output + '</td><td>' + eff + '</td>' +
+          '<td><span class="badge ' + status + '">' + label + '</span></td>';
+        tbody.appendChild(tr);
+      });
+    })
+    .catch(() => {
+      document.getElementById('assets-body').innerHTML =
+        '<tr><td colspan="6" style="color:var(--red)">&#9888; Asset Service unavailable</td></tr>';
+    });
+}
+
+const LOG_MESSAGES = [
+  { level: 'info', msg: 'Dispatch DSP-{id} completed for {zone}' },
+  { level: 'info', msg: 'Meter batch processed: {n} readings ingested' },
+  { level: 'info', msg: 'Load balancer adjusted output for {zone}' },
+  { level: 'warn', msg: 'High latency detected on meter-service ({n}ms)' },
+  { level: 'warn', msg: 'Queue depth elevated: {n} pending events' },
+  { level: 'info', msg: 'Asset EGA-{id} health check passed' },
+  { level: 'err',  msg: 'Connection timeout to MongoDB replica' },
+  { level: 'info', msg: 'Grid frequency normalized: 60.00 Hz' },
+  { level: 'warn', msg: 'Dispatch backlog growing in {zone}' },
+  { level: 'info', msg: 'RabbitMQ consumer reconnected successfully' },
+];
+
+function addLogEntry() {
+  const box = document.getElementById('ops-log');
+  const tmpl = LOG_MESSAGES[rand(0, LOG_MESSAGES.length - 1)];
+  const ts = new Date().toLocaleTimeString();
+  const text = tmpl.msg.replace('{id}', rand(1000, 9999)).replace('{zone}', ZONES[rand(0, 4)]).replace('{n}', rand(10, 500));
+  const line = document.createElement('div');
+  line.innerHTML = '<span class="ts">[' + ts + ']</span> <span class="' + tmpl.level + '">[' + tmpl.level.toUpperCase() + ']</span> ' + text;
+  box.prepend(line);
+  if (box.children.length > 50) box.removeChild(box.lastChild);
+}
+
+function loadHealth() {
+  const grid = document.getElementById('health-grid');
+  grid.innerHTML = '';
+  const svcs = [
+    { name: 'Asset Service', url: '/api/assets/health' },
+    { name: 'Meter Service', url: '/api/meter/health' },
+    { name: 'Dispatch Service', url: '/api/dispatch/health' },
+    { name: 'MongoDB', url: null },
+    { name: 'RabbitMQ', url: null },
+  ];
+  svcs.forEach(svc => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    if (svc.url) {
+      card.innerHTML = '<h3>' + svc.name + '</h3><div class="loading">Checking...</div>';
+      fetch(svc.url, { signal: AbortSignal.timeout(3000) })
+        .then(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--green)"><span class="dot green"></span> Healthy</div>'; })
+        .catch(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--red)"><span class="dot red"></span> Unreachable</div>'; });
+    } else {
+      card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
+    }
+    grid.appendChild(card);
+  });
+}
+
+updateClock(); updateMetrics(); loadDispatches(); loadAssets(); loadHealth();
+for (let i = 0; i < 10; i++) addLogEntry();
+setInterval(updateClock, 1000);
+setInterval(updateMetrics, 5000);
+setInterval(loadDispatches, 10000);
+setInterval(addLogEntry, 3000);
+setInterval(loadHealth, 30000);
+setInterval(loadAssets, 60000);
+</script>
+</body>
+</html>
