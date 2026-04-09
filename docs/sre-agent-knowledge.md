@@ -20,22 +20,33 @@ This is the AmeriGas Propane Operations Platform running on Azure Kubernetes Ser
 | Order Service | `order-service` | 3001 | Order fulfillment — processes delivery orders, manages scheduling queues | Go |
 | Usage Simulator | `usage-simulator` | — | Generates simulated residential propane consumption patterns (background, no port) | Python |
 | Order Worker | `order-worker` | — | Processes order fulfillment queue messages (disabled by default, 0 replicas) | Python |
+| OTel Collector | `otel-collector` | 4317 / 4318 | OpenTelemetry Collector — receives OTLP telemetry, scrapes Prometheus, exports to App Insights | OTel Contrib |
 | RabbitMQ | `rabbitmq` | 5672 / 15672 | Event bus for tank events, order alerts, dispatch coordination | RabbitMQ 3.13 |
 | MongoDB | `mongodb` | 27017 | Stores tank readings, delivery records, customer accounts, inventory state | MongoDB 7.0 |
 
 ### Service Dependencies
 
 ```
-Customer Portal ──→ Order Service ──→ RabbitMQ
-                                  ──→ MongoDB
-Dispatch Console ──→ Order Service
-Tank Monitor ──→ RabbitMQ ──→ Order Worker
-             ──→ MongoDB
+Customer Portal ──→ Inventory Service, Tank Monitor, Order Service (via nginx proxy)
+Dispatch Console ──→ Inventory Service, Tank Monitor, Order Service (via nginx proxy)
+Tank Monitor ──→ RabbitMQ (publishes tank-events)
+Order Service ──→ RabbitMQ (consumes tank-events) ──→ MongoDB (persists readings)
 Inventory Service ──→ (standalone catalog, no DB dependency)
-Usage Simulator ──→ Order Service (HTTP)
+Usage Simulator ──→ Tank Monitor (HTTP, generates load)
+Order Worker ──→ Order Service (disabled, 0 replicas)
+OTel Collector ──→ App Insights (exports traces/metrics/logs)
+All services ──→ OTel Collector (OTLP endpoint for telemetry)
 ```
 
-**Critical dependency chain:** If MongoDB goes down, Tank Monitor and Order Service will fail, causing cascading failures across the customer portal and dispatch console.
+**Critical dependency chain:** Usage Simulator → Tank Monitor → RabbitMQ → Order Service → MongoDB. If MongoDB goes down, Order Service fails, causing cascading failures visible in Customer Portal and Dispatch Console.
+
+### Telemetry & Instrumentation
+
+- All application pods have `APPLICATIONINSIGHTS_CONNECTION_STRING` via `propane-telemetry-config` ConfigMap
+- Each service has `OTEL_SERVICE_NAME` set for distributed tracing identity
+- An **OpenTelemetry Collector** (`otel-collector`) runs in-cluster receiving OTLP (gRPC:4317, HTTP:4318) and scraping Prometheus metrics from services
+- The OTel Collector exports traces/metrics/logs to Application Insights and stdout (captured by Container Insights → Log Analytics → ADX)
+- The deploy script injects the real App Insights connection string post-deployment via `kubectl create configmap --dry-run=client | kubectl apply`
 
 ### Storage
 

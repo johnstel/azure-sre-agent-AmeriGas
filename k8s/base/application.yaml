@@ -30,6 +30,24 @@ metadata:
 
 ---
 # =============================================================================
+# Telemetry Configuration - App Insights + OpenTelemetry
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: propane-telemetry-config
+  namespace: propane
+  labels:
+    app.kubernetes.io/part-of: amerigas-propane-demo
+data:
+  APPLICATIONINSIGHTS_CONNECTION_STRING: "PLACEHOLDER_INJECT_AT_DEPLOY"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.propane.svc.cluster.local:4318"
+  OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
+  OTEL_TRACES_SAMPLER_ARG: "0.5"
+  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=demo,service.namespace=propane"
+
+---
+# =============================================================================
 # RabbitMQ - Event bus (tank alerts, order events, fulfillment updates)
 # =============================================================================
 apiVersion: apps/v1
@@ -216,6 +234,11 @@ spec:
           env:
             - name: AI_SERVICE_URL
               value: "http://demand-service:5001/"
+            - name: OTEL_SERVICE_NAME
+              value: "inventory-service"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
           livenessProbe:
             httpGet:
               path: /health
@@ -290,6 +313,11 @@ spec:
               value: "tank-events"
             - name: FASTIFY_ADDRESS
               value: "0.0.0.0"
+            - name: OTEL_SERVICE_NAME
+              value: "tank-monitor"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
           livenessProbe:
             httpGet:
               path: /health
@@ -366,6 +394,11 @@ spec:
               value: "propanedb"
             - name: ORDER_DB_COLLECTION_NAME
               value: "tank_readings"
+            - name: OTEL_SERVICE_NAME
+              value: "order-service"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
           livenessProbe:
             httpGet:
               path: /health
@@ -1239,6 +1272,139 @@ spec:
 
 ---
 # =============================================================================
+# OpenTelemetry Collector - Telemetry pipeline (App Insights + ADX via stdout)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: propane
+data:
+  otel-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'propane-services'
+              scrape_interval: 30s
+              static_configs:
+                - targets:
+                    - tank-monitor.propane.svc.cluster.local:3000
+                    - inventory-service.propane.svc.cluster.local:3002
+                    - order-service.propane.svc.cluster.local:3001
+    processors:
+      batch:
+        timeout: 10s
+        send_batch_size: 256
+      memory_limiter:
+        limit_mib: 256
+        spike_limit_mib: 64
+        check_interval: 5s
+      resource:
+        attributes:
+          - key: cloud.provider
+            value: azure
+            action: upsert
+          - key: cloud.platform
+            value: azure_aks
+            action: upsert
+          - key: service.namespace
+            value: propane
+            action: upsert
+    exporters:
+      logging:
+        loglevel: info
+      otlp/appinsights:
+        endpoint: "${APPLICATIONINSIGHTS_CONNECTION_STRING}"
+        headers:
+          "Content-Type": "application/json"
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [logging]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, batch, resource]
+          exporters: [logging]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters: [logging]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: propane
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args: ["--config=/etc/otel/otel-config.yaml"]
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: propane
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+
+---
+# =============================================================================
 # Usage Simulator - Customer propane usage pattern generator
 # =============================================================================
 apiVersion: apps/v1
@@ -1275,6 +1441,11 @@ spec:
               value: "http://tank-monitor:3000/"
             - name: ORDERS_PER_HOUR
               value: "100"
+            - name: OTEL_SERVICE_NAME
+              value: "usage-simulator"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
 
 ---
 # =============================================================================
@@ -1314,3 +1485,8 @@ spec:
               value: "http://order-service:3001"
             - name: ORDERS_PER_HOUR
               value: "100"
+            - name: OTEL_SERVICE_NAME
+              value: "order-worker"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config

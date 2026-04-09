@@ -620,7 +620,8 @@ try {
     Write-Host "  • Key Vault URI:    $($outputs.keyVaultUri.value)" -ForegroundColor White
     Write-Host "  • Log Analytics ID: $($outputs.logAnalyticsWorkspaceId.value)" -ForegroundColor White
     Write-Host "  • App Insights ID:  $($outputs.appInsightsId.value)" -ForegroundColor White
-    
+    Write-Host "  • App Insights CS:  $($outputs.appInsightsConnectionString.value.Substring(0, [Math]::Min(60, $outputs.appInsightsConnectionString.value.Length)))..." -ForegroundColor White
+
     if ($outputs.grafanaDashboardUrl.value) {
         Write-Host "  • Grafana:          $($outputs.grafanaDashboardUrl.value)" -ForegroundColor White
         Write-Host "  • AMW ID:           $($outputs.azureMonitorWorkspaceId.value)" -ForegroundColor White
@@ -646,6 +647,11 @@ try {
     elseif ($sreAgentSkipReason) {
         Write-Host "  • SRE Agent:        Skipped" -ForegroundColor Yellow
         Write-Host "  • Reason:           $sreAgentSkipReason" -ForegroundColor Gray
+    }
+
+    if ($outputs.adxClusterUri.value) {
+        Write-Host "  • ADX Cluster:      $($outputs.adxClusterUri.value)" -ForegroundColor White
+        Write-Host "  • ADX Database:     $($outputs.adxDatabaseName.value)" -ForegroundColor White
     }
 
     # Save outputs to file
@@ -710,7 +716,33 @@ $k8sPath = Join-Path $PSScriptRoot "..\k8s\base\application.yaml"
 if (Test-Path $k8sPath) {
     kubectl apply -f $k8sPath
     Write-Host "  ✅ Demo application deployed" -ForegroundColor Green
-    
+
+    # Inject App Insights connection string into telemetry ConfigMap
+    Write-Host "`n🔗 Configuring Application Insights telemetry..." -ForegroundColor Yellow
+    $appInsightsConnStr = $outputs.appInsightsConnectionString.value
+    if ($appInsightsConnStr) {
+        kubectl create configmap propane-telemetry-config `
+            --namespace propane `
+            --from-literal="APPLICATIONINSIGHTS_CONNECTION_STRING=$appInsightsConnStr" `
+            --from-literal="OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.propane.svc.cluster.local:4318" `
+            --from-literal="OTEL_TRACES_SAMPLER=parentbased_traceidratio" `
+            --from-literal="OTEL_TRACES_SAMPLER_ARG=0.5" `
+            --from-literal="OTEL_RESOURCE_ATTRIBUTES=deployment.environment=demo,service.namespace=propane" `
+            --dry-run=client -o yaml | kubectl apply -f -
+        Write-Host "  ✅ App Insights connection string injected into telemetry ConfigMap" -ForegroundColor Green
+        
+        # Restart telemetry-dependent services to pick up the real connection string
+        Write-Host "  ♻️  Restarting services to pick up telemetry config..." -ForegroundColor Gray
+        $telemetryServices = @('tank-monitor', 'inventory-service', 'order-service', 'otel-collector')
+        foreach ($svc in $telemetryServices) {
+            kubectl rollout restart deployment/$svc -n propane 2>$null
+        }
+        Write-Host "  ✅ Telemetry-dependent services restarted" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  ⚠️  App Insights connection string not available — telemetry ConfigMap not updated" -ForegroundColor Yellow
+    }
+
     Write-Host "`n⏳ Waiting for workloads to roll out..." -ForegroundColor Yellow
     $deploymentNamesRaw = kubectl get deployment -n propane -o jsonpath='{.items[*].metadata.name}' 2>$null
     $deploymentNames = @()
