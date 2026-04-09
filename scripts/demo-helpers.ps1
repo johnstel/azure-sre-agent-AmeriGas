@@ -1,0 +1,112 @@
+<#
+.SYNOPSIS
+    AmeriGas Propane SRE Demo Lab - PowerShell helper functions.
+
+.DESCRIPTION
+    Dot-source this script to load all demo shortcut commands into your
+    current PowerShell session:  . .\scripts\demo-helpers.ps1
+
+.EXAMPLE
+    . .\scripts\demo-helpers.ps1
+    menu
+    break-oom
+    fix-all
+#>
+
+# Kubernetes shortcuts (default namespace: propane)
+function kgp { kubectl get pods -n propane @args }
+function kgs { kubectl get svc -n propane @args }
+function kgd { kubectl get deployments -n propane @args }
+function kgn { kubectl get namespaces @args }
+function kge { kubectl get events -n propane --sort-by='.lastTimestamp' @args }
+function kwatch { kubectl get pods -n propane -w @args }
+
+# Deploy / destroy
+function deploy {
+    param([string]$Location = "eastus2")
+    & pwsh -NoLogo -File "$PSScriptRoot\deploy.ps1" -Location $Location @args
+}
+
+function destroy {
+    param([string]$ResourceGroupName)
+    if ($ResourceGroupName) {
+        & pwsh -NoLogo -File "$PSScriptRoot\destroy.ps1" -ResourceGroupName $ResourceGroupName @args
+    } else {
+        & pwsh -NoLogo -File "$PSScriptRoot\destroy.ps1" @args
+    }
+}
+
+# Break scenarios
+function break-oom { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\oom-killed.yaml" }
+function break-crash { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\crash-loop.yaml" }
+function break-image { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\image-pull-backoff.yaml" }
+function break-cpu { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\high-cpu.yaml" }
+function break-pending { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\pending-pods.yaml" }
+function break-probe { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\probe-failure.yaml" }
+function break-network { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\network-block.yaml" }
+function break-config { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\missing-config.yaml" }
+function break-mongodb { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\mongodb-down.yaml" }
+function break-service { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\service-mismatch.yaml" }
+
+# Fix commands
+function fix-all { kubectl apply -f "$PSScriptRoot\..\k8s\base\application.yaml" }
+function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
+function fix-extras { kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane 2>$null }
+
+# Site URL
+function site {
+    $ip = kubectl get svc customer-portal -n propane -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null
+    if ($ip) { Write-Host "Customer Portal: http://$ip" -ForegroundColor Green }
+    else { Write-Host "Customer Portal IP not ready yet..." -ForegroundColor Yellow }
+}
+
+# SRE Agent portal
+function sre-agent {
+    Write-Host "SRE Agent Portal: https://aka.ms/sreagent/portal" -ForegroundColor Cyan
+}
+
+# Menu / help
+function menu {
+    Write-Host @"
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    AmeriGas Propane SRE Demo Lab                             ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Commands:                                                                   ║
+║    az login --use-device-code  - Login to Azure                              ║
+║    deploy                      - Deploy the infrastructure                   ║
+║    destroy                     - Tear down the infrastructure                ║
+║    site                        - Show the customer portal URL                ║
+║    sre-agent                   - Show SRE Agent portal URL                   ║
+║    menu                        - Show this help menu                         ║
+║                                                                              ║
+║  Kubernetes Shortcuts (default namespace: propane):                           ║
+║    kgp, kgs, kgd               - Get pods/services/deployments               ║
+║    kge                         - Get recent events                           ║
+║    kwatch                      - Watch pods live                             ║
+║                                                                              ║
+║  Break Scenarios:                                                            ║
+║    break-oom                   - OOMKilled (tank-monitor)                    ║
+║    break-crash                 - CrashLoopBackOff (inventory-service)        ║
+║    break-image                 - ImagePullBackOff (order-service)            ║
+║    break-cpu                   - High CPU (demand forecast overload)         ║
+║    break-pending               - Pending pods (fleet telemetry monitor)      ║
+║    break-probe                 - Liveness probe failure                      ║
+║    break-network               - Network policy blocking                     ║
+║    break-config                - Missing ConfigMap                           ║
+║    break-mongodb               - MongoDB down (cascading failure)            ║
+║    break-service               - Service selector mismatch                   ║
+║                                                                              ║
+║  Fix Commands:                                                               ║
+║    fix-all                     - Restore all services to healthy state       ║
+║    fix-network                 - Remove network policy                       ║
+║    fix-extras                  - Delete extra broken deployments             ║
+║                                                                              ║
+║  Documentation: docs/                                                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+"@ -ForegroundColor Cyan
+}
+
+# Show menu on load
+menu
