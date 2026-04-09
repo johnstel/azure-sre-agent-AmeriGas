@@ -34,6 +34,9 @@ param deployAlerts bool = false
 @description('Deploy Azure SRE Agent for AI-powered diagnostics and remediation')
 param deploySreAgent bool = true
 
+@description('Deploy Azure Data Explorer cluster for propane operations log analytics')
+param deployDataExplorer bool = true
+
 @description('Deploy default Action Group for alert notifications and incident routing')
 param deployActionGroup bool = false
 
@@ -107,6 +110,7 @@ var names = {
   managedIdentity: 'id-${workloadName}'
   vnet: 'vnet-${workloadName}'
   sreAgent: 'sre-${workloadName}'
+  adx: 'adx-${workloadName}-${take(uniqueSuffix, 6)}'
 }
 
 // =============================================================================
@@ -232,6 +236,19 @@ module observability 'modules/observability.bicep' = if (deployObservability) {
   }
 }
 
+// Azure Data Explorer for propane operations log analytics (optional)
+module dataExplorer 'modules/data-explorer.bicep' = if (deployDataExplorer) {
+  scope: resourceGroup
+  name: 'deploy-data-explorer'
+  params: {
+    clusterName: names.adx
+    location: location
+    tags: tags
+    logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
+    aksClusterId: aks.outputs.aksId
+  }
+}
+
 module defaultActionGroup 'modules/action-group.bicep' = if (deployActionGroup) {
   scope: resourceGroup
   name: 'deploy-default-action-group'
@@ -293,3 +310,5 @@ output sreAgentPortalUrl string = deploySreAgent ? sreAgent!.outputs.agentPortal
 output sreAgentName string = deploySreAgent ? sreAgent!.outputs.agentName : ''
 output sreAgentManagedIdentityId string = deploySreAgent ? sreAgent!.outputs.managedIdentityId : ''
 output sreAgentManagedIdentityPrincipalId string = deploySreAgent ? sreAgent!.outputs.managedIdentityPrincipalId : ''
+output adxClusterUri string = deployDataExplorer ? dataExplorer!.outputs.clusterUri : ''
+output adxDatabaseName string = deployDataExplorer ? dataExplorer!.outputs.databaseName : ''

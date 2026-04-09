@@ -137,6 +137,24 @@ app.get('/api/pods', async (req, res) => {
   }
 });
 
+app.get('/api/networkpolicies', async (req, res) => {
+  try {
+    const out = await kubectl('get', 'networkpolicy', '-n', 'propane', '-o', 'json');
+    res.json(JSON.parse(out));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/endpoints', async (req, res) => {
+  try {
+    const out = await kubectl('get', 'endpoints', '-n', 'propane', '-o', 'json');
+    res.json(JSON.parse(out));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/services', async (req, res) => {
   try {
     const out = await kubectl('get', 'svc', '-n', 'propane', '-o', 'json');

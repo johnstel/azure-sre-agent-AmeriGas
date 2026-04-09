@@ -350,11 +350,14 @@ const SCENARIO_INDICATORS = {
   pending: p => p.name.startsWith('fleet-telemetry'),
   probe:   p => p.name.startsWith('safety-compliance'),
   config:  p => p.name.startsWith('delivery-zone'),
-  mongodb: p => p.name.startsWith('mongodb') && p.ready === '0/1',
-  service: () => false, // hard to detect from pods alone
+  mongodb: p => p.name.startsWith('mongodb') && (p.ready === '0/1' || p.status !== 'Running'),
+  network: null, // detected via networkpolicies API
+  service: null, // detected via endpoints API
 };
 
 let currentPods = [];
+let networkPolicyActive = false;
+let serviceMismatchActive = false;
 
 /* ── API Helpers ───────────────────────────────────────── */
 async function api(path, opts) {
@@ -555,9 +558,18 @@ function updateScenarioIndicators() {
   for (const sc of SCENARIOS) {
     const indicator = document.getElementById('ind-' + sc.id);
     if (!indicator) continue;
-    const fn = SCENARIO_INDICATORS[sc.id];
-    if (!fn) { indicator.textContent = '–'; indicator.className = 'sc-status'; continue; }
-    const isActive = currentPods.some(fn);
+
+    let isActive = false;
+    if (sc.id === 'network') {
+      isActive = networkPolicyActive;
+    } else if (sc.id === 'service') {
+      isActive = serviceMismatchActive;
+    } else {
+      const fn = SCENARIO_INDICATORS[sc.id];
+      if (!fn) { indicator.textContent = '–'; indicator.className = 'sc-status'; continue; }
+      isActive = currentPods.some(fn);
+    }
+
     indicator.textContent = isActive ? '● ACTIVE' : '○ Healthy';
     indicator.className = 'sc-status ' + (isActive ? 'active' : 'ok');
   }
@@ -610,6 +622,33 @@ async function fix(type, btn) {
   }
 }
 
+/* ── Network Policy & Endpoint Detection ──────────────── */
+async function refreshNetworkPolicies() {
+  try {
+    const data = await api('networkpolicies');
+    if (data.error) { networkPolicyActive = false; return; }
+    networkPolicyActive = (data.items || []).some(np => np.metadata.name === 'deny-tank-monitor');
+    updateScenarioIndicators();
+  } catch { networkPolicyActive = false; }
+}
+
+async function refreshEndpoints() {
+  try {
+    const data = await api('endpoints');
+    if (data.error) { serviceMismatchActive = false; return; }
+    const ep = (data.items || []).find(e => e.metadata.name === 'tank-monitor');
+    if (ep) {
+      const addrs = (ep.subsets || []).flatMap(s => s.addresses || []);
+      // Service mismatch = service exists but has no endpoints (and tank-monitor pod IS running)
+      const tankRunning = currentPods.some(p => p.name.startsWith('tank-monitor') && p.status === 'Running');
+      serviceMismatchActive = addrs.length === 0 && tankRunning;
+    } else {
+      serviceMismatchActive = false;
+    }
+    updateScenarioIndicators();
+  } catch { serviceMismatchActive = false; }
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 buildScenarioGrid();
 refreshPods();
@@ -618,12 +657,16 @@ refreshServices();
 refreshNodes();
 refreshDeployments();
 refreshClusterInfo();
+refreshNetworkPolicies();
+refreshEndpoints();
 
 setInterval(refreshPods, 5000);
 setInterval(refreshEvents, 10000);
 setInterval(refreshServices, 15000);
 setInterval(refreshDeployments, 10000);
 setInterval(refreshNodes, 30000);
+setInterval(refreshNetworkPolicies, 5000);
+setInterval(refreshEndpoints, 5000);
 
 /* ── Infrastructure Operations ────────────────────────── */
 let currentOpId = null;

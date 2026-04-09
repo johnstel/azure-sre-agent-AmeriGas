@@ -5,7 +5,7 @@
 This is the AmeriGas Propane Operations Platform running on Azure Kubernetes Service (AKS). AmeriGas is the largest retail propane distributor in the United States, serving over 1.5 million residential, commercial, and industrial customers. This platform manages propane tank monitoring, inventory management, order fulfillment, and customer-facing operations.
 
 **Kubernetes Namespace:** `propane`
-**Observability:** Azure Log Analytics (Container Insights via omsagent), Application Insights, Azure Monitor (Prometheus), Managed Grafana
+**Observability:** Azure Log Analytics (Container Insights via omsagent), Application Insights, Azure Data Explorer (PropaneLogs database), Azure Monitor (Prometheus), Managed Grafana
 
 ## Architecture
 
@@ -52,35 +52,32 @@ Usage Simulator ──→ Order Service (HTTP)
 
 - **Container logs:** Azure Log Analytics workspace via Container Insights (AKS omsagent addon)
 - **Application telemetry:** Application Insights (connected to the same Log Analytics workspace, IngestionMode: LogAnalytics)
+- **Azure Data Explorer:** An ADX cluster with a `PropaneLogs` database receives continuous data export from Log Analytics (ContainerLogV2, KubeEvents, KubePodInventory tables). Use ADX for high-performance ad-hoc queries and long-term analytics.
+- **AKS control plane logs:** Sent to Log Analytics via diagnostic settings (kube-apiserver, kube-controller-manager, kube-scheduler, kube-audit-admin, guard, cloud-controller-manager)
 - **Prometheus metrics:** Azure Monitor Workspace, viewable in Managed Grafana
-- **No Azure Data Explorer is used** — all logs are in Log Analytics
 
-### Useful KQL Queries
+### Querying Logs in Azure Data Explorer
+
+Connect to the ADX cluster URI (output from deployment) and query the `PropaneLogs` database:
 
 ```kql
-// All container logs in propane namespace
+// Container logs from propane namespace
 ContainerLogV2
 | where PodNamespace == "propane"
 | order by TimeGenerated desc
 | take 100
 
-// Pod restart events
+// Pod events — restarts, failures, OOM
 KubeEvents
 | where Namespace == "propane"
 | where Reason in ("BackOff", "Killing", "OOMKilling", "Failed")
 | order by TimeGenerated desc
 
-// OOMKilled events
-ContainerLogV2
-| where PodNamespace == "propane"
-| where ContainerName == "tank-monitor"
-| order by TimeGenerated desc
-
-// CPU/memory usage by pod
-Perf
-| where ObjectName == "K8SContainer"
-| where InstanceName contains "propane"
-| summarize avg(CounterValue) by CounterName, InstanceName, bin(TimeGenerated, 5m)
+// Pod inventory — current state of all pods
+KubePodInventory
+| where Namespace == "propane"
+| summarize arg_max(TimeGenerated, *) by Name
+| project Name, PodStatus, ContainerStatus, RestartCount
 ```
 
 ## Healthy State
