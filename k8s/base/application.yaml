@@ -408,196 +408,265 @@ data:
     <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AmeriGas Customer Portal</title>
+    <title>AmeriGas — My Account</title>
     <style>
-      :root { --bg: #0f172a; --card: #1e293b; --accent: #003DA5; --orange: #FF6900; --green: #34d399; --amber: #fbbf24; --red: #f87171; --text: #e2e8f0; --muted: #94a3b8; }
+      :root { --bg: #0f172a; --card: #1e293b; --accent: #003DA5; --orange: #FF6900; --green: #34d399; --amber: #fbbf24; --red: #f87171; --text: #e2e8f0; --muted: #94a3b8; --border: #334155; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-      header { background: linear-gradient(135deg, #001d52 0%, #003DA5 100%); border-bottom: 2px solid var(--orange); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
-      header h1 { font-size: 1.4rem; font-weight: 600; display: flex; align-items: center; gap: .6rem; }
-      header h1 span.icon { font-size: 1.6rem; }
-      .status-bar { display: flex; gap: 1.5rem; font-size: .85rem; }
+      header { background: linear-gradient(135deg, #001d52 0%, #003DA5 100%); border-bottom: 3px solid var(--orange); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+      header h1 { font-size: 1.4rem; font-weight: 600; display: flex; align-items: center; gap: .5rem; }
+      .status-bar { display: flex; gap: 1.5rem; font-size: .85rem; align-items: center; }
       .status-bar .item { display: flex; align-items: center; gap: .4rem; }
       .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
       .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
       .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
       .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
-      main { padding: 1.5rem 2rem; }
-      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; margin-bottom: 1.5rem; }
-      .card { background: var(--card); border-radius: 10px; padding: 1.2rem; border: 1px solid #334155; }
-      .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .8rem; }
+      main { padding: 1.5rem 2rem; max-width: 1400px; margin: 0 auto; }
+      .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+      .card { background: var(--card); border-radius: 10px; padding: 1.2rem; border: 1px solid var(--border); }
+      .card h3 { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .6rem; }
       .metric { font-size: 2rem; font-weight: 700; }
-      .metric.cyan { color: var(--orange); }
-      .metric.green { color: var(--green); }
-      .metric.amber { color: var(--amber); }
       .metric sub { font-size: .7rem; font-weight: 400; color: var(--muted); }
-      .section-title { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .8rem; color: var(--orange); border-bottom: 1px solid #334155; padding-bottom: .4rem; }
+      .section-title { font-size: 1.1rem; font-weight: 600; margin: 2rem 0 .8rem; color: var(--orange); border-bottom: 1px solid var(--border); padding-bottom: .4rem; }
       table { width: 100%; border-collapse: collapse; }
-      th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid #334155; font-size: .85rem; }
-      th { color: var(--muted); text-transform: uppercase; font-size: .75rem; letter-spacing: .06em; }
-      .badge { padding: .15rem .5rem; border-radius: 4px; font-size: .75rem; font-weight: 600; }
+      th, td { padding: .55rem .8rem; text-align: left; border-bottom: 1px solid var(--border); font-size: .85rem; }
+      th { color: var(--muted); text-transform: uppercase; font-size: .72rem; letter-spacing: .06em; }
+      .badge { padding: .15rem .55rem; border-radius: 4px; font-size: .72rem; font-weight: 600; white-space: nowrap; }
+      .badge.in-stock { background: #064e3b; color: var(--green); }
+      .badge.low-stock { background: #78350f; color: var(--amber); }
+      .badge.out-of-stock { background: #7f1d1d; color: var(--red); }
       .badge.online { background: #064e3b; color: var(--green); }
       .badge.offline { background: #7f1d1d; color: var(--red); }
-      .badge.warning { background: #78350f; color: var(--amber); }
-      #assets-table tbody tr { transition: background .2s; }
-      #assets-table tbody tr:hover { background: #334155; }
-      .footer { text-align: center; padding: 2rem; color: var(--muted); font-size: .75rem; }
-      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+      .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+      /* Gauge */
+      .gauge-wrap { display: flex; align-items: center; gap: 1rem; }
+      .gauge { width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; position: relative; }
+      .gauge-inner { width: 58px; height: 58px; border-radius: 50%; background: var(--card); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; font-weight: 700; }
+      .gauge-label { font-size: .8rem; color: var(--muted); }
+      /* Cage viz */
+      .cage { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+      .tank-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+      .tank-dot.full { background: var(--accent); box-shadow: 0 0 3px rgba(0,61,165,.5); }
+      .tank-dot.empty { background: var(--border); }
+      .tank-dot.reserved { background: var(--orange); box-shadow: 0 0 3px rgba(255,105,0,.4); }
+      .cage-counts { font-size: .75rem; color: var(--muted); margin-top: 3px; }
+      .loc-row:hover { background: rgba(51,65,85,.4); }
+      .footer { text-align: center; padding: 2rem; color: var(--muted); font-size: .75rem; border-top: 1px solid var(--border); margin-top: 2rem; }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
       .loading { animation: pulse 1.5s infinite; color: var(--muted); }
+      .demand-peak { color: var(--red); font-weight: 700; }
+      .demand-normal { color: var(--amber); font-weight: 700; }
+      .demand-low { color: var(--green); font-weight: 700; }
     </style>
     </head>
     <body>
     <header>
-      <h1><span class="icon">&#128293;</span> AmeriGas Propane - Customer Portal</h1>
+      <h1>&#128293; AmeriGas Propane &mdash; My Account</h1>
       <div class="status-bar">
-        <div class="item"><span class="dot green"></span> Service Active</div>
+        <div class="item"><span class="dot green"></span> Account Active</div>
         <div class="item" id="clock"></div>
       </div>
     </header>
     <main>
-      <div class="grid">
+      <!-- Top Metrics -->
+      <div class="metrics-grid">
         <div class="card">
-          <h3>Active Deliveries</h3>
-          <div class="metric cyan" id="active-deliveries">--</div>
+          <h3>My Tank Level</h3>
+          <div class="gauge-wrap">
+            <div class="gauge" id="tank-gauge"><div class="gauge-inner" id="tank-pct">--%</div></div>
+            <div class="gauge-label" id="tank-status">Calculating&hellip;</div>
+          </div>
         </div>
         <div class="card">
-          <h3>Available Inventory</h3>
-          <div class="metric green" id="avail-inventory">--<sub> gal</sub></div>
+          <h3>Est. Days Until Empty</h3>
+          <div class="metric" id="days-empty" style="color:var(--amber)">--<sub> days</sub></div>
         </div>
         <div class="card">
-          <h3>Connected Tanks</h3>
-          <div class="metric cyan" id="connected-tanks">--</div>
+          <h3>Next Delivery</h3>
+          <div id="next-delivery" style="font-size:1.1rem;font-weight:600;color:var(--green)">--</div>
+          <div id="delivery-window" style="font-size:.8rem;color:var(--muted);margin-top:.3rem"></div>
         </div>
         <div class="card">
-          <h3>Avg Fill Level</h3>
-          <div class="metric green" id="avg-fill">--<sub> %</sub></div>
+          <h3>Current Price</h3>
+          <div class="metric" id="current-price" style="color:var(--text)">--<sub> /gal</sub></div>
         </div>
         <div class="card">
-          <h3>Pending Orders</h3>
-          <div class="metric amber" id="pending-orders">--<sub> orders</sub></div>
+          <h3>Season Demand</h3>
+          <div id="season-demand" style="font-size:1.4rem;font-weight:700">--</div>
         </div>
         <div class="card">
-          <h3>Avg Response Time</h3>
-          <div class="metric cyan" id="response-time">--<sub> ms</sub></div>
+          <h3>Account Balance</h3>
+          <div class="metric" id="acct-balance" style="color:var(--green)">--</div>
         </div>
       </div>
 
-      <h2 class="section-title">&#128667; Fleet &amp; Assets</h2>
-      <div class="card" style="overflow-x:auto;">
-        <table id="assets-table">
-          <thead><tr><th>Asset ID</th><th>Name</th><th>Type</th><th>Capacity</th><th>Status</th></tr></thead>
-          <tbody id="assets-body"><tr><td colspan="5" class="loading">Loading fleet &amp; assets...</td></tr></tbody>
-        </table>
-      </div>
-
-      <h2 class="section-title">&#128202; Recent Tank Readings</h2>
+      <!-- Nearby Exchange Locations -->
+      <h2 class="section-title">&#127978; Nearby Exchange Locations</h2>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Timestamp</th><th>Tank ID</th><th>Region</th><th>Level (%)</th><th>Status</th></tr></thead>
-          <tbody id="readings-body"></tbody>
+          <thead>
+            <tr><th>Location</th><th>Region</th><th>Cage Inventory</th><th>Counts</th><th>Status</th><th>Distance</th></tr>
+          </thead>
+          <tbody id="locations-body">
+            <tr><td colspan="6" class="loading">Loading exchange locations&hellip;</td></tr>
+          </tbody>
         </table>
       </div>
 
-      <h2 class="section-title">&#128506; Service Health</h2>
-      <div class="grid" id="health-cards"></div>
+      <!-- Usage History -->
+      <h2 class="section-title">&#128202; My Usage History</h2>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>Date</th><th>Gallons Used</th><th>Tank Level</th><th>Daily Avg</th></tr></thead>
+          <tbody id="usage-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Service Health -->
+      <h2 class="section-title">&#128295; Service Health</h2>
+      <div class="health-grid" id="health-cards"></div>
     </main>
     <div class="footer">AmeriGas &mdash; Propane Distribution Platform &mdash; Azure SRE Agent Demo Lab</div>
 
     <script>
-    const SERVICES = [
-      { name: 'Inventory Service', url: '/api/inventory/health', port: 3002 },
-      { name: 'Tank Monitor', url: '/api/tanks/health', port: 3000 },
-      { name: 'Order Service', url: '/api/orders/health', port: 3001 },
-      { name: 'MongoDB', url: null },
-      { name: 'RabbitMQ', url: null },
+    /* ---- helpers ---- */
+    function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
+    function randF(a,b){return+(Math.random()*(b-a)+a).toFixed(2);}
+    function fmt(n){return n.toLocaleString();}
+
+    /* ---- clock ---- */
+    function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString();}
+
+    /* ---- top metrics ---- */
+    function updateMetrics(){
+      var pct=rand(30,85);
+      var gaugeColor=pct>50?'var(--green)':pct>25?'var(--amber)':'var(--red)';
+      var g=document.getElementById('tank-gauge');
+      g.style.background='conic-gradient('+gaugeColor+' 0% '+pct+'%, var(--border) '+pct+'% 100%)';
+      document.getElementById('tank-pct').textContent=pct+'%';
+      var statusText=pct>50?'Good — no action needed':pct>25?'Monitor — consider ordering':'Low — delivery recommended';
+      document.getElementById('tank-status').textContent=statusText;
+
+      var days=rand(5,45);
+      var de=document.getElementById('days-empty');
+      de.innerHTML=days+'<sub> days</sub>';
+      de.style.color=days>14?'var(--green)':days>7?'var(--amber)':'var(--red)';
+
+      var daysOut=rand(1,14);
+      var dd=new Date();dd.setDate(dd.getDate()+daysOut);
+      var opts={weekday:'short',month:'short',day:'numeric'};
+      document.getElementById('next-delivery').textContent=dd.toLocaleDateString('en-US',opts);
+      var hrs=rand(7,14);
+      document.getElementById('delivery-window').textContent=hrs+':00 — '+(hrs+3)+':00 window';
+
+      var price=randF(2.15,2.89);
+      document.getElementById('current-price').innerHTML='$'+price.toFixed(2)+'<sub> /gal</sub>';
+
+      var mo=new Date().getMonth();
+      var season,cls;
+      if(mo>=10||mo<=2){season='Peak';cls='demand-peak';}
+      else if(mo>=3&&mo<=4||mo>=8&&mo<=9){season='Normal';cls='demand-normal';}
+      else{season='Low';cls='demand-low';}
+      var sd=document.getElementById('season-demand');
+      sd.textContent=season;sd.className=cls;
+
+      var bal=rand(0,250);
+      var be=document.getElementById('acct-balance');
+      be.textContent=bal>0?'$'+fmt(bal)+' credit':'$0.00';
+      be.style.color=bal>0?'var(--green)':'var(--muted)';
+    }
+
+    /* ---- exchange locations ---- */
+    var LOCATIONS=[
+      {name:'Home Depot King of Prussia',region:'PA-East',cageSize:20,dist:'2.3 mi'},
+      {name:'Walmart Collegeville',region:'PA-East',cageSize:20,dist:'4.1 mi'},
+      {name:"Lowe's Exton",region:'PA-East',cageSize:12,dist:'6.8 mi'},
+      {name:'ACE Hardware Lansdale',region:'PA-East',cageSize:12,dist:'8.2 mi'},
+      {name:'Wawa Wayne',region:'PA-East',cageSize:12,dist:'3.5 mi'},
+      {name:'ShopRite Norristown',region:'PA-Central',cageSize:20,dist:'5.6 mi'},
+      {name:'Giant Pottstown',region:'PA-Central',cageSize:20,dist:'12.4 mi'},
+      {name:'Costco Plymouth Meeting',region:'NJ-North',cageSize:24,dist:'7.9 mi'}
     ];
 
-    const REGIONS = ['PA - East', 'PA - Central', 'NJ - North', 'NJ - South', 'DE - Statewide'];
-    const ASSET_TYPES = ['Bulk Storage', 'Delivery Truck', 'Customer Tank', 'Filling Station', 'Cylinder Rack', 'Distribution Center'];
-    const ASSET_NAMES = ['King of Prussia Depot', 'Allentown Bulk Terminal', 'Route 422 Fill Station', 'Valley Forge Distribution', 'Exton Cylinder Exchange', 'Lansdale Propane Center', 'Pottstown Supply Hub', 'Collegeville Fleet Yard', 'Norristown Fill Plant', 'Malvern Bulk Storage'];
-
-    function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-    function fmt(n) { return n.toLocaleString(); }
-
-    function updateClock() {
-      document.getElementById('clock').textContent = new Date().toLocaleTimeString();
-    }
-
-    function updateMetrics() {
-      document.getElementById('active-deliveries').textContent = fmt(rand(12, 48));
-      document.getElementById('avail-inventory').innerHTML = fmt(rand(150000, 350000)) + '<sub> gal</sub>';
-      document.getElementById('connected-tanks').textContent = fmt(rand(14200, 15800));
-      document.getElementById('avg-fill').innerHTML = (rand(55, 78)) + '<sub> %</sub>';
-      document.getElementById('pending-orders').innerHTML = rand(12, 85) + '<sub> orders</sub>';
-      document.getElementById('response-time').innerHTML = rand(18, 120) + '<sub> ms</sub>';
-    }
-
-    function loadAssets() {
-      fetch('/api/inventory/')
-        .then(r => r.json())
-        .then(items => {
-          const tbody = document.getElementById('assets-body');
-          tbody.innerHTML = '';
-          items.forEach((item, i) => {
-            const type = ASSET_TYPES[i % ASSET_TYPES.length];
-            const assetName = ASSET_NAMES[i % ASSET_NAMES.length];
-            const capacity = rand(5000, 30000) + ' gal';
-            const statusRoll = Math.random();
-            const status = statusRoll > 0.15 ? 'online' : statusRoll > 0.05 ? 'warning' : 'offline';
-            const label = status === 'online' ? 'Online' : status === 'warning' ? 'Degraded' : 'Offline';
-            const tr = document.createElement('tr');
-            tr.innerHTML = '<td>AG-' + String(item.id || i+1).padStart(4,'0') + '</td>' +
-              '<td>' + assetName + '</td>' +
-              '<td>' + type + '</td><td>' + capacity + '</td>' +
-              '<td><span class="badge ' + status + '">' + label + '</span></td>';
-            tbody.appendChild(tr);
-          });
-        })
-        .catch(() => {
-          document.getElementById('assets-body').innerHTML =
-            '<tr><td colspan="5" style="color:var(--red)">&#9888; Unable to reach Inventory Service</td></tr>';
-        });
-    }
-
-    function loadReadings() {
-      const tbody = document.getElementById('readings-body');
-      tbody.innerHTML = '';
-      for (let i = 0; i < 8; i++) {
-        const d = new Date(Date.now() - i * rand(30000, 120000));
-        const tr = document.createElement('tr');
-        tr.innerHTML = '<td>' + d.toLocaleTimeString() + '</td>' +
-          '<td>TK-' + rand(10000,99999) + '</td>' +
-          '<td>' + REGIONS[rand(0, REGIONS.length-1)] + '</td>' +
-          '<td>' + rand(15, 95) + '</td>' +
-          '<td><span class="badge online">OK</span></td>';
+    function loadLocations(){
+      var tbody=document.getElementById('locations-body');
+      tbody.innerHTML='';
+      LOCATIONS.forEach(function(loc){
+        var full=rand(0,loc.cageSize);
+        var reserved=full>0?rand(0,Math.min(3,full)):0;
+        full=full-reserved;
+        var empty=loc.cageSize-full-reserved;
+        var dots='';
+        for(var i=0;i<full;i++) dots+='<span class="tank-dot full"></span>';
+        for(var i=0;i<empty;i++) dots+='<span class="tank-dot empty"></span>';
+        for(var i=0;i<reserved;i++) dots+='<span class="tank-dot reserved"></span>';
+        var statusClass,statusLabel;
+        if(full===0){statusClass='out-of-stock';statusLabel='Out of Stock';}
+        else if(full<=3){statusClass='low-stock';statusLabel='Low Stock';}
+        else{statusClass='in-stock';statusLabel='In Stock';}
+        var tr=document.createElement('tr');
+        tr.className='loc-row';
+        tr.innerHTML='<td style="font-weight:600">'+loc.name+'</td>'+
+          '<td>'+loc.region+'</td>'+
+          '<td><div class="cage">'+dots+'</div></td>'+
+          '<td><div class="cage-counts">'+full+' Full / '+empty+' Empty / '+reserved+' Reserved</div></td>'+
+          '<td><span class="badge '+statusClass+'">'+statusLabel+'</span></td>'+
+          '<td>'+loc.dist+'</td>';
         tbody.appendChild(tr);
-      }
-    }
-
-    function loadHealth() {
-      const container = document.getElementById('health-cards');
-      container.innerHTML = '';
-      SERVICES.forEach(svc => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        if (svc.url) {
-          card.innerHTML = '<h3>' + svc.name + '</h3><div class="loading">Checking...</div>';
-          fetch(svc.url, { signal: AbortSignal.timeout(3000) })
-            .then(r => { card.innerHTML = '<h3>' + svc.name + '</h3><div class="metric green" style="font-size:1.2rem"><span class="dot green"></span> Healthy</div>'; })
-            .catch(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div class="metric" style="font-size:1.2rem;color:var(--red)"><span class="dot red"></span> Unreachable</div>'; });
-        } else {
-          card.innerHTML = '<h3>' + svc.name + '</h3><div class="metric" style="font-size:1.2rem;color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
-        }
-        container.appendChild(card);
       });
     }
 
-    updateClock(); updateMetrics(); loadAssets(); loadReadings(); loadHealth();
-    setInterval(updateClock, 1000);
-    setInterval(updateMetrics, 5000);
-    setInterval(loadReadings, 15000);
-    setInterval(loadHealth, 30000);
-    setInterval(loadAssets, 60000);
+    /* ---- usage history ---- */
+    function loadUsage(){
+      var tbody=document.getElementById('usage-body');
+      tbody.innerHTML='';
+      var level=rand(55,85);
+      for(var i=0;i<8;i++){
+        var d=new Date();d.setDate(d.getDate()-i*7);
+        var used=randF(8,32);
+        var avg=randF(1.2,4.5);
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td>'+d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+'</td>'+
+          '<td>'+used.toFixed(1)+' gal</td>'+
+          '<td>'+level+'%</td>'+
+          '<td>'+avg.toFixed(1)+' gal/day</td>';
+        tbody.appendChild(tr);
+        level=Math.max(10,level-rand(4,10));
+      }
+    }
+
+    /* ---- service health ---- */
+    var SERVICES=[
+      {name:'Inventory Service',url:'/api/inventory/health'},
+      {name:'Tank Monitor',url:'/api/tanks/health'},
+      {name:'Order Service',url:'/api/orders/health'},
+      {name:'MongoDB',url:null},
+      {name:'RabbitMQ',url:null}
+    ];
+
+    function loadHealth(){
+      var c=document.getElementById('health-cards');c.innerHTML='';
+      SERVICES.forEach(function(svc){
+        var card=document.createElement('div');card.className='card';
+        if(svc.url){
+          card.innerHTML='<h3>'+svc.name+'</h3><div class="loading">Checking&hellip;</div>';
+          fetch(svc.url,{signal:AbortSignal.timeout(3000)})
+            .then(function(){card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;font-weight:600;color:var(--green)"><span class="dot green"></span> Healthy</div>';})
+            .catch(function(){card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;font-weight:600;color:var(--red)"><span class="dot red"></span> Unreachable</div>';});
+        }else{
+          card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
+        }
+        c.appendChild(card);
+      });
+    }
+
+    /* ---- init ---- */
+    updateClock();updateMetrics();loadLocations();loadUsage();loadHealth();
+    setInterval(updateClock,1000);
+    setInterval(updateMetrics,5000);
+    setInterval(loadLocations,10000);
+    setInterval(loadUsage,30000);
+    setInterval(loadHealth,30000);
     </script>
     </body>
     </html>
@@ -727,9 +796,9 @@ data:
     <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AmeriGas Operations Console</title>
+    <title>AmeriGas Retail Cage Operations Center</title>
     <style>
-      :root { --bg: #0f172a; --card: #1e293b; --accent: #a78bfa; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee; --text: #e2e8f0; --muted: #94a3b8; }
+      :root { --bg: #0f172a; --card: #1e293b; --accent: #a78bfa; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee; --text: #e2e8f0; --muted: #94a3b8; --blue: #003DA5; --orange: #FF6900; --empty: #334155; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
       header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); border-bottom: 2px solid var(--accent); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
@@ -741,12 +810,39 @@ data:
       .dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
       .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
       main { padding: 1.5rem 2rem; }
+      .metrics-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+      @media (max-width: 1200px) { .metrics-row { grid-template-columns: repeat(3, 1fr); } }
+      @media (max-width: 700px) { .metrics-row { grid-template-columns: repeat(2, 1fr); } }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; margin-bottom: 1.5rem; }
+      .cage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; margin-bottom: 1.5rem; }
+      @media (max-width: 1100px) { .cage-grid { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 700px) { .cage-grid { grid-template-columns: 1fr; } }
       .card { background: var(--card); border-radius: 10px; padding: 1.2rem; border: 1px solid #334155; }
       .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .8rem; }
       .metric { font-size: 2rem; font-weight: 700; }
       .metric sub { font-size: .7rem; font-weight: 400; color: var(--muted); }
       .section-title { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .8rem; color: var(--accent); border-bottom: 1px solid #334155; padding-bottom: .4rem; }
+      .legend { display: flex; gap: 1.5rem; font-size: .8rem; color: var(--muted); margin-bottom: 1rem; }
+      .legend span { display: flex; align-items: center; gap: .3rem; }
+      .legend-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+      .tank-grid { display: grid; grid-template-columns: repeat(5, 18px); grid-template-rows: repeat(4, 18px); gap: 4px; margin: .6rem 0; }
+      .tank { width: 18px; height: 18px; border-radius: 50%; }
+      .tank.full { background: var(--blue); box-shadow: 0 0 4px rgba(0,61,165,0.5); }
+      .tank.empty { background: var(--empty); }
+      .tank.transit { background: var(--orange); box-shadow: 0 0 4px rgba(255,105,0,0.4); }
+      .cage-card { background: var(--card); border-radius: 10px; padding: 1rem; border: 1px solid #334155; }
+      .cage-card .loc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .4rem; }
+      .cage-card .loc-name { font-weight: 600; font-size: .95rem; }
+      .region-badge { padding: .1rem .45rem; border-radius: 4px; font-size: .65rem; font-weight: 600; background: #1e1b4b; color: var(--accent); }
+      .cage-card .summary { font-size: .78rem; color: var(--muted); margin: .3rem 0; }
+      .cage-card .detail-row { display: flex; justify-content: space-between; font-size: .75rem; color: var(--muted); margin-top: .3rem; }
+      .status-badge { padding: .15rem .5rem; border-radius: 4px; font-size: .72rem; font-weight: 600; display: inline-block; margin-top: .3rem; }
+      .status-badge.stocked { background: #064e3b; color: var(--green); }
+      .status-badge.low { background: #78350f; color: var(--amber); }
+      .status-badge.critical { background: #7f1d1d; color: var(--red); }
+      .status-badge.restock { background: #1e1b4b; color: var(--accent); }
+      @keyframes pulse-border { 0%,100% { border-color: var(--red); } 50% { border-color: transparent; } }
+      .cage-card.critical-loc { border: 2px solid var(--red); animation: pulse-border 1.5s infinite; }
       table { width: 100%; border-collapse: collapse; }
       th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid #334155; font-size: .85rem; }
       th { color: var(--muted); text-transform: uppercase; font-size: .75rem; letter-spacing: .06em; }
@@ -763,144 +859,229 @@ data:
       .log-box .err { color: var(--red); }
       @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
       .loading { animation: pulse 1.5s infinite; color: var(--muted); }
+      .demand-high { color: var(--red); font-weight: 600; }
+      .demand-normal { color: var(--green); }
+      .demand-low { color: var(--cyan); }
     </style>
     </head>
     <body>
     <header>
-      <h1>&#9881; AmeriGas Operations Console</h1>
+      <h1>&#9881;&#65039; AmeriGas &mdash; Retail Cage Operations Center</h1>
       <div class="status-bar">
         <div class="item"><span class="dot green"></span> Dispatcher Mode</div>
         <div class="item" id="clock"></div>
       </div>
     </header>
     <main>
-      <div class="grid">
-        <div class="card">
-          <h3>Delivery Queue</h3>
-          <div class="metric" style="color:var(--accent)" id="queue-depth">--</div>
-        </div>
-        <div class="card">
-          <h3>In-Transit Orders</h3>
-          <div class="metric" style="color:var(--cyan)" id="active-routes">--</div>
-        </div>
-        <div class="card">
-          <h3>Fleet Utilization</h3>
-          <div class="metric" style="color:var(--green)" id="fleet-util">--<sub> %</sub></div>
-        </div>
-        <div class="card">
-          <h3>Alerts (24h)</h3>
-          <div class="metric" style="color:var(--amber)" id="alert-count">--</div>
-        </div>
+      <div class="metrics-row">
+        <div class="card"><h3>Total Retail Locations</h3><div class="metric" style="color:var(--accent)" id="m-locations">--</div></div>
+        <div class="card"><h3>Tanks in Field</h3><div class="metric" style="color:var(--cyan)" id="m-tanks">--</div></div>
+        <div class="card"><h3>Avg Fill Rate</h3><div class="metric" style="color:var(--green)" id="m-fill">--<sub> %</sub></div></div>
+        <div class="card"><h3>Critical Locations</h3><div class="metric" style="color:var(--red)" id="m-critical">--</div></div>
+        <div class="card"><h3>Deliveries Today</h3><div class="metric" style="color:var(--amber)" id="m-deliveries">--</div></div>
+        <div class="card"><h3>Tomorrow Forecast</h3><div class="metric" style="font-size:1.3rem" id="m-forecast">--</div></div>
       </div>
 
-      <h2 class="section-title">&#128667; Active Orders</h2>
+      <h2 class="section-title">&#127978; Retail Cage Inventory Monitor</h2>
+      <div class="legend">
+        <span><span class="legend-dot" style="background:var(--blue)"></span> Full</span>
+        <span><span class="legend-dot" style="background:var(--empty)"></span> Empty</span>
+        <span><span class="legend-dot" style="background:var(--orange)"></span> In-Transit</span>
+      </div>
+      <div class="cage-grid" id="cage-grid"></div>
+
+      <h2 class="section-title">&#128197; Delivery Schedule &amp; Priority Queue</h2>
       <div class="card" style="overflow-x:auto">
         <table>
-          <thead><tr><th>Order ID</th><th>Type</th><th>Region</th><th>Priority</th><th>Status</th><th>Assigned To</th></tr></thead>
-          <tbody id="dispatch-body"></tbody>
+          <thead><tr><th>Location</th><th>Full / Total</th><th>Empty</th><th>Daily Turnover</th><th>Est. Stockout</th><th>Priority</th><th>Scheduled Delivery</th></tr></thead>
+          <tbody id="delivery-body"></tbody>
         </table>
       </div>
 
-      <h2 class="section-title">&#127981; Fleet &amp; Storage Inventory</h2>
+      <h2 class="section-title">&#127777;&#65039; Demand Forecast</h2>
       <div class="card" style="overflow-x:auto">
         <table>
-          <thead><tr><th>Asset ID</th><th>Name</th><th>Type</th><th>Capacity</th><th>Status</th></tr></thead>
-          <tbody id="assets-body"><tr><td colspan="5" class="loading">Loading assets...</td></tr></tbody>
+          <thead><tr><th>Day</th><th>High Temp (&deg;F)</th><th>Demand Level</th><th>Est. Tanks Needed</th><th>Notes</th></tr></thead>
+          <tbody id="forecast-body"></tbody>
         </table>
       </div>
 
-      <h2 class="section-title">&#128195; Operations Log</h2>
+      <h2 class="section-title">&#128223; Operations Log</h2>
       <div class="log-box" id="ops-log"></div>
 
-      <h2 class="section-title">&#128506; Platform Health</h2>
+      <h2 class="section-title">&#128295; Platform Health</h2>
       <div class="grid" id="health-grid"></div>
     </main>
-    <div class="footer">AmeriGas &mdash; Dispatch Operations Console &mdash; Azure SRE Agent Demo Lab</div>
+    <div class="footer">AmeriGas &mdash; Retail Cage Operations Center &mdash; Azure SRE Agent Demo Lab</div>
 
     <script>
-    const REGIONS = ['PA - East', 'PA - Central', 'NJ - North', 'NJ - South', 'DE - Statewide'];
-    const DISPATCH_TYPES = ['Scheduled Fill', 'Emergency Refill', 'New Install', 'Tank Swap', 'Bulk Transfer', 'Cylinder Drop', 'Safety Check'];
-    const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
-    const ASSET_TYPES = ['Bulk Storage', 'Delivery Truck', 'Customer Tank', 'Filling Station', 'Cylinder Rack', 'Distribution Center'];
-    const ASSET_NAMES = ['King of Prussia Depot', 'Allentown Bulk Terminal', 'Route 422 Fill Station', 'Valley Forge Distribution', 'Exton Cylinder Exchange', 'Lansdale Propane Center', 'Pottstown Supply Hub', 'Collegeville Fleet Yard', 'Norristown Fill Plant', 'Malvern Bulk Storage'];
+    const LOCATIONS = [
+      { name: 'Home Depot KoP', region: 'PA-East' },
+      { name: 'Walmart Collegeville', region: 'PA-East' },
+      { name: "Lowe's Exton", region: 'PA-East' },
+      { name: 'ACE Lansdale', region: 'PA-East' },
+      { name: 'Wawa Wayne', region: 'PA-East' },
+      { name: 'ShopRite Norristown', region: 'PA-East' },
+      { name: 'Giant Pottstown', region: 'PA-Central' },
+      { name: 'Costco Plymouth Meeting', region: 'PA-East' },
+      { name: 'Home Depot Allentown', region: 'PA-Central' },
+      { name: "BJ's Whitehall", region: 'PA-Central' },
+      { name: 'Tractor Supply Quakertown', region: 'PA-Central' },
+      { name: 'Walmart Easton', region: 'PA-Central' },
+    ];
+
+    const DELIVERY_TIMES = ['Tomorrow 6AM', 'Tomorrow 2PM', 'Thu 8AM', 'Thu 2PM', 'Fri 6AM', 'Fri 10AM', 'Sat 7AM', 'None Scheduled'];
+    const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const FORECAST_NOTES = [
+      'Cold snap expected', 'Steady demand', 'Weekend BBQ season boost',
+      'Mild temperatures', 'Storm front approaching', 'Holiday weekend surge',
+      'Below-average temps forecast', 'Seasonal transition period',
+      'Post-storm recovery demand', 'Normal consumption pattern',
+    ];
+
+    let locationData = [];
 
     function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+    function randF(min, max) { return +(min + Math.random() * (max - min)).toFixed(1); }
 
     function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
 
+    function generateLocationData() {
+      locationData = LOCATIONS.map(loc => {
+        const full = rand(2, 18);
+        const transit = rand(0, 3);
+        const empty = 20 - full - transit;
+        const turnover = randF(1.5, 5.0);
+        const stockoutHrs = full > 0 ? +(full / (turnover / 24)).toFixed(1) : 0;
+        const nextDelivery = (full <= 6 && transit > 0) ? DELIVERY_TIMES[rand(0, 5)] :
+                              full <= 10 ? DELIVERY_TIMES[rand(0, 6)] : DELIVERY_TIMES[rand(5, 7)];
+        return { ...loc, full, empty, transit, turnover, stockoutHrs, nextDelivery };
+      });
+    }
+
     function updateMetrics() {
-      document.getElementById('queue-depth').textContent = rand(5, 42);
-      document.getElementById('active-routes').textContent = rand(3, 18);
-      document.getElementById('fleet-util').innerHTML = (72 + Math.random() * 22).toFixed(1) + '<sub> %</sub>';
-      document.getElementById('alert-count').textContent = rand(2, 15);
+      const totalLocs = rand(42, 48);
+      const totalTanks = rand(680, 720);
+      const critCount = locationData.filter(l => l.full <= 3).length || rand(2, 6);
+      const avgFill = locationData.length ? (locationData.reduce((s, l) => s + l.full, 0) / (locationData.length * 20) * 100).toFixed(1) : randF(65, 85);
+      const deliveries = rand(8, 18);
+      const temps = [28, 35, 42, 55, 62, 70, 78];
+      const tomorrowTemp = temps[rand(0, temps.length - 1)];
+      const forecast = tomorrowTemp <= 35 ? 'High Demand' : tomorrowTemp <= 55 ? 'Normal' : 'Light';
+      const fColor = forecast === 'High Demand' ? 'var(--red)' : forecast === 'Normal' ? 'var(--green)' : 'var(--cyan)';
+
+      document.getElementById('m-locations').textContent = totalLocs;
+      document.getElementById('m-tanks').textContent = totalTanks;
+      document.getElementById('m-fill').innerHTML = avgFill + '<sub> %</sub>';
+      document.getElementById('m-critical').textContent = critCount;
+      document.getElementById('m-deliveries').textContent = deliveries;
+      document.getElementById('m-forecast').innerHTML = '<span style="color:' + fColor + '">' + forecast + '</span>';
     }
 
-    function loadDispatches() {
-      const tbody = document.getElementById('dispatch-body');
+    function renderCageGrid() {
+      const container = document.getElementById('cage-grid');
+      container.innerHTML = '';
+      locationData.forEach(loc => {
+        const card = document.createElement('div');
+        const isCritical = loc.full <= 3;
+        card.className = 'cage-card' + (isCritical ? ' critical-loc' : '');
+
+        let statusBadge, statusClass;
+        if (loc.full > 10) { statusBadge = '&#9989; Stocked'; statusClass = 'stocked'; }
+        else if (loc.full >= 4) { statusBadge = '&#9888;&#65039; Low Stock'; statusClass = 'low'; }
+        else if (loc.transit > 0 && loc.full <= 6) { statusBadge = '&#128230; Restock Scheduled'; statusClass = 'restock'; }
+        else { statusBadge = '&#128308; Critical'; statusClass = 'critical'; }
+
+        let tanks = '';
+        let idx = 0;
+        for (let r = 0; r < 4; r++) {
+          for (let c = 0; c < 5; c++) {
+            let cls = 'tank ';
+            if (idx < loc.full) cls += 'full';
+            else if (idx < loc.full + loc.transit) cls += 'transit';
+            else cls += 'empty';
+            tanks += '<div class="' + cls + '"></div>';
+            idx++;
+          }
+        }
+
+        card.innerHTML =
+          '<div class="loc-header"><span class="loc-name">' + loc.name + '</span><span class="region-badge">' + loc.region + '</span></div>' +
+          '<div class="tank-grid">' + tanks + '</div>' +
+          '<div class="summary">' + loc.full + ' Full | ' + loc.empty + ' Empty | ' + loc.transit + ' In-Transit</div>' +
+          '<span class="status-badge ' + statusClass + '">' + statusBadge + '</span>' +
+          '<div class="detail-row"><span>Next: ' + loc.nextDelivery + '</span><span>~' + loc.turnover + ' tanks/day</span></div>';
+        container.appendChild(card);
+      });
+    }
+
+    function renderDeliveryQueue() {
+      const tbody = document.getElementById('delivery-body');
       tbody.innerHTML = '';
-      const count = rand(5, 10);
-      for (let i = 0; i < count; i++) {
-        const priority = PRIORITIES[rand(0, 3)];
-        const pclass = priority === 'Critical' ? 'offline' : priority === 'High' ? 'warning' : 'online';
-        const statuses = ['Processing', 'Queued', 'Executing', 'Completed'];
-        const status = statuses[rand(0, 3)];
-        const sclass = status === 'Completed' ? 'online' : status === 'Executing' ? 'processing' : 'warning';
+      const sorted = [...locationData].sort((a, b) => a.stockoutHrs - b.stockoutHrs).slice(0, 10);
+      sorted.forEach(loc => {
+        let prioLabel, prioClass;
+        if (loc.stockoutHrs < 12) { prioLabel = 'URGENT'; prioClass = 'offline'; }
+        else if (loc.stockoutHrs < 24) { prioLabel = 'HIGH'; prioClass = 'warning'; }
+        else { prioLabel = 'NORMAL'; prioClass = 'online'; }
+        const schedHtml = loc.nextDelivery === 'None Scheduled'
+          ? '<span style="color:var(--red);font-weight:600">UNSCHEDULED</span>'
+          : loc.nextDelivery;
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td>DEL-' + rand(10000, 99999) + '</td>' +
-          '<td>' + DISPATCH_TYPES[rand(0, DISPATCH_TYPES.length - 1)] + '</td>' +
-          '<td>' + REGIONS[rand(0, REGIONS.length - 1)] + '</td>' +
-          '<td><span class="badge ' + pclass + '">' + priority + '</span></td>' +
-          '<td><span class="badge ' + sclass + '">' + status + '</span></td>' +
-          '<td>Team-' + rand(1, 20) + '</td>';
+        tr.innerHTML =
+          '<td>' + loc.name + '</td>' +
+          '<td>' + loc.full + ' / 20</td>' +
+          '<td>' + loc.empty + '</td>' +
+          '<td>~' + loc.turnover + '/day</td>' +
+          '<td>' + loc.stockoutHrs + 'h</td>' +
+          '<td><span class="badge ' + prioClass + '">' + prioLabel + '</span></td>' +
+          '<td>' + schedHtml + '</td>';
         tbody.appendChild(tr);
-      }
+      });
     }
 
-    function loadAssets() {
-      fetch('/api/inventory/')
-        .then(r => r.json())
-        .then(items => {
-          const tbody = document.getElementById('assets-body');
-          tbody.innerHTML = '';
-          items.forEach((item, i) => {
-            const type = ASSET_TYPES[i % ASSET_TYPES.length];
-            const assetName = ASSET_NAMES[i % ASSET_NAMES.length];
-            const capacity = rand(5000, 30000) + ' gal';
-            const statusRoll = Math.random();
-            const status = statusRoll > 0.1 ? 'online' : statusRoll > 0.03 ? 'warning' : 'offline';
-            const label = status === 'online' ? 'Running' : status === 'warning' ? 'Degraded' : 'Offline';
-            const tr = document.createElement('tr');
-            tr.innerHTML = '<td>AG-' + String(item.id || i + 1).padStart(4, '0') + '</td>' +
-              '<td>' + assetName + '</td>' +
-              '<td>' + type + '</td><td>' + capacity + '</td>' +
-              '<td><span class="badge ' + status + '">' + label + '</span></td>';
-            tbody.appendChild(tr);
-          });
-        })
-        .catch(() => {
-          document.getElementById('assets-body').innerHTML =
-            '<tr><td colspan="5" style="color:var(--red)">&#9888; Inventory Service unavailable</td></tr>';
-        });
+    function renderForecast() {
+      const tbody = document.getElementById('forecast-body');
+      tbody.innerHTML = '';
+      DAYS.forEach((day, i) => {
+        const temp = rand(22, 82);
+        let level, levelClass;
+        if (temp <= 35) { level = 'High'; levelClass = 'demand-high'; }
+        else if (temp <= 60) { level = 'Normal'; levelClass = 'demand-normal'; }
+        else { level = 'Low'; levelClass = 'demand-low'; }
+        const est = level === 'High' ? rand(50, 80) : level === 'Normal' ? rand(25, 50) : rand(10, 25);
+        const note = FORECAST_NOTES[rand(0, FORECAST_NOTES.length - 1)];
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + day + '</td>' +
+          '<td>' + temp + '&deg;F</td>' +
+          '<td><span class="' + levelClass + '">' + level + '</span></td>' +
+          '<td>' + est + '</td>' +
+          '<td style="color:var(--muted);font-size:.8rem">' + note + '</td>';
+        tbody.appendChild(tr);
+      });
     }
 
     const LOG_MESSAGES = [
-      { level: 'info', msg: 'Delivery DEL-{id} completed for {zone}' },
-      { level: 'info', msg: 'Tank batch processed: {n} readings ingested' },
-      { level: 'info', msg: 'Order processor adjusted fulfillment for {zone}' },
-      { level: 'warn', msg: 'High latency detected on tank-monitor ({n}ms)' },
-      { level: 'warn', msg: 'Queue depth elevated: {n} pending orders' },
-      { level: 'info', msg: 'Asset AG-{id} health check passed' },
+      { level: 'info', msg: 'Cage restocked at Home Depot KoP: +20 tanks' },
+      { level: 'warn', msg: 'Low stock alert: ACE Lansdale down to {n} full tanks' },
+      { level: 'info', msg: 'Delivery truck T-{id} en route to Walmart Collegeville (ETA {n}min)' },
+      { level: 'info', msg: 'Daily cage audit complete: {n} locations below threshold' },
+      { level: 'warn', msg: 'Temperature drop forecast — demand increase expected Thu-Fri' },
+      { level: 'info', msg: 'Restock priority recalculated: {n} urgent locations' },
+      { level: 'info', msg: 'Cage swap completed at Giant Pottstown: 18 full tanks placed' },
       { level: 'err',  msg: 'Connection timeout to MongoDB replica' },
-      { level: 'info', msg: 'Tank fill levels normalized across fleet' },
-      { level: 'warn', msg: 'Delivery backlog growing in {zone}' },
+      { level: 'warn', msg: 'Costco Plymouth Meeting cage at capacity — hold deliveries' },
       { level: 'info', msg: 'RabbitMQ consumer reconnected successfully' },
+      { level: 'info', msg: "Lowe's Exton cage inspection passed — all seals intact" },
+      { level: 'warn', msg: 'Delivery T-{id} delayed: traffic on I-76 ({n}min ETA slip)' },
     ];
 
     function addLogEntry() {
       const box = document.getElementById('ops-log');
       const tmpl = LOG_MESSAGES[rand(0, LOG_MESSAGES.length - 1)];
       const ts = new Date().toLocaleTimeString();
-      const text = tmpl.msg.replace('{id}', rand(1000, 9999)).replace('{zone}', REGIONS[rand(0, 4)]).replace('{n}', rand(10, 500));
+      const text = tmpl.msg.replace('{id}', rand(1000, 9999)).replace('{n}', rand(2, 60));
       const line = document.createElement('div');
       line.innerHTML = '<span class="ts">[' + ts + ']</span> <span class="' + tmpl.level + '">[' + tmpl.level.toUpperCase() + ']</span> ' + text;
       box.prepend(line);
@@ -932,14 +1113,17 @@ data:
       });
     }
 
-    updateClock(); updateMetrics(); loadDispatches(); loadAssets(); loadHealth();
+    function refreshCages() { generateLocationData(); renderCageGrid(); renderDeliveryQueue(); }
+
+    generateLocationData();
+    updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); loadHealth();
     for (let i = 0; i < 10; i++) addLogEntry();
     setInterval(updateClock, 1000);
     setInterval(updateMetrics, 5000);
-    setInterval(loadDispatches, 10000);
-    setInterval(addLogEntry, 3000);
+    setInterval(refreshCages, 10000);
+    setInterval(addLogEntry, 4000);
     setInterval(loadHealth, 30000);
-    setInterval(loadAssets, 60000);
+    setInterval(renderForecast, 60000);
     </script>
     </body>
     </html>
