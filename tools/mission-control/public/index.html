@@ -117,6 +117,57 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 
 /* ── Connection Banner ─────────────────────────────────── */
 #conn-banner{display:none;background:var(--red);color:#fff;text-align:center;padding:6px;font-size:.82rem;font-weight:600}
+
+/* ── Infrastructure Grid ──────────────────────────────── */
+.infra-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.75rem}
+.infra-card{background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:1rem;display:flex;flex-direction:column;gap:.6rem}
+.infra-card h3{font-size:1rem;margin:0}
+.infra-desc{font-size:.78rem;color:var(--text-dim);margin:0}
+.infra-form{display:flex;flex-direction:column;gap:.5rem}
+.infra-form label{font-size:.78rem;color:var(--text-dim);display:flex;flex-direction:column;gap:3px}
+.infra-form select,.infra-form input[type="text"]{background:var(--card);border:1px solid var(--card-border);color:var(--text);padding:6px 10px;border-radius:5px;font-size:.85rem;font-family:inherit}
+.infra-form select:focus,.infra-form input:focus{outline:none;border-color:var(--cyan)}
+.infra-checks{display:flex;gap:1rem}
+.infra-checks label{flex-direction:row;align-items:center;gap:6px;cursor:pointer}
+.infra-checks input[type="checkbox"]{accent-color:var(--orange)}
+.infra-btn{padding:8px 16px;border:none;border-radius:6px;font-weight:700;font-size:.85rem;cursor:pointer;transition:background .2s,transform .1s;width:100%}
+.infra-btn:active{transform:scale(.97)}
+.infra-btn:disabled{opacity:.5;cursor:not-allowed}
+.infra-btn.deploy{background:var(--green);color:#000}
+.infra-btn.deploy:hover{background:#2ea043}
+.infra-btn.validate{background:var(--cyan);color:#000}
+.infra-btn.validate:hover{background:#4da6ff}
+.infra-btn.destroy{background:var(--red);color:#fff}
+.infra-btn.destroy:hover{background:#da3633}
+.destroy-card{border-color:rgba(248,81,73,.3)}
+
+/* ── Terminal Output ──────────────────────────────────── */
+.terminal-output{background:#000;color:#c9d1d9;font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:.8rem;padding:.75rem;border-radius:6px;max-height:500px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;line-height:1.5}
+.terminal-badge{font-size:.7rem;padding:2px 8px;border-radius:4px;margin-left:.5rem;font-weight:600}
+.terminal-badge.running{background:rgba(210,153,34,.2);color:var(--yellow)}
+.terminal-badge.completed{background:rgba(63,185,80,.15);color:var(--green)}
+.terminal-badge.failed{background:rgba(248,81,73,.15);color:var(--red)}
+.terminal-badge.cancelled{background:rgba(139,148,158,.15);color:var(--text-dim)}
+.terminal-badge.idle{background:rgba(139,148,158,.1);color:var(--text-dim)}
+.terminal-close-btn{background:none;border:none;color:var(--text-dim);font-size:1.1rem;cursor:pointer;margin-left:auto;padding:2px 6px}
+.terminal-close-btn:hover{color:var(--text)}
+.terminal-cancel-btn{background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;font-size:.75rem;font-weight:600;cursor:pointer;margin-left:.5rem}
+.terminal-cancel-btn:hover{background:#da3633}
+#terminal-panel h2{display:flex;align-items:center}
+
+/* ── Modal ────────────────────────────────────────────── */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:200}
+.modal{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:1.5rem;max-width:480px;width:90%}
+.modal h3{margin:0 0 .8rem;font-size:1.1rem}
+.modal p{font-size:.9rem;color:var(--text-dim);margin:.4rem 0}
+.modal code{background:var(--bg);padding:2px 8px;border-radius:4px;font-size:.85rem}
+.modal-buttons{display:flex;gap:.6rem;justify-content:flex-end;margin-top:1.2rem}
+.log-modal{max-width:700px}
+.log-content{background:#000;color:#c9d1d9;font-family:'Cascadia Code','Consolas',monospace;font-size:.78rem;padding:.75rem;border-radius:6px;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-word}
+
+/* ── Pod Log Link ─────────────────────────────────────── */
+.pod-link{color:var(--cyan);cursor:pointer;text-decoration:none}
+.pod-link:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -183,6 +234,94 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     </div>
   </div>
 
+  <!-- Infrastructure Operations -->
+  <div class="panel">
+    <h2>🏗️ Infrastructure</h2>
+    <div class="infra-grid">
+      <!-- Deploy Card -->
+      <div class="infra-card">
+        <h3>🚀 Deploy</h3>
+        <p class="infra-desc">Deploy Azure infrastructure (AKS, ACR, Key Vault, SRE Agent)</p>
+        <div class="infra-form">
+          <label>Region
+            <select id="deploy-location">
+              <option value="eastus2" selected>East US 2</option>
+              <option value="swedencentral">Sweden Central</option>
+              <option value="australiaeast">Australia East</option>
+            </select>
+          </label>
+          <label>Workload Name
+            <input type="text" id="deploy-workload" value="srelab" maxlength="10" placeholder="srelab">
+          </label>
+          <div class="infra-checks">
+            <label><input type="checkbox" id="deploy-skip-rbac"> Skip RBAC</label>
+            <label><input type="checkbox" id="deploy-skip-sre"> Skip SRE Agent</label>
+          </div>
+        </div>
+        <button class="infra-btn deploy" id="btn-deploy" onclick="startDeploy()">🚀 Deploy Infrastructure</button>
+      </div>
+
+      <!-- Validate Card -->
+      <div class="infra-card">
+        <h3>🔍 Validate</h3>
+        <p class="infra-desc">Run health checks on the deployed infrastructure</p>
+        <div class="infra-form">
+          <label>Resource Group
+            <input type="text" id="validate-rg" value="rg-srelab-eastus2" placeholder="rg-srelab-eastus2">
+          </label>
+        </div>
+        <button class="infra-btn validate" id="btn-validate" onclick="startValidate()">🔍 Validate Deployment</button>
+      </div>
+
+      <!-- Destroy Card -->
+      <div class="infra-card destroy-card">
+        <h3>🗑️ Destroy</h3>
+        <p class="infra-desc">Permanently delete all Azure resources</p>
+        <div class="infra-form">
+          <label>Resource Group
+            <input type="text" id="destroy-rg" value="rg-srelab-eastus2" placeholder="rg-srelab-eastus2">
+          </label>
+        </div>
+        <button class="infra-btn destroy" id="btn-destroy" onclick="confirmDestroy()">🗑️ Destroy Infrastructure</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Terminal Output -->
+  <div class="panel" id="terminal-panel" style="display:none">
+    <h2>
+      <span>📟 Terminal Output</span>
+      <span id="terminal-status" class="terminal-badge">idle</span>
+      <button class="terminal-close-btn" onclick="closeTerminal()">✕</button>
+      <button class="terminal-cancel-btn" id="btn-cancel-op" onclick="cancelOperation()" style="display:none">⏹ Cancel</button>
+    </h2>
+    <div id="terminal-output" class="terminal-output"></div>
+  </div>
+
+</div>
+
+<!-- Destroy Confirmation Modal -->
+<div id="destroy-modal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3>⚠️ Confirm Destruction</h3>
+    <p>This will <strong>permanently delete</strong> all resources in <code id="destroy-modal-rg"></code>.</p>
+    <p>This action cannot be undone.</p>
+    <div class="modal-buttons">
+      <button class="fix-btn secondary" onclick="dismissDestroyModal()">Cancel</button>
+      <button class="infra-btn destroy" onclick="executeDestroy()">🗑️ Yes, Destroy</button>
+    </div>
+  </div>
+</div>
+
+<!-- Pod Log Modal -->
+<div id="log-modal" class="modal-overlay" style="display:none">
+  <div class="modal log-modal">
+    <h3>📋 Pod Logs: <code id="log-modal-pod"></code></h3>
+    <pre id="log-modal-content" class="log-content">Loading...</pre>
+    <div class="modal-buttons">
+      <button class="fix-btn secondary" onclick="closeLogModal()">Close</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast-container"></div>
@@ -319,7 +458,7 @@ async function refreshPods() {
     const tbody = document.getElementById('pod-tbody');
     tbody.innerHTML = pods.map(p => `
       <tr class="status-${statusClass(p.status)}">
-        <td>${p.name}</td>
+        <td><a class="pod-link" onclick="showPodLogs('${p.name}')">${p.name}</a></td>
         <td><span class="badge ${badgeClass(p.status)}">${p.status}</span></td>
         <td>${p.ready}</td>
         <td>${p.restarts}</td>
@@ -485,6 +624,203 @@ setInterval(refreshEvents, 10000);
 setInterval(refreshServices, 15000);
 setInterval(refreshDeployments, 10000);
 setInterval(refreshNodes, 30000);
+
+/* ── Infrastructure Operations ────────────────────────── */
+let currentOpId = null;
+let currentEventSource = null;
+
+function autoDetectRG() {
+  const rgEl = document.getElementById('rg-name');
+  if (rgEl && rgEl.textContent && rgEl.textContent !== '–' && rgEl.textContent !== 'Not found') {
+    document.getElementById('validate-rg').value = rgEl.textContent;
+    document.getElementById('destroy-rg').value = rgEl.textContent;
+  }
+}
+
+// Update the deploy-workload and location when cluster-info arrives to keep RG inputs in sync
+const origRefreshClusterInfo = refreshClusterInfo;
+refreshClusterInfo = async function() {
+  await origRefreshClusterInfo();
+  autoDetectRG();
+};
+
+function showTerminal() {
+  document.getElementById('terminal-panel').style.display = '';
+  document.getElementById('terminal-panel').scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeTerminal() {
+  document.getElementById('terminal-panel').style.display = 'none';
+  if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+}
+
+function setTerminalStatus(status) {
+  const badge = document.getElementById('terminal-status');
+  badge.textContent = status;
+  badge.className = 'terminal-badge ' + status;
+  const cancelBtn = document.getElementById('btn-cancel-op');
+  cancelBtn.style.display = status === 'running' ? '' : 'none';
+}
+
+function streamOperation(opId) {
+  currentOpId = opId;
+  const out = document.getElementById('terminal-output');
+  out.textContent = '';
+  setTerminalStatus('running');
+  showTerminal();
+
+  if (currentEventSource) currentEventSource.close();
+  const es = new EventSource('/api/operations/' + opId + '/stream');
+  currentEventSource = es;
+
+  es.onmessage = (e) => {
+    const entry = JSON.parse(e.data);
+    const span = document.createElement('span');
+    if (entry.stream === 'stderr') span.style.color = '#f85149';
+    else if (entry.stream === 'system') span.style.color = '#58a6ff';
+    span.textContent = entry.text;
+    out.appendChild(span);
+    out.scrollTop = out.scrollHeight;
+  };
+
+  es.addEventListener('done', (e) => {
+    const info = JSON.parse(e.data);
+    setTerminalStatus(info.status);
+    es.close();
+    currentEventSource = null;
+    currentOpId = null;
+    // re-enable buttons
+    setInfraButtonsEnabled(true);
+    // refresh everything
+    refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
+  });
+
+  es.onerror = () => {
+    setTerminalStatus('failed');
+    es.close();
+    currentEventSource = null;
+    currentOpId = null;
+    setInfraButtonsEnabled(true);
+  };
+}
+
+function setInfraButtonsEnabled(enabled) {
+  ['btn-deploy','btn-destroy','btn-validate'].forEach(id => {
+    document.getElementById(id).disabled = !enabled;
+  });
+}
+
+async function startDeploy() {
+  const location = document.getElementById('deploy-location').value;
+  const workloadName = document.getElementById('deploy-workload').value || 'srelab';
+  const skipRbac = document.getElementById('deploy-skip-rbac').checked;
+  const skipSreAgent = document.getElementById('deploy-skip-sre').checked;
+
+  setInfraButtonsEnabled(false);
+  try {
+    const r = await fetch('/api/deploy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location, workloadName, skipRbac, skipSreAgent }),
+    });
+    const data = await r.json();
+    if (!r.ok) { toast(data.error || 'Deploy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
+    toast('Deployment started');
+    streamOperation(data.id);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+    setInfraButtonsEnabled(true);
+  }
+}
+
+function confirmDestroy() {
+  const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
+  document.getElementById('destroy-modal-rg').textContent = rg;
+  document.getElementById('destroy-modal').style.display = '';
+}
+
+function dismissDestroyModal() {
+  document.getElementById('destroy-modal').style.display = 'none';
+}
+
+async function executeDestroy() {
+  dismissDestroyModal();
+  const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
+  setInfraButtonsEnabled(false);
+  try {
+    const r = await fetch('/api/destroy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceGroupName: rg }),
+    });
+    const data = await r.json();
+    if (!r.ok) { toast(data.error || 'Destroy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
+    toast('Destroy operation started');
+    streamOperation(data.id);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+    setInfraButtonsEnabled(true);
+  }
+}
+
+async function startValidate() {
+  const rg = document.getElementById('validate-rg').value || 'rg-srelab-eastus2';
+  setInfraButtonsEnabled(false);
+  try {
+    const r = await fetch('/api/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceGroupName: rg }),
+    });
+    const data = await r.json();
+    if (!r.ok) { toast(data.error || 'Validate failed to start', 'error'); setInfraButtonsEnabled(true); return; }
+    toast('Validation started');
+    streamOperation(data.id);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+    setInfraButtonsEnabled(true);
+  }
+}
+
+async function cancelOperation() {
+  if (!currentOpId) return;
+  try {
+    await fetch('/api/operations/' + currentOpId, { method: 'DELETE' });
+    toast('Operation cancelled');
+  } catch (e) {
+    toast('Cancel failed: ' + e.message, 'error');
+  }
+}
+
+/* ── Pod Log Viewer ───────────────────────────────────── */
+async function showPodLogs(podName) {
+  document.getElementById('log-modal-pod').textContent = podName;
+  document.getElementById('log-modal-content').textContent = 'Loading...';
+  document.getElementById('log-modal').style.display = '';
+  try {
+    const r = await fetch('/api/pods/' + encodeURIComponent(podName) + '/logs');
+    const data = await r.json();
+    document.getElementById('log-modal-content').textContent = data.logs || data.error || 'No logs available';
+  } catch (e) {
+    document.getElementById('log-modal-content').textContent = 'Error: ' + e.message;
+  }
+}
+
+function closeLogModal() {
+  document.getElementById('log-modal').style.display = 'none';
+}
+
+/* ── Resource Group Auto-Sync ─────────────────────────── */
+document.getElementById('deploy-workload').addEventListener('input', syncRGFields);
+document.getElementById('deploy-location').addEventListener('change', syncRGFields);
+
+function syncRGFields() {
+  const wl = document.getElementById('deploy-workload').value || 'srelab';
+  const loc = document.getElementById('deploy-location').value;
+  const rg = 'rg-' + wl + '-' + loc;
+  document.getElementById('validate-rg').value = rg;
+  document.getElementById('destroy-rg').value = rg;
+}
 </script>
 </body>
 </html>
