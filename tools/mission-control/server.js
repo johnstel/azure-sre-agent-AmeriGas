@@ -75,10 +75,21 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public')));
 
+// On Windows, az is az.cmd — execFile can't resolve .cmd wrappers directly.
+// Use cmd.exe /c to run commands that may be .cmd/.bat on Windows.
+const IS_WIN = process.platform === 'win32';
+
+function runCommand(cmd, args, opts = {}) {
+  if (IS_WIN) {
+    return execFileAsync(process.env.ComSpec || 'cmd.exe', ['/c', cmd, ...args], opts);
+  }
+  return execFileAsync(cmd, args, opts);
+}
+
 // Helper to run kubectl commands
 async function kubectl(...args) {
   try {
-    const { stdout } = await execFileAsync('kubectl', args, { timeout: 15000 });
+    const { stdout } = await runCommand('kubectl', args, { timeout: 15000 });
     return stdout;
   } catch (err) {
     throw new Error(err.stderr || err.message);
@@ -88,7 +99,7 @@ async function kubectl(...args) {
 // Helper to run az commands
 async function az(...args) {
   try {
-    const { stdout } = await execFileAsync('az', args, { timeout: 30000 });
+    const { stdout } = await runCommand('az', args, { timeout: 30000 });
     return stdout;
   } catch (err) {
     throw new Error(err.stderr || err.message);
@@ -166,7 +177,7 @@ app.get('/api/events', async (req, res) => {
 app.get('/api/cluster-info', async (req, res) => {
   try {
     const [context, accountRaw, rgRaw] = await Promise.all([
-      kubectl('config', 'current-context').then(s => s.trim()),
+      kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster'),
       az('account', 'show', '-o', 'json').catch(() => '{}'),
       az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
     ]);
@@ -358,13 +369,13 @@ app.get('/api/pods/:name/logs', async (req, res) => {
 async function preflight() {
   const checks = [];
   try {
-    await execFileAsync('kubectl', ['version', '--client', '--short'], { timeout: 5000 });
+    await runCommand('kubectl', ['version', '--client', '--short'], { timeout: 15000 });
     checks.push('  ✅ kubectl available');
   } catch {
     checks.push('  ⚠️  kubectl not found — cluster features will fail');
   }
   try {
-    await execFileAsync('az', ['version', '-o', 'none'], { timeout: 5000 });
+    await runCommand('az', ['version', '-o', 'none'], { timeout: 15000 });
     checks.push('  ✅ az CLI available');
   } catch {
     checks.push('  ⚠️  az CLI not found — Azure info will be unavailable');
