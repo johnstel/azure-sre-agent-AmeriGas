@@ -85,6 +85,7 @@ param tags object = {
   environment: 'sandbox'
   managedBy: 'bicep'
   purpose: 'propane-sre-demo'
+  SecurityControl: 'Ignore'
 }
 
 // =============================================================================

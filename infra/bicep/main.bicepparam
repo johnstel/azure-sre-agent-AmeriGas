@@ -34,4 +34,5 @@ param tags = {
   managedBy: 'bicep'
   purpose: 'propane-sre-demo'
   costCenter: 'propane-demo-lab'
+  SecurityControl: 'Ignore'
 }
