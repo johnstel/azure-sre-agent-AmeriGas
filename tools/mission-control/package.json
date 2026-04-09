@@ -1,0 +1,12 @@
+{
+  "name": "amerigas-mission-control",
+  "version": "1.0.0",
+  "description": "AmeriGas Propane SRE Demo Lab - Mission Control",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

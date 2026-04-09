@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AmeriGas Propane — Mission Control</title>
+<style>
+/* ── Reset & Base ──────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --blue:#003DA5;--blue-dark:#00234f;--orange:#FF6900;--orange-dim:#cc5500;
+  --bg:#0d1117;--card:#161b22;--card-border:#30363d;--text:#e6edf3;
+  --text-dim:#8b949e;--green:#3fb950;--red:#f85149;--yellow:#d29922;
+  --cyan:#58a6ff;
+}
+html{font-size:14px}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+/* ── Header ────────────────────────────────────────────── */
+header{background:linear-gradient(135deg,var(--blue-dark),var(--blue));padding:0.8rem 1.5rem;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid var(--orange);position:sticky;top:0;z-index:100}
+header .brand{display:flex;align-items:center;gap:.6rem;font-size:1.35rem;font-weight:700;letter-spacing:.5px}
+header .brand span.fire{font-size:1.6rem}
+header .meta{display:flex;align-items:center;gap:1rem;font-size:.85rem;color:rgba(255,255,255,.7)}
+header .meta .ctx{background:rgba(255,255,255,.12);padding:3px 10px;border-radius:4px;font-family:monospace;font-size:.8rem}
+.sre-btn{background:var(--orange);color:#fff;border:none;padding:6px 14px;border-radius:6px;font-weight:600;font-size:.82rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:4px;transition:background .2s}
+.sre-btn:hover{background:var(--orange-dim)}
+
+/* ── Layout ────────────────────────────────────────────── */
+.container{max-width:1480px;margin:0 auto;padding:1rem 1.2rem 3rem}
+
+/* ── Status Cards ──────────────────────────────────────── */
+.status-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.2rem}
+.status-card{background:var(--card);border:1px solid var(--card-border);border-radius:10px;padding:1rem;text-align:center;transition:transform .15s}
+.status-card:hover{transform:translateY(-2px)}
+.status-card .label{font-size:.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.3rem}
+.status-card .value{font-size:2rem;font-weight:700}
+.status-card .value.green{color:var(--green)}.status-card .value.red{color:var(--red)}.status-card .value.yellow{color:var(--yellow)}
+.status-card .value a{color:var(--cyan);text-decoration:none;font-size:1rem}
+.status-card .value a:hover{text-decoration:underline}
+
+/* ── Section ───────────────────────────────────────────── */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+@media(max-width:960px){.grid-2{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--card-border);border-radius:10px;padding:1rem;margin-bottom:1rem}
+.panel h2{font-size:1rem;margin-bottom:.75rem;display:flex;align-items:center;gap:.4rem;color:var(--orange)}
+
+/* ── Pod Table ─────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;padding:8px 10px;border-bottom:2px solid var(--card-border);color:var(--text-dim);font-weight:600;text-transform:uppercase;font-size:.72rem;letter-spacing:.5px}
+td{padding:7px 10px;border-bottom:1px solid var(--card-border)}
+tr{transition:background .2s}
+tr:hover{background:rgba(255,255,255,.03)}
+tr.status-running td:first-child{border-left:3px solid var(--green)}
+tr.status-failed td:first-child{border-left:3px solid var(--red)}
+tr.status-pending td:first-child{border-left:3px solid var(--yellow)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600}
+.badge-running{background:rgba(63,185,80,.15);color:var(--green)}
+.badge-error{background:rgba(248,81,73,.15);color:var(--red)}
+.badge-pending{background:rgba(210,153,34,.15);color:var(--yellow)}
+.badge-other{background:rgba(139,148,158,.15);color:var(--text-dim)}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+tbody tr{animation:fadeIn .3s ease}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+tr.status-failed{animation:pulse 2s ease-in-out infinite}
+
+/* ── Scenarios Grid ────────────────────────────────────── */
+.scenarios-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.65rem}
+.scenario-card{background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.75rem;display:flex;flex-direction:column;gap:.4rem;transition:border-color .2s}
+.scenario-card:hover{border-color:var(--orange)}
+.scenario-card .sc-name{font-weight:700;font-size:.9rem}
+.scenario-card .sc-desc{font-size:.75rem;color:var(--text-dim);flex:1}
+.scenario-card .sc-status{font-size:.7rem;font-weight:600}
+.scenario-card .sc-status.active{color:var(--red)}
+.scenario-card .sc-status.ok{color:var(--green)}
+.break-btn{background:var(--orange);color:#fff;border:none;padding:5px 12px;border-radius:5px;font-size:.78rem;font-weight:600;cursor:pointer;transition:background .2s}
+.break-btn:hover{background:var(--orange-dim)}
+.break-btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* ── Fix Buttons ───────────────────────────────────────── */
+.fix-bar{display:flex;gap:.6rem;flex-wrap:wrap}
+.fix-btn{padding:8px 18px;border:none;border-radius:6px;font-weight:700;font-size:.85rem;cursor:pointer;transition:background .2s,transform .1s}
+.fix-btn:active{transform:scale(.97)}
+.fix-btn.primary{background:var(--green);color:#000;font-size:1rem;padding:10px 28px}
+.fix-btn.primary:hover{background:#2ea043}
+.fix-btn.secondary{background:var(--card-border);color:var(--text)}
+.fix-btn.secondary:hover{background:#484f58}
+.fix-btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* ── Events ────────────────────────────────────────────── */
+.event-row{padding:6px 0;border-bottom:1px solid var(--card-border);font-size:.8rem;display:flex;gap:.6rem}
+.event-row:last-child{border-bottom:none}
+.event-time{color:var(--text-dim);min-width:70px;font-family:monospace;font-size:.75rem}
+.event-type{min-width:60px;font-weight:600}
+.event-type.Warning{color:var(--yellow)}
+.event-type.Normal{color:var(--green)}
+.event-msg{flex:1;color:var(--text-dim)}
+
+/* ── Deployments ───────────────────────────────────────── */
+.deploy-row{display:flex;align-items:center;gap:.7rem;padding:5px 0;border-bottom:1px solid var(--card-border);font-size:.85rem}
+.deploy-row:last-child{border-bottom:none}
+.deploy-name{font-weight:600;min-width:180px}
+.deploy-bar{flex:1;height:8px;background:var(--card-border);border-radius:4px;overflow:hidden}
+.deploy-fill{height:100%;border-radius:4px;transition:width .4s ease}
+.deploy-nums{font-family:monospace;font-size:.8rem;min-width:50px;text-align:right}
+
+/* ── Toast ─────────────────────────────────────────────── */
+#toast-container{position:fixed;top:70px;right:20px;z-index:999;display:flex;flex-direction:column;gap:.4rem}
+.toast{padding:10px 18px;border-radius:8px;font-size:.85rem;font-weight:600;animation:slideIn .3s ease;min-width:250px;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+.toast.success{background:var(--green);color:#000}
+.toast.error{background:var(--red);color:#fff}
+@keyframes slideIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:translateX(0)}}
+
+/* ── Spinner ───────────────────────────────────────────── */
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Connection Banner ─────────────────────────────────── */
+#conn-banner{display:none;background:var(--red);color:#fff;text-align:center;padding:6px;font-size:.82rem;font-weight:600}
+</style>
+</head>
+<body>
+
+<div id="conn-banner">⚠ Cannot reach cluster — is kubectl configured?</div>
+
+<header>
+  <div class="brand"><span class="fire">🔥</span> AmeriGas Propane — Mission Control</div>
+  <div class="meta">
+    <span id="cluster-ctx" class="ctx">loading…</span>
+    <span id="azure-sub" class="ctx">loading…</span>
+    <a href="https://aka.ms/sreagent/portal" target="_blank" class="sre-btn">🤖 SRE Agent Portal</a>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Status Cards -->
+  <section class="status-cards">
+    <div class="status-card"><div class="label">Total Pods</div><div class="value" id="total-pods">–</div></div>
+    <div class="status-card"><div class="label">Healthy</div><div class="value green" id="healthy-pods">–</div></div>
+    <div class="status-card"><div class="label">Unhealthy</div><div class="value" id="unhealthy-pods">–</div></div>
+    <div class="status-card"><div class="label">Nodes</div><div class="value" id="node-count">–</div></div>
+    <div class="status-card"><div class="label">Resource Group</div><div class="value" id="rg-name" style="font-size:1rem">–</div></div>
+    <div class="status-card"><div class="label">Customer Portal</div><div class="value" id="portal-link">–</div></div>
+  </section>
+
+  <!-- Pod Table + Events -->
+  <div class="grid-2">
+    <div class="panel">
+      <h2>🟢 Pod Status</h2>
+      <div style="max-height:420px;overflow-y:auto">
+      <table>
+        <thead><tr><th>Pod</th><th>Status</th><th>Ready</th><th>Restarts</th><th>Age</th></tr></thead>
+        <tbody id="pod-tbody"></tbody>
+      </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>📋 Recent Events</h2>
+      <div id="events-list" style="max-height:420px;overflow-y:auto"><span class="event-msg">Loading…</span></div>
+    </div>
+  </div>
+
+  <!-- Deployment Status -->
+  <div class="panel">
+    <h2>📦 Deployments</h2>
+    <div id="deployments-list"></div>
+  </div>
+
+  <!-- Break Scenarios -->
+  <div class="panel">
+    <h2>💥 Break Scenarios</h2>
+    <div class="scenarios-grid" id="scenarios-grid"></div>
+  </div>
+
+  <!-- Fix Bar -->
+  <div class="panel">
+    <h2>🔧 Remediation</h2>
+    <div class="fix-bar">
+      <button class="fix-btn primary" onclick="fix('all',this)">🔧 Fix All</button>
+      <button class="fix-btn secondary" onclick="fix('network',this)">🌐 Fix Network</button>
+      <button class="fix-btn secondary" onclick="fix('extras',this)">🗑️ Fix Extras</button>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+/* ── Scenario Definitions ─────────────────────────────── */
+const SCENARIOS = [
+  { id:'oom',     name:'OOMKilled',        desc:'Tank monitor memory exhaustion',           icon:'💾' },
+  { id:'crash',   name:'CrashLoopBackOff', desc:'Inventory service bad config crash',       icon:'💥' },
+  { id:'image',   name:'ImagePullBackOff', desc:'Order service wrong image tag',             icon:'🖼️' },
+  { id:'cpu',     name:'High CPU',         desc:'Demand forecast calculation overload',      icon:'🔥' },
+  { id:'pending', name:'Pending Pods',     desc:'Fleet telemetry over-provisioned requests', icon:'⏳' },
+  { id:'probe',   name:'Probe Failure',    desc:'Safety compliance monitor bad probes',      icon:'💓' },
+  { id:'network', name:'Network Block',    desc:'Tank monitor network policy isolation',     icon:'🌐' },
+  { id:'config',  name:'Missing Config',   desc:'Delivery zone missing ConfigMap',           icon:'📄' },
+  { id:'mongodb', name:'MongoDB Down',     desc:'Database outage — cascading failure',       icon:'🗄️' },
+  { id:'service', name:'Service Mismatch', desc:'Tank monitor selector drift after v2',      icon:'🔀' },
+];
+
+// Pods whose presence/state indicate a scenario is active
+const SCENARIO_INDICATORS = {
+  oom:     p => p.name.startsWith('tank-monitor') && (p.reason === 'OOMKilled' || p.status === 'CrashLoopBackOff' || p.restarts > 2),
+  crash:   p => p.name.startsWith('inventory-service') && (p.status === 'CrashLoopBackOff' || p.status === 'Error'),
+  image:   p => p.name.startsWith('order-service') && (p.status === 'ImagePullBackOff' || p.status === 'ErrImagePull'),
+  cpu:     p => p.name.startsWith('demand-forecast'),
+  pending: p => p.name.startsWith('fleet-telemetry'),
+  probe:   p => p.name.startsWith('safety-compliance'),
+  config:  p => p.name.startsWith('delivery-zone'),
+  mongodb: p => p.name.startsWith('mongodb') && p.ready === '0/1',
+  service: () => false, // hard to detect from pods alone
+};
+
+let currentPods = [];
+
+/* ── API Helpers ───────────────────────────────────────── */
+async function api(path, opts) {
+  const r = await fetch('/api/' + path, opts);
+  return r.json();
+}
+
+/* ── Toast ─────────────────────────────────────────────── */
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+/* ── Time Ago ──────────────────────────────────────────── */
+function timeAgo(dateStr) {
+  if (!dateStr) return '–';
+  const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
+  if (diff < 60) return Math.floor(diff) + 's';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+  return Math.floor(diff / 86400) + 'd';
+}
+
+/* ── Pod Status Parsing ────────────────────────────────── */
+function parsePodStatus(pod) {
+  const cs = pod.status.containerStatuses || [];
+  let status = pod.status.phase;
+  let reason = '';
+  let restarts = 0;
+  let ready = '0/0';
+
+  if (cs.length > 0) {
+    const readyCount = cs.filter(c => c.ready).length;
+    ready = readyCount + '/' + cs.length;
+    restarts = cs.reduce((s, c) => s + (c.restartCount || 0), 0);
+    for (const c of cs) {
+      if (c.state.waiting) {
+        status = c.state.waiting.reason || 'Waiting';
+        reason = c.state.waiting.reason || '';
+      } else if (c.state.terminated) {
+        status = c.state.terminated.reason || 'Terminated';
+        reason = c.state.terminated.reason || '';
+      }
+    }
+  }
+
+  // Check init containers too
+  const ics = pod.status.initContainerStatuses || [];
+  for (const c of ics) {
+    if (c.state && c.state.waiting) {
+      status = 'Init:' + (c.state.waiting.reason || 'Waiting');
+      reason = c.state.waiting.reason || '';
+    }
+  }
+
+  return {
+    name: pod.metadata.name,
+    status,
+    reason,
+    ready,
+    restarts,
+    age: pod.metadata.creationTimestamp,
+  };
+}
+
+function statusClass(s) {
+  if (s === 'Running' || s === 'Succeeded') return 'running';
+  if (['Pending','ContainerCreating'].includes(s) || s.startsWith('Init:')) return 'pending';
+  return 'failed';
+}
+
+function badgeClass(s) {
+  if (s === 'Running' || s === 'Succeeded') return 'badge-running';
+  if (['Pending','ContainerCreating'].includes(s) || s.startsWith('Init:')) return 'badge-pending';
+  return 'badge-error';
+}
+
+/* ── Refresh Functions ─────────────────────────────────── */
+async function refreshPods() {
+  try {
+    const data = await api('pods');
+    if (data.error) throw new Error(data.error);
+    document.getElementById('conn-banner').style.display = 'none';
+
+    const pods = (data.items || []).map(parsePodStatus);
+    currentPods = pods;
+    const total = pods.length;
+    const healthy = pods.filter(p => p.status === 'Running' || p.status === 'Succeeded').length;
+    const unhealthy = total - healthy;
+
+    document.getElementById('total-pods').textContent = total;
+    document.getElementById('healthy-pods').textContent = healthy;
+    const uhEl = document.getElementById('unhealthy-pods');
+    uhEl.textContent = unhealthy;
+    uhEl.className = 'value ' + (unhealthy > 0 ? 'red' : 'green');
+
+    // Pod table
+    const tbody = document.getElementById('pod-tbody');
+    tbody.innerHTML = pods.map(p => `
+      <tr class="status-${statusClass(p.status)}">
+        <td>${p.name}</td>
+        <td><span class="badge ${badgeClass(p.status)}">${p.status}</span></td>
+        <td>${p.ready}</td>
+        <td>${p.restarts}</td>
+        <td>${timeAgo(p.age)}</td>
+      </tr>`).join('');
+
+    // Update scenario indicators
+    updateScenarioIndicators();
+  } catch (e) {
+    document.getElementById('conn-banner').style.display = 'block';
+  }
+}
+
+async function refreshEvents() {
+  try {
+    const data = await api('events');
+    if (data.error) return;
+    const events = (data.items || []).slice(-15).reverse();
+    const el = document.getElementById('events-list');
+    if (events.length === 0) {
+      el.innerHTML = '<span class="event-msg">No recent events</span>';
+      return;
+    }
+    el.innerHTML = events.map(e => `
+      <div class="event-row">
+        <span class="event-time">${timeAgo(e.lastTimestamp || e.metadata.creationTimestamp)}</span>
+        <span class="event-type ${e.type}">${e.type}</span>
+        <span class="event-msg">${e.involvedObject.name}: ${e.message || ''}</span>
+      </div>`).join('');
+  } catch {}
+}
+
+async function refreshServices() {
+  try {
+    const data = await api('services');
+    if (data.error) return;
+    const portal = (data.items || []).find(s => s.metadata.name === 'customer-portal');
+    const el = document.getElementById('portal-link');
+    if (portal) {
+      const ing = portal.status.loadBalancer && portal.status.loadBalancer.ingress;
+      if (ing && ing.length > 0) {
+        const ip = ing[0].ip || ing[0].hostname;
+        el.innerHTML = `<a href="http://${ip}" target="_blank">${ip} ↗</a>`;
+      } else {
+        el.textContent = 'Pending…';
+      }
+    } else {
+      el.textContent = 'N/A';
+    }
+  } catch {}
+}
+
+async function refreshNodes() {
+  try {
+    const data = await api('nodes');
+    if (data.error) return;
+    document.getElementById('node-count').textContent = (data.items || []).length;
+  } catch {}
+}
+
+async function refreshDeployments() {
+  try {
+    const data = await api('deployments');
+    if (data.error) return;
+    const deps = (data.items || []);
+    const el = document.getElementById('deployments-list');
+    el.innerHTML = deps.map(d => {
+      const desired = d.spec.replicas || 0;
+      const ready = d.status.readyReplicas || 0;
+      const pct = desired > 0 ? (ready / desired * 100) : 0;
+      const color = pct === 100 ? 'var(--green)' : pct > 0 ? 'var(--yellow)' : 'var(--red)';
+      return `
+        <div class="deploy-row">
+          <span class="deploy-name">${d.metadata.name}</span>
+          <div class="deploy-bar"><div class="deploy-fill" style="width:${pct}%;background:${color}"></div></div>
+          <span class="deploy-nums" style="color:${color}">${ready}/${desired}</span>
+        </div>`;
+    }).join('');
+  } catch {}
+}
+
+async function refreshClusterInfo() {
+  try {
+    const data = await api('cluster-info');
+    if (data.error) return;
+    document.getElementById('cluster-ctx').textContent = data.context || '–';
+    document.getElementById('azure-sub').textContent = data.subscription || '–';
+    document.getElementById('rg-name').textContent = data.resourceGroup || '–';
+  } catch {}
+}
+
+/* ── Scenario Indicators ──────────────────────────────── */
+function updateScenarioIndicators() {
+  for (const sc of SCENARIOS) {
+    const indicator = document.getElementById('ind-' + sc.id);
+    if (!indicator) continue;
+    const fn = SCENARIO_INDICATORS[sc.id];
+    if (!fn) { indicator.textContent = '–'; indicator.className = 'sc-status'; continue; }
+    const isActive = currentPods.some(fn);
+    indicator.textContent = isActive ? '● ACTIVE' : '○ Healthy';
+    indicator.className = 'sc-status ' + (isActive ? 'active' : 'ok');
+  }
+}
+
+/* ── Build Scenario Cards ─────────────────────────────── */
+function buildScenarioGrid() {
+  const grid = document.getElementById('scenarios-grid');
+  grid.innerHTML = SCENARIOS.map(sc => `
+    <div class="scenario-card">
+      <div class="sc-name">${sc.icon} ${sc.name}</div>
+      <div class="sc-desc">${sc.desc}</div>
+      <div id="ind-${sc.id}" class="sc-status">–</div>
+      <button class="break-btn" onclick="breakScenario('${sc.id}',this)">💥 Break</button>
+    </div>`).join('');
+}
+
+/* ── Break / Fix Actions ──────────────────────────────── */
+async function breakScenario(id, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Breaking…';
+  try {
+    const data = await api('break/' + id, { method: 'POST' });
+    if (data.error) throw new Error(data.error);
+    toast('Scenario applied: ' + id);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💥 Break';
+    refreshPods();
+  }
+}
+
+async function fix(type, btn) {
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span> Fixing…';
+  try {
+    const data = await api('fix/' + type, { method: 'POST' });
+    if (data.error) throw new Error(data.error);
+    toast('Fix applied: ' + type);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = orig;
+    refreshPods();
+    refreshDeployments();
+  }
+}
+
+/* ── Init ──────────────────────────────────────────────── */
+buildScenarioGrid();
+refreshPods();
+refreshEvents();
+refreshServices();
+refreshNodes();
+refreshDeployments();
+refreshClusterInfo();
+
+setInterval(refreshPods, 5000);
+setInterval(refreshEvents, 10000);
+setInterval(refreshServices, 15000);
+setInterval(refreshDeployments, 10000);
+setInterval(refreshNodes, 30000);
+</script>
+</body>
+</html>
