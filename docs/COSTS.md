@@ -2,186 +2,223 @@
 
 This document provides estimated costs for running the Azure SRE Agent AmeriGas Propane Demo Lab.
 
-> **Note:** Costs are estimates based on US East 2 region pricing as of 2024. Actual costs may vary based on region, usage patterns, and Azure pricing changes.
+> **Note:** Costs are estimates based on US East 2 region pay-as-you-go pricing as of April 2026. Actual costs may vary based on region, usage patterns, and Azure pricing changes. All resources are tagged with `SecurityControl=Ignore`.
 
 ## Quick Cost Summary
 
-| Component | Daily Cost | Monthly Cost | Notes |
-|-----------|------------|--------------|-------|
-| **AKS Control Plane** | ~$2.40 | $73 | Standard tier with SLA |
-| **AKS Nodes (System)** | ~$4.70 | ~$140 | 2x Standard_D2s_v5 |
-| **AKS Nodes (User)** | ~$7.00 | ~$210 | 3x Standard_D2s_v5 |
-| **Container Registry** | ~$0.17 | ~$5 | Basic tier |
-| **Log Analytics** | ~$1-2 | ~$30-50 | Based on data ingestion |
-| **Application Insights** | ~$0.30-0.70 | ~$10-20 | Based on data volume |
-| **Managed Grafana** | ~$2.50 | ~$75 | Standard tier |
-| **Azure Monitor (Prometheus)** | ~$0.50 | ~$15 | Based on metrics volume |
-| **Key Vault** | ~$0.10 | ~$3 | Minimal operations |
-| **SRE Agent** | ~$10-13 | ~$292-400 | Base + execution costs |
-| **Total (without SRE Agent)** | **~$22-28** | **~$650-850** | |
-| **Total (with SRE Agent)** | **~$32-38** | **~$950-1,150** | |
+| Component | SKU / Size | Daily Cost | Monthly Cost |
+|-----------|-----------|------------|--------------|
+| **AKS Control Plane** | Standard tier (Uptime SLA) | ~$2.40 | ~$73 |
+| **AKS System Nodes** | 2× Standard_D2s_v5 | ~$4.61 | ~$140 |
+| **AKS User Nodes** | 3× Standard_D2s_v5 | ~$6.91 | ~$210 |
+| **Container Registry** | Basic | ~$0.17 | ~$5 |
+| **Log Analytics + Container Insights** | PerGB2018, ~2–4 GB/day | ~$5.50–11.00 | ~$165–330 |
+| **Application Insights** | Workspace-based (included in LA) | — | — |
+| **Managed Grafana** | Standard | ~$2.40 | ~$73 |
+| **Azure Monitor / Prometheus** | Ingestion-based | ~$1–2 | ~$30–60 |
+| **Azure Data Explorer** | Dev(No SLA)_E2a_v4, auto-stop | ~$2–7 | ~$60–210 |
+| **Key Vault** | Standard | ~$0.01 | ~$0.30 |
+| **Managed Disks** | MongoDB 8Gi + RabbitMQ 2Gi (SSD) | ~$0.10 | ~$3 |
+| **VNet** | — | Free | Free |
+| **SRE Agent** | Preview (AAU-based) | ~$10–15 | ~$300–450 |
+| | | | |
+| **Total (without SRE Agent)** | | **~$25–35** | **~$750–1,050** |
+| **Total (with SRE Agent)** | | **~$35–50** | **~$1,050–1,500** |
+
+## What Gets Deployed
+
+### Always Deployed (core infrastructure)
+
+| Resource | Type | Bicep Module |
+|----------|------|-------------|
+| Resource Group | Microsoft.Resources/resourceGroups | main.bicep |
+| Virtual Network | Microsoft.Network/virtualNetworks | modules/network.bicep |
+| AKS Cluster | Microsoft.ContainerService/managedClusters | modules/aks.bicep |
+| Container Registry | Microsoft.ContainerRegistry/registries | modules/container-registry.bicep |
+| Log Analytics Workspace | Microsoft.OperationalInsights/workspaces | modules/log-analytics.bicep |
+| Application Insights | Microsoft.Insights/components | modules/app-insights.bicep |
+| Key Vault | Microsoft.KeyVault/vaults | modules/key-vault.bicep |
+
+### Conditionally Deployed (default ON)
+
+| Resource | Param | Default | Bicep Module |
+|----------|-------|---------|-------------|
+| Managed Grafana + Prometheus | `deployObservability` | `true` | modules/observability.bicep |
+| Azure Data Explorer | `deployDataExplorer` | `true` | modules/data-explorer.bicep |
+| SRE Agent | `deploySreAgent` | `true` | modules/sre-agent.bicep |
+
+### Conditionally Deployed (default OFF)
+
+| Resource | Param | Default | Bicep Module |
+|----------|-------|---------|-------------|
+| Alert Rules | `deployAlerts` | `false` | modules/alerts.bicep |
+| Action Group | `deployActionGroup` | `false` | modules/action-group.bicep |
 
 ## Detailed Cost Breakdown
 
 ### Azure Kubernetes Service (AKS)
 
 #### Control Plane
-- **Free Tier**: $0/month (no SLA, limited features)
-- **Standard Tier**: $73/month (SLA, recommended for demos)
-- **Premium Tier**: $438/month (LTS support)
 
-**Recommendation:** Use Standard tier for demos to have SLA coverage.
+| Tier | Cost | Notes |
+|------|------|-------|
+| Free | $0/month | No SLA, limited features |
+| **Standard** | **$73/month** | **Deployed by default** — Uptime SLA |
+| Premium | $438/month | LTS support |
 
 #### Node Pools
 
-| Node Pool | VM Size | Count | Unit Cost | Monthly Cost |
-|-----------|---------|-------|-----------|--------------|
-| System | Standard_D2s_v5 | 2 | $70.08/month | $140.16 |
-| User | Standard_D2s_v5 | 3 | $70.08/month | $210.24 |
+| Pool | VM Size | vCPU | RAM | Count | Autoscale | Cost/VM/month | Pool Total |
+|------|---------|------|-----|-------|-----------|---------------|------------|
+| System | Standard_D2s_v5 | 2 | 8 GB | 2 | 1–5 | ~$70 | ~$140 |
+| User (workload) | Standard_D2s_v5 | 2 | 8 GB | 3 | 1–10 | ~$70 | ~$210 |
 
-**Cost-Saving Options:**
-- Use `Standard_D2as_v5` (AMD) for ~10% savings
-- Reduce node count during non-demo hours
-- Use Reserved Instances for 30-55% savings (if running long-term)
-- Use Spot instances for non-critical workloads
+System pool has `CriticalAddonsOnly=true:NoSchedule` taint. All application pods schedule on the user pool.
 
-### Azure Container Registry
+### Log Analytics + Container Insights
 
-| SKU | Storage | Cost | Notes |
-|-----|---------|------|-------|
-| Basic | 10 GB | $5/month | Sufficient for demos |
-| Standard | 100 GB | $20/month | If storing many images |
+| Component | Pricing |
+|-----------|---------|
+| Data ingestion | $2.76/GB (PerGB2018) |
+| First 5 GB/day | Free (per-subscription allowance) |
+| Retention | 30 days included, additional $0.10/GB/month |
 
-### Log Analytics Workspace
-
-Cost is based on data ingestion:
-
-| Data Volume | Cost |
-|-------------|------|
-| First 5 GB/day | Free |
-| Additional data | $2.30/GB |
-
-**Expected usage for demo:** 1-3 GB/day = $0-50/month
-
-**Cost-Saving Options:**
-- Set retention to 30 days (minimum)
-- Filter unnecessary log types
-- Use commitment tiers for predictable workloads
+**Expected ingestion:** 2–4 GB/day from Container Insights (ContainerLogV2, KubeEvents, KubePodInventory, perf counters) + OTel Collector stdout.
 
 ### Application Insights
 
-| Component | Pricing |
-|-----------|---------|
-| Data ingestion | $2.30/GB |
-| First 5 GB/month | Free |
+Workspace-based — ingestion is billed through the Log Analytics workspace above. The 90-day retention is included. No separate charge beyond LA ingestion.
 
-**Expected usage for demo:** ~$10-20/month
+### Azure Data Explorer (ADX)
 
-### Azure Managed Grafana
+| Component | Detail | Cost |
+|-----------|--------|------|
+| Cluster SKU | Dev(No SLA)_Standard_E2a_v4 | ~$0.294/hr when running |
+| Auto-stop | Enabled (stops after 1hr idle) | Saves ~70% if used only during demos |
+| Database | PropaneLogs (10-day retention, 5-day hot cache) | Included |
+| Data source | Log Analytics export (ContainerLogV2, KubeEvents, KubePodInventory) | Included |
 
-| Tier | Cost | Features |
-|------|------|----------|
-| Essential | $0 | Basic dashboards |
-| Standard | $75/month | Full features, RBAC |
+**Daily cost:** ~$2/day (demo use with auto-stop) to ~$7/day (always running).
 
-**Recommendation:** Standard tier for proper demo experience.
+### Managed Grafana + Prometheus
 
-### Azure Monitor (Prometheus)
+| Component | Cost |
+|-----------|------|
+| Azure Managed Grafana (Standard) | ~$0.10/hr = ~$73/month |
+| Azure Monitor Workspace | Free (workspace itself) |
+| Prometheus metrics ingestion | ~$0.18/million samples |
 
-| Component | Pricing |
-|-----------|---------|
-| Metrics ingestion | $0.18/million samples |
-| Query | $0.30/million samples queried |
+**Expected:** ~$3–4/day combined.
 
-**Expected usage for demo:** ~$10-20/month
+### Azure SRE Agent
+
+SRE Agent is billed via Azure AI Units (AAU):
+
+| Component | Calculation | Cost |
+|-----------|-------------|------|
+| Base compute | 4 AAU × 730 hours × $0.10 | ~$292/month |
+| Execution tasks | Variable based on prompts/diagnosis | ~$30–150/month |
+
+**Note:** SRE Agent is in Preview. Pricing may change. Mode is set to `Review` (requires approval for actions). Access level is `High` (full read + limited write).
 
 ### Key Vault
 
 | Operation | Price |
 |-----------|-------|
 | Secrets operations | $0.03/10,000 |
-| Keys operations | $0.03/10,000 |
-| Storage | Included |
+| Soft delete retention | 7 days |
 
-**Expected usage for demo:** ~$3/month
+Negligible cost for demo workloads (~$0.30/month).
 
-### Azure SRE Agent
+### Container Registry
 
-SRE Agent uses Azure AI Units (AAU) billing:
+| SKU | Storage | Cost |
+|-----|---------|------|
+| **Basic** (deployed) | 10 GB included | $5/month |
+| Standard | 100 GB | $20/month |
 
-| Component | Calculation | Cost |
-|-----------|-------------|------|
-| Base compute | 4 AAU × 730 hours × $0.10 | $292/month |
-| Execution | Variable based on usage | $30-100/month |
+Basic is sufficient — demo uses public images from `ghcr.io/azure-samples/aks-store-demo`.
 
-**Total SRE Agent cost:** ~$322-400/month
+## Cost by Configuration
+
+### Minimal (~$18–22/day, ~$540–660/month)
+
+```
+deployObservability = false
+deployDataExplorer  = false
+deploySreAgent      = false
+```
+
+AKS + ACR + Log Analytics + App Insights + Key Vault only.
+
+### Standard (~$25–35/day, ~$750–1,050/month)
+
+```
+deployObservability = true
+deployDataExplorer  = true
+deploySreAgent      = false
+```
+
+Full observability stack without SRE Agent.
+
+### Full Demo (~$35–50/day, ~$1,050–1,500/month)
+
+```
+deployObservability = true   (default)
+deployDataExplorer  = true   (default)
+deploySreAgent      = true   (default)
+```
+
+Everything enabled — recommended for customer demos.
 
 ## Cost Optimization Strategies
 
-### For Development/Testing
+### Deploy/Destroy Pattern (Recommended for Demos)
 
-1. **Delete when not in use**
-   ```powershell
-   .\scripts\destroy.ps1
-   ```
+Deploy before a demo, destroy after. A 4-hour demo session costs ~$6–8.
 
-2. **Scale down nodes**
-   ```bash
-   az aks nodepool scale --resource-group rg-srelab-eastus2 \
-       --cluster-name aks-srelab-dev --name workload --node-count 1
-   ```
+```powershell
+# Deploy
+.\scripts\deploy.ps1 -Location eastus2 -Yes
 
-3. **Use spot instances** for user node pool
+# Destroy after demo
+.\scripts\destroy.ps1 -ResourceGroupName "rg-srelab-eastus2"
+```
 
-4. **Disable optional components**
-   - Set `deployObservability = false` to skip Grafana/Prometheus
+### Scale Down Between Demos
+
+```powershell
+# Scale user pool to 1 node
+az aks nodepool scale --resource-group rg-srelab-eastus2 `
+    --cluster-name aks-srelab --name workload --node-count 1
+
+# ADX auto-stops after 1 hour idle (no action needed)
+```
+
+### Disable Optional Components
+
+```
+deployObservability = false   # saves ~$3–4/day
+deployDataExplorer  = false   # saves ~$2–7/day
+deploySreAgent      = false   # saves ~$10–15/day
+```
 
 ### For Sustained Usage
 
-1. **Azure Reservations**
-   - 1-year: ~31% savings on VMs
-   - 3-year: ~53% savings on VMs
-
-2. **Savings Plans**
-   - Commit to hourly spend for discounts
-
-3. **Right-size VMs**
-   - Monitor actual usage and adjust
-
-## Cost by Deployment Configuration
-
-### Minimal Configuration (~$450/month)
-- AKS Standard + 2 nodes
-- Basic ACR
-- Log Analytics (minimal retention)
-- Essential Grafana (free tier)
-
-### Standard Configuration (~$750/month)
-- AKS Standard + 4 nodes
-- Basic ACR
-- Log Analytics
-- App Insights
-- Standard Grafana
-
-### Full Demo Configuration (~$1,000/month)
-- Everything enabled
-- Standard Grafana + Prometheus
-- Best for comprehensive demos
-- Includes SRE Agent costs
+| Strategy | Savings |
+|----------|---------|
+| 1-year Reserved Instances (VMs) | ~31% |
+| 3-year Reserved Instances (VMs) | ~53% |
+| Azure Savings Plans | 15–30% on compute |
+| AMD VMs (Standard_D2as_v5) | ~10% vs Intel |
 
 ## Monitoring Costs
 
-Use Azure Cost Management to track spending:
-
 1. Go to **Cost Management + Billing** in Azure Portal
-2. Create a **Budget** with alerts
-3. Set up **Cost alerts** at 50%, 75%, 100%
-4. Review **Cost analysis** regularly
-
-### Sample Budget Alert
+2. Filter by resource group `rg-srelab-*`
+3. Set up a **Budget** with email alerts at 50%, 75%, 100%
 
 ```powershell
-# Create budget via CLI
 az consumption budget create `
     --budget-name "sre-demo-budget" `
     --amount 500 `
@@ -190,36 +227,12 @@ az consumption budget create `
     --resource-group rg-srelab-eastus2
 ```
 
-## Free Tier Resources
+## Biggest Cost Drivers
 
-Take advantage of Azure Free Tier:
+1. **AKS Nodes** (~$11.50/day) — 5 VMs running 24/7
+2. **SRE Agent** (~$10–15/day) — AAU-based billing
+3. **Log Analytics ingestion** (~$5.50–11/day) — Container Insights volume
+4. **ADX Cluster** (~$2–7/day) — Dev SKU, mitigated by auto-stop
+5. **Managed Grafana** (~$2.40/day) — Standard tier
 
-| Service | Free Amount |
-|---------|-------------|
-| Log Analytics | 5 GB/month ingestion |
-| App Insights | 5 GB/month |
-| Key Vault | 10,000 operations |
-| Managed Grafana | Essential tier (basic features) |
-
-## When to Consider Alternatives
-
-### If cost is critical:
-- Use **Azure Container Apps** instead of AKS (~50% cheaper)
-- Use **App Service** for simpler demos
-- Use **local Kubernetes** (minikube/kind) for development
-
-### If you need more power:
-- Scale up VM sizes
-- Add more nodes
-- Enable zone redundancy
-
-## Summary
-
-| Scenario | Monthly Cost |
-|----------|--------------|
-| Run demo for 1 hour | ~$2-3 |
-| Run demo for 1 day | ~$30-40 |
-| Always-on development | ~$750-1,100 |
-| With all optimizations | ~$400-500 |
-
-**Recommended approach:** Deploy when needed, destroy after demos, use minimal config for testing.
+**Bottom line:** Destroy resources when not demoing. A single demo day costs ~$35–50. Leaving it running for a month costs ~$1,050–1,500.
