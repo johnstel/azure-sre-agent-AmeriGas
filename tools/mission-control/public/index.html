@@ -193,7 +193,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 
 #chat-toggle{position:fixed;bottom:24px;right:24px;z-index:300;height:48px;border-radius:24px;border:none;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;font-size:.9rem;font-weight:700;cursor:pointer;box-shadow:0 4px 20px rgba(124,58,237,.4);transition:transform .2s,box-shadow .2s;display:flex;align-items:center;gap:8px;padding:0 18px 0 14px}
 #chat-toggle:hover{transform:scale(1.05);box-shadow:0 6px 28px rgba(124,58,237,.6)}
-#chat-toggle.active{background:var(--card-border)}
+#chat-toggle.hidden{display:none}
 #chat-toggle .toggle-icon{font-size:1.3rem}
 #chat-toggle .badge-dot{width:10px;height:10px;border-radius:50%;margin-left:2px}
 .badge-dot.connected{background:var(--green)}
@@ -1041,7 +1041,7 @@ let chatStreaming = false;
 function toggleChat() {
   chatOpen = !chatOpen;
   document.getElementById('chat-panel').classList.toggle('open', chatOpen);
-  document.getElementById('chat-toggle').classList.toggle('active', chatOpen);
+  document.getElementById('chat-toggle').classList.toggle('hidden', chatOpen);
   if (chatOpen) document.getElementById('chat-input').focus();
 }
 
