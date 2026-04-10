@@ -5,7 +5,7 @@
 This is the AmeriGas Propane Operations Platform running on Azure Kubernetes Service (AKS). AmeriGas is the largest retail propane distributor in the United States, serving over 1.5 million residential, commercial, and industrial customers. This platform manages propane tank monitoring, inventory management, order fulfillment, and customer-facing operations.
 
 **Kubernetes Namespace:** `propane`
-**Observability:** Azure Log Analytics (Container Insights via omsagent), Application Insights, Azure Data Explorer (PropaneLogs database), Azure Monitor (Prometheus), Managed Grafana
+**Observability:** Azure Log Analytics (Container Insights), Application Insights (workspace-based), OpenTelemetry Collector (in-cluster), Azure Monitor (Prometheus), Managed Grafana
 
 ## Architecture
 
@@ -45,7 +45,7 @@ All services ──→ OTel Collector (OTLP endpoint for telemetry)
 - All application pods have `APPLICATIONINSIGHTS_CONNECTION_STRING` via `propane-telemetry-config` ConfigMap
 - Each service has `OTEL_SERVICE_NAME` set for distributed tracing identity
 - An **OpenTelemetry Collector** (`otel-collector`) runs in-cluster receiving OTLP (gRPC:4317, HTTP:4318) and scraping Prometheus metrics from services
-- The OTel Collector exports traces/metrics/logs to Application Insights and stdout (captured by Container Insights → Log Analytics → ADX)
+- The OTel Collector exports traces/metrics/logs to Application Insights and stdout (captured by Container Insights → Log Analytics)
 - The deploy script injects the real App Insights connection string post-deployment via `kubectl create configmap --dry-run=client | kubectl apply`
 
 ### Storage
@@ -61,34 +61,63 @@ All services ──→ OTel Collector (OTLP endpoint for telemetry)
 
 ## Where Logs Are Stored
 
-- **Container logs:** Azure Log Analytics workspace via Container Insights (AKS omsagent addon)
-- **Application telemetry:** Application Insights (connected to the same Log Analytics workspace, IngestionMode: LogAnalytics)
-- **Azure Data Explorer:** An ADX cluster with a `PropaneLogs` database receives continuous data export from Log Analytics (ContainerLogV2, KubeEvents, KubePodInventory tables). Use ADX for high-performance ad-hoc queries and long-term analytics.
+- **Container logs:** Azure Log Analytics workspace via Container Insights (AKS monitoring addon). Tables: `ContainerLogV2`, `KubeEvents`, `KubePodInventory`, `KubeNodeInventory`, `Perf`
+- **Application telemetry:** Application Insights (workspace-based, ingests into the same Log Analytics workspace). Tables: `requests`, `dependencies`, `exceptions`, `traces`, `customMetrics`
 - **AKS control plane logs:** Sent to Log Analytics via diagnostic settings (kube-apiserver, kube-controller-manager, kube-scheduler, kube-audit-admin, guard, cloud-controller-manager)
 - **Prometheus metrics:** Azure Monitor Workspace, viewable in Managed Grafana
+- **In-cluster telemetry pipeline:** OpenTelemetry Collector receives OTLP from application pods and writes structured logs to stdout, which Container Insights captures and sends to Log Analytics
 
-### Querying Logs in Azure Data Explorer
+### Querying Logs in Log Analytics
 
-Connect to the ADX cluster URI (output from deployment) and query the `PropaneLogs` database:
+Use KQL in the Azure Portal (Log Analytics workspace) or via SRE Agent:
 
 ```kql
-// Container logs from propane namespace
+// Container logs from propane namespace — recent errors
 ContainerLogV2
 | where PodNamespace == "propane"
+| where LogLevel == "error" or LogMessage has "error" or LogMessage has "exception"
+| order by TimeGenerated desc
+| take 50
+
+// Container logs for a specific service
+ContainerLogV2
+| where PodNamespace == "propane"
+| where PodName startswith "tank-monitor"
 | order by TimeGenerated desc
 | take 100
 
-// Pod events — restarts, failures, OOM
+// Pod events — restarts, failures, OOM kills
 KubeEvents
 | where Namespace == "propane"
-| where Reason in ("BackOff", "Killing", "OOMKilling", "Failed")
+| where Reason in ("BackOff", "Killing", "OOMKilling", "Failed", "FailedScheduling", "Unhealthy")
+| project TimeGenerated, Name, Reason, Message
 | order by TimeGenerated desc
 
 // Pod inventory — current state of all pods
 KubePodInventory
 | where Namespace == "propane"
 | summarize arg_max(TimeGenerated, *) by Name
-| project Name, PodStatus, ContainerStatus, RestartCount
+| project Name, PodStatus, ContainerStatus, RestartCount, PodCreationTimeStamp
+
+// Memory and CPU usage by container
+Perf
+| where ObjectName == "K8SContainer"
+| where InstanceName contains "propane"
+| summarize avg(CounterValue) by CounterName, InstanceName, bin(TimeGenerated, 5m)
+
+// Application Insights — request failures
+requests
+| where cloud_RoleName has "propane" or cloud_RoleName in ("tank-monitor", "order-service", "inventory-service")
+| where success == false
+| summarize failCount=count() by cloud_RoleName, resultCode, bin(timestamp, 5m)
+| order by timestamp desc
+
+// Application Insights — dependency failures (MongoDB, RabbitMQ calls)
+dependencies
+| where cloud_RoleName has "propane" or cloud_RoleName in ("tank-monitor", "order-service")
+| where success == false
+| summarize failCount=count() by cloud_RoleName, target, type, bin(timestamp, 5m)
+| order by timestamp desc
 ```
 
 ## Healthy State
@@ -97,18 +126,19 @@ When the platform is healthy, you should see these pods running in the `propane`
 
 | Pod (prefix) | Expected Status | Expected Restarts | Replicas |
 |--------------|----------------|-------------------|----------|
-| customer-portal-* | Running | 0 | 1 |
+| customer-portal-* | Running | 0 | 2 |
 | dispatch-console-* | Running | 0 | 1 |
-| tank-monitor-* | Running | 0 | 1 |
-| inventory-service-* | Running | 0 | 1 |
-| order-service-* | Running | 0 | 1 |
+| tank-monitor-* | Running | 0 | 2 |
+| inventory-service-* | Running | 0 | 2 |
+| order-service-* | Running | 0 | 2 |
 | usage-simulator-* | Running | 0 | 1 |
+| otel-collector-* | Running | 0 | 1 |
 | rabbitmq-* | Running | 0 | 1 |
 | mongodb-* | Running | 0 | 1 |
 
 **order-worker** has 0 replicas by default and will not have a running pod.
 
-Total expected healthy pods: **8**
+Total expected healthy pods: **13** (across 9 deployments)
 
 ## Known Failure Scenarios and Runbooks
 
@@ -232,7 +262,8 @@ kubectl describe svc tank-monitor -n propane
 
 - **Resource group naming:** `rg-srelab-{region}` (e.g., `rg-srelab-eastus2`)
 - **AKS cluster naming:** `aks-srelab-{suffix}`
-- **Resources deployed:** AKS, Azure Container Registry, Key Vault, Log Analytics, Application Insights, Azure Monitor Workspace, Managed Grafana, Alert Rules
+- **Resources deployed:** AKS, Azure Container Registry, Key Vault, Log Analytics, Application Insights, OpenTelemetry Collector (in-cluster), Azure Monitor Workspace, Managed Grafana, SRE Agent
+- **Telemetry ConfigMap:** `propane-telemetry-config` in namespace `propane` — holds `APPLICATIONINSIGHTS_CONNECTION_STRING`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and sampling config. Injected with real App Insights connection string by deploy.ps1 post-deployment.
 - **Tags on all resources:** `workload=amerigas-propane-demo`, `environment=demo`, `SecurityControl=Ignore`
 - **Supported regions:** East US 2, Sweden Central, Australia East
 
