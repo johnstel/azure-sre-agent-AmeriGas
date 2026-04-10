@@ -37,10 +37,6 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-02-01' exis
   name: last(split(aksClusterId, '/'))
 }
 
-resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
-  name: last(split(logAnalyticsWorkspaceId, '/'))
-}
-
 // =============================================================================
 // RESOURCES
 // =============================================================================
@@ -94,22 +90,12 @@ resource aksDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previe
   }
 }
 
-// Log Analytics Data Export Rule – stream key tables to ADX
-resource dataExportRule 'Microsoft.OperationalInsights/workspaces/dataExports@2020-08-01' = {
-  parent: logAnalyticsWorkspace
-  name: 'export-to-adx'
-  properties: {
-    destination: {
-      resourceId: database.id
-    }
-    tableNames: [
-      'ContainerLogV2'
-      'KubeEvents'
-      'KubePodInventory'
-    ]
-    enable: true
-  }
-}
+// Log Analytics Data Export to ADX is NOT supported directly.
+// ADX ingestion options (configure post-deployment via Azure Portal):
+//   1. ADX "Get Data" wizard → Log Analytics as source
+//   2. Event Hub intermediary: LA → Event Hub → ADX Data Connection
+//   3. Cross-resource KQL queries from ADX to Log Analytics
+// Container logs are already queryable in Log Analytics via Container Insights.
 
 // =============================================================================
 // OUTPUTS
