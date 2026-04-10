@@ -65,6 +65,23 @@ function sre-agent {
     Write-Host "SRE Agent Portal: https://aka.ms/sreagent/portal" -ForegroundColor Cyan
 }
 
+# Mission Control — local operations dashboard with Copilot SDK
+function mission-control {
+    param([int]$Port = 3000)
+    Push-Location "$PSScriptRoot\..\tools\mission-control"
+    try {
+        if (-not (Test-Path "node_modules")) {
+            Write-Host "  📦 Installing dependencies..." -ForegroundColor Yellow
+            npm install --quiet 2>$null
+        }
+        Write-Host "  🔥 Starting Mission Control on port $Port..." -ForegroundColor Cyan
+        $env:PORT = $Port
+        node server.js
+    } finally {
+        Pop-Location
+    }
+}
+
 # Menu / help
 function menu {
     Write-Host @"
@@ -78,6 +95,7 @@ function menu {
 ║    destroy                     - Tear down the infrastructure                ║
 ║    site                        - Show the customer portal URL                ║
 ║    sre-agent                   - Show SRE Agent portal URL                   ║
+║    mission-control             - Launch Mission Control + Copilot AI         ║
 ║    menu                        - Show this help menu                         ║
 ║                                                                              ║
 ║  Kubernetes Shortcuts (default namespace: propane):                           ║

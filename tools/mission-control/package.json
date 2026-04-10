@@ -1,12 +1,14 @@
 {
   "name": "amerigas-mission-control",
-  "version": "1.0.0",
-  "description": "AmeriGas Propane SRE Demo Lab - Mission Control",
+  "version": "2.0.0",
+  "description": "AmeriGas Propane SRE Demo Lab - Mission Control with GitHub Copilot SDK",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "keywords": ["copilot-sdk", "sre", "kubernetes", "azure", "aks"],
   "dependencies": {
+    "@github/copilot-sdk": "^0.2.2",
     "express": "^4.21.0"
   }
 }

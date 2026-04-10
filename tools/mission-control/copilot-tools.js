@@ -1,0 +1,325 @@
+/**
+ * Copilot SDK custom tool definitions for AmeriGas Mission Control.
+ *
+ * Each tool wraps kubectl / az CLI operations that the Copilot agent
+ * can invoke to inspect, diagnose, and remediate the propane platform.
+ */
+
+const { defineTool } = require('@github/copilot-sdk');
+const { execFile } = require('child_process');
+const util = require('util');
+const path = require('path');
+
+const execFileAsync = util.promisify(execFile);
+const IS_WIN = process.platform === 'win32';
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+const SCENARIO_MAP = {
+  oom: 'oom-killed.yaml',
+  crash: 'crash-loop.yaml',
+  image: 'image-pull-backoff.yaml',
+  cpu: 'high-cpu.yaml',
+  pending: 'pending-pods.yaml',
+  probe: 'probe-failure.yaml',
+  network: 'network-block.yaml',
+  config: 'missing-config.yaml',
+  mongodb: 'mongodb-down.yaml',
+  service: 'service-mismatch.yaml',
+};
+
+function runCommand(cmd, args, opts = {}) {
+  if (IS_WIN) {
+    return execFileAsync(process.env.ComSpec || 'cmd.exe', ['/c', cmd, ...args], opts);
+  }
+  return execFileAsync(cmd, args, opts);
+}
+
+async function kubectl(...args) {
+  const { stdout } = await runCommand('kubectl', args, { timeout: 20000 });
+  return stdout;
+}
+
+async function az(...args) {
+  const { stdout } = await runCommand('az', args, { timeout: 30000 });
+  return stdout;
+}
+
+// Wrap a handler so it returns error strings instead of throwing
+function safeHandler(fn) {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      return `Error: ${err.message || err}`;
+    }
+  };
+}
+
+function createTools() {
+  const tools = [
+    defineTool('get_pods', {
+      description: 'List all pods in the propane namespace with status, readiness, restarts, and age. Use this to check the overall health of the platform.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const out = await kubectl('get', 'pods', '-n', 'propane', '-o', 'wide');
+        return out;
+      },
+    }),
+
+    defineTool('get_pod_logs', {
+      description: 'Get recent log output from a specific pod. Use this to investigate errors, crashes, or unexpected behavior.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pod_name: { type: 'string', description: 'Name of the pod (e.g. "tank-monitor-67548b8dd7-2rw5x")' },
+          previous: { type: 'boolean', description: 'If true, get logs from the previous (crashed) container' },
+          tail_lines: { type: 'number', description: 'Number of lines to return from the end (default: 80)' },
+        },
+        required: ['pod_name'],
+      },
+      handler: async ({ pod_name, previous, tail_lines }) => {
+        const args = ['logs', pod_name, '-n', 'propane', `--tail=${tail_lines || 80}`];
+        if (previous) args.push('--previous');
+        const out = await kubectl(...args);
+        return out || '(no log output)';
+      },
+    }),
+
+    defineTool('describe_pod', {
+      description: 'Get detailed information about a pod including events, conditions, container state, and resource usage. Use this to diagnose scheduling issues, probe failures, or image pull errors.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pod_name: { type: 'string', description: 'Name of the pod to describe' },
+        },
+        required: ['pod_name'],
+      },
+      handler: async ({ pod_name }) => {
+        const out = await kubectl('describe', 'pod', pod_name, '-n', 'propane');
+        return out;
+      },
+    }),
+
+    defineTool('get_events', {
+      description: 'Get recent Kubernetes events in the propane namespace, sorted by time. Use this to identify warnings, errors, and state changes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          warnings_only: { type: 'boolean', description: 'If true, only show Warning events' },
+        },
+        required: [],
+      },
+      handler: async ({ warnings_only }) => {
+        const args = ['get', 'events', '-n', 'propane', '--sort-by=.lastTimestamp'];
+        if (warnings_only) args.push('--field-selector=type=Warning');
+        const out = await kubectl(...args);
+        return out || '(no events found)';
+      },
+    }),
+
+    defineTool('get_deployments', {
+      description: 'Get all deployments in the propane namespace with replica status. Use this to check if deployments are scaled correctly.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const out = await kubectl('get', 'deployments', '-n', 'propane', '-o', 'wide');
+        return out;
+      },
+    }),
+
+    defineTool('get_services', {
+      description: 'Get all services and their endpoints in the propane namespace. Use this to check service routing, external IPs, and endpoint health.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const [svcs, eps] = await Promise.all([
+          kubectl('get', 'svc', '-n', 'propane', '-o', 'wide'),
+          kubectl('get', 'endpoints', '-n', 'propane'),
+        ]);
+        return `SERVICES:\n${svcs}\nENDPOINTS:\n${eps}`;
+      },
+    }),
+
+    defineTool('get_nodes', {
+      description: 'Get AKS node status, capacity, and resource usage. Use this to check for node-level issues like NotReady, disk pressure, or resource exhaustion.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const [nodes, top] = await Promise.all([
+          kubectl('get', 'nodes', '-o', 'wide'),
+          kubectl('top', 'nodes').catch(() => '(metrics unavailable)'),
+        ]);
+        return `NODES:\n${nodes}\nRESOURCE USAGE:\n${top}`;
+      },
+    }),
+
+    defineTool('get_cluster_health', {
+      description: 'Run a comprehensive health check: pods, deployments, services, endpoints, recent warning events, and network policies. Use this as a first step when diagnosing issues.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const [pods, deployments, svcs, eps, events, netpol] = await Promise.all([
+          kubectl('get', 'pods', '-n', 'propane', '-o', 'wide'),
+          kubectl('get', 'deployments', '-n', 'propane'),
+          kubectl('get', 'svc', '-n', 'propane'),
+          kubectl('get', 'endpoints', '-n', 'propane'),
+          kubectl('get', 'events', '-n', 'propane', '--sort-by=.lastTimestamp', '--field-selector=type=Warning').catch(() => '(no warnings)'),
+          kubectl('get', 'networkpolicy', '-n', 'propane').catch(() => '(no network policies)'),
+        ]);
+        return [
+          '=== PODS ===', pods,
+          '\n=== DEPLOYMENTS ===', deployments,
+          '\n=== SERVICES ===', svcs,
+          '\n=== ENDPOINTS ===', eps,
+          '\n=== WARNING EVENTS ===', events,
+          '\n=== NETWORK POLICIES ===', netpol,
+        ].join('\n');
+      },
+    }),
+
+    defineTool('apply_break_scenario', {
+      description: 'Apply a breakable failure scenario to the cluster for testing/demo purposes. Available scenarios: oom, crash, image, cpu, pending, probe, network, config, mongodb, service.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scenario: {
+            type: 'string',
+            description: 'Scenario ID: oom, crash, image, cpu, pending, probe, network, config, mongodb, or service',
+            enum: Object.keys(SCENARIO_MAP),
+          },
+        },
+        required: ['scenario'],
+      },
+      handler: async ({ scenario }) => {
+        const filename = SCENARIO_MAP[scenario];
+        if (!filename) return `Unknown scenario: ${scenario}. Valid: ${Object.keys(SCENARIO_MAP).join(', ')}`;
+        const yamlPath = path.resolve(REPO_ROOT, 'k8s', 'scenarios', filename);
+        const out = await kubectl('apply', '-f', yamlPath);
+        return `Applied scenario "${scenario}":\n${out}`;
+      },
+    }),
+
+    defineTool('fix_all', {
+      description: 'Restore ALL services to the healthy baseline by applying k8s/base/application.yaml. This is the primary remediation action that fixes most issues.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const yamlPath = path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml');
+        const out = await kubectl('apply', '-f', yamlPath);
+        return `Healthy baseline restored:\n${out}`;
+      },
+    }),
+
+    defineTool('fix_network', {
+      description: 'Remove the deny-tank-monitor network policy that blocks traffic to the tank-monitor service.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const out = await kubectl('delete', 'networkpolicy', 'deny-tank-monitor', '-n', 'propane', '--ignore-not-found');
+        return out || 'Network policy removed (or was not present)';
+      },
+    }),
+
+    defineTool('fix_extras', {
+      description: 'Delete rogue deployments created by break scenarios (demand-forecast-overload, fleet-telemetry-monitor, safety-compliance-monitor, delivery-zone-config).',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const out = await kubectl('delete', 'deployment',
+          'demand-forecast-overload', 'fleet-telemetry-monitor',
+          'safety-compliance-monitor', 'delivery-zone-config',
+          '-n', 'propane', '--ignore-not-found');
+        return out || 'Extra deployments removed';
+      },
+    }),
+
+    defineTool('scale_deployment', {
+      description: 'Scale a deployment to a specified number of replicas. Use this to restore a scaled-down service (like MongoDB) or adjust capacity.',
+      parameters: {
+        type: 'object',
+        properties: {
+          deployment: { type: 'string', description: 'Deployment name (e.g. "mongodb", "tank-monitor")' },
+          replicas: { type: 'number', description: 'Desired replica count' },
+        },
+        required: ['deployment', 'replicas'],
+      },
+      handler: async ({ deployment, replicas }) => {
+        const out = await kubectl('scale', `deployment/${deployment}`, '-n', 'propane', `--replicas=${replicas}`);
+        return out;
+      },
+    }),
+
+    defineTool('restart_deployment', {
+      description: 'Trigger a rolling restart of a deployment. Use this to recover pods after fixing configuration or dependencies.',
+      parameters: {
+        type: 'object',
+        properties: {
+          deployment: { type: 'string', description: 'Deployment name to restart' },
+        },
+        required: ['deployment'],
+      },
+      handler: async ({ deployment }) => {
+        const out = await kubectl('rollout', 'restart', `deployment/${deployment}`, '-n', 'propane');
+        return out;
+      },
+    }),
+
+    defineTool('validate_deployment', {
+      description: 'Run the deployment validation script that checks AKS, ACR, monitoring, pods, services, and observability components.',
+      parameters: {
+        type: 'object',
+        properties: {
+          resource_group: { type: 'string', description: 'Resource group name (default: rg-srelab-eastus2)' },
+        },
+        required: [],
+      },
+      handler: async ({ resource_group }) => {
+        const rg = resource_group || 'rg-srelab-eastus2';
+        const scriptPath = path.resolve(REPO_ROOT, 'scripts', 'validate-deployment.ps1');
+        try {
+          const { stdout, stderr } = await runCommand('pwsh', ['-NoLogo', '-NoProfile', '-File', scriptPath, '-ResourceGroupName', rg, '-Detailed'], { timeout: 120000 });
+          return stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
+        } catch (err) {
+          return `Validation completed with issues:\n${err.stdout || ''}\n${err.stderr || err.message}`;
+        }
+      },
+    }),
+
+    defineTool('get_cluster_info', {
+      description: 'Get Azure cluster context information: current kube context, subscription, resource group, and region.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      handler: async () => {
+        const [context, account, rgs] = await Promise.all([
+          kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster configured'),
+          az('account', 'show', '-o', 'json').catch(() => '{}'),
+          az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
+        ]);
+        const acct = JSON.parse(account);
+        const rgList = JSON.parse(rgs);
+        return [
+          `Kubernetes Context: ${context}`,
+          `Subscription: ${acct.name || 'Unknown'} (${acct.id || ''})`,
+          `Resource Group: ${rgList.length > 0 ? rgList[0].name : 'Not found'}`,
+          `Region: ${rgList.length > 0 ? rgList[0].location : 'Unknown'}`,
+        ].join('\n');
+      },
+    }),
+
+    defineTool('kubectl_raw', {
+      description: 'Run an arbitrary kubectl command. Use this for operations not covered by other tools. Only read-only commands are recommended unless explicit remediation is needed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          args: { type: 'string', description: 'kubectl arguments as a single string (e.g. "get configmap -n propane" or "top pods -n propane --sort-by=cpu")' },
+        },
+        required: ['args'],
+      },
+      handler: async ({ args }) => {
+        const argList = args.split(/\s+/);
+        const out = await kubectl(...argList);
+        return out || '(no output)';
+      },
+    }),
+  ];
+
+  // Wrap all tool handlers with error handling so they never throw
+  return tools.map(tool => ({
+    ...tool,
+    handler: safeHandler(tool.handler),
+  }));
+}
+
+module.exports = { createTools };
