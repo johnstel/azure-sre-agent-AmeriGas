@@ -170,10 +170,32 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 .pod-link:hover{text-decoration:underline}
 
 /* ── AI Chat Panel ────────────────────────────────────── */
-#chat-toggle{position:fixed;bottom:24px;right:24px;z-index:300;width:56px;height:56px;border-radius:50%;border:none;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;font-size:1.6rem;cursor:pointer;box-shadow:0 4px 20px rgba(124,58,237,.4);transition:transform .2s,box-shadow .2s;display:flex;align-items:center;justify-content:center}
-#chat-toggle:hover{transform:scale(1.1);box-shadow:0 6px 28px rgba(124,58,237,.6)}
+#copilot-banner{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#4c1d95 100%);border:1px solid rgba(167,139,250,.3);border-radius:10px;padding:1rem 1.2rem;margin-bottom:1rem;display:flex;align-items:center;gap:1rem;cursor:pointer;transition:border-color .2s,transform .15s}
+#copilot-banner:hover{border-color:rgba(167,139,250,.6);transform:translateY(-1px)}
+#copilot-banner .banner-icon{font-size:2rem;min-width:44px;text-align:center}
+#copilot-banner .banner-text{flex:1}
+#copilot-banner .banner-title{font-size:1rem;font-weight:700;margin-bottom:2px;display:flex;align-items:center;gap:8px}
+#copilot-banner .banner-desc{font-size:.8rem;color:rgba(255,255,255,.65)}
+#copilot-banner .banner-status{font-size:.72rem;padding:3px 10px;border-radius:12px;font-weight:600;white-space:nowrap}
+#copilot-banner .banner-status.ok{background:rgba(63,185,80,.2);color:var(--green)}
+#copilot-banner .banner-status.err{background:rgba(248,81,73,.2);color:var(--red)}
+#copilot-banner .banner-status.init{background:rgba(210,153,34,.2);color:var(--yellow)}
+.banner-cta{background:rgba(167,139,250,.25);color:#a78bfa;border:1px solid rgba(167,139,250,.4);padding:8px 18px;border-radius:8px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap;transition:background .2s}
+.banner-cta:hover{background:rgba(167,139,250,.4)}
+
+#copilot-failure-banner{display:none;background:linear-gradient(135deg,#7f1d1d,#991b1b);border:1px solid rgba(248,81,73,.4);border-radius:10px;padding:1rem 1.2rem;margin-bottom:1rem;align-items:center;gap:1rem;animation:pulse-border 2s infinite}
+#copilot-failure-banner .banner-icon{font-size:1.8rem;min-width:44px;text-align:center}
+#copilot-failure-banner .banner-text{flex:1}
+#copilot-failure-banner .banner-title{font-size:1rem;font-weight:700;margin-bottom:2px}
+#copilot-failure-banner .banner-desc{font-size:.8rem;color:rgba(255,255,255,.65)}
+.failure-cta{background:var(--orange);color:#fff;border:none;padding:8px 18px;border-radius:8px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap;transition:background .2s;display:flex;align-items:center;gap:6px}
+.failure-cta:hover{background:var(--orange-dim)}
+
+#chat-toggle{position:fixed;bottom:24px;right:24px;z-index:300;height:48px;border-radius:24px;border:none;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;font-size:.9rem;font-weight:700;cursor:pointer;box-shadow:0 4px 20px rgba(124,58,237,.4);transition:transform .2s,box-shadow .2s;display:flex;align-items:center;gap:8px;padding:0 18px 0 14px}
+#chat-toggle:hover{transform:scale(1.05);box-shadow:0 6px 28px rgba(124,58,237,.6)}
 #chat-toggle.active{background:var(--card-border)}
-#chat-toggle .badge-dot{position:absolute;top:4px;right:4px;width:12px;height:12px;border-radius:50%;border:2px solid var(--bg)}
+#chat-toggle .toggle-icon{font-size:1.3rem}
+#chat-toggle .badge-dot{width:10px;height:10px;border-radius:50%;margin-left:2px}
 .badge-dot.connected{background:var(--green)}
 .badge-dot.disconnected{background:var(--red)}
 .badge-dot.loading{background:var(--yellow);animation:pulse 1s infinite}
@@ -262,6 +284,26 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     <div class="status-card"><div class="label">Resource Group</div><div class="value" id="rg-name" style="font-size:1rem">–</div></div>
     <div class="status-card"><div class="label">Customer Portal</div><div class="value" id="portal-link">–</div></div>
   </section>
+
+  <!-- Copilot AI Banner -->
+  <div id="copilot-banner" onclick="toggleChat()">
+    <div class="banner-icon">🤖</div>
+    <div class="banner-text">
+      <div class="banner-title">GitHub Copilot AI Assistant <span id="copilot-banner-status" class="banner-status init">connecting…</span></div>
+      <div class="banner-desc">Ask questions about your cluster, diagnose failures, or run fixes using natural language.</div>
+    </div>
+    <button class="banner-cta" onclick="event.stopPropagation(); toggleChat()">Open Assistant</button>
+  </div>
+
+  <!-- Failure Diagnosis Banner (shown when deploy/validate fails) -->
+  <div id="copilot-failure-banner">
+    <div class="banner-icon">⚠️</div>
+    <div class="banner-text">
+      <div class="banner-title" id="failure-banner-title">Operation Failed</div>
+      <div class="banner-desc" id="failure-banner-desc">A deployment operation has failed. Let Copilot analyze the logs and suggest a fix.</div>
+    </div>
+    <button class="failure-cta" onclick="analyzeFailureWithCopilot()">🤖 Diagnose with Copilot</button>
+  </div>
 
   <!-- Pod Table + Events -->
   <div class="grid-2">
@@ -394,7 +436,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 
 <!-- AI Chat Toggle -->
 <button id="chat-toggle" onclick="toggleChat()" title="AI Assistant">
-  🤖
+  <span class="toggle-icon">🤖</span> Copilot
   <span id="chat-badge" class="badge-dot loading"></span>
 </button>
 
@@ -557,6 +599,17 @@ async function refreshPods() {
     const uhEl = document.getElementById('unhealthy-pods');
     uhEl.textContent = unhealthy;
     uhEl.className = 'value ' + (unhealthy > 0 ? 'red' : 'green');
+
+    // Update Copilot banner with cluster health context
+    if (unhealthy > 0) {
+      const issues = pods.filter(p => p.status !== 'Running' && p.status !== 'Succeeded')
+        .map(p => p.name + ' (' + p.status + ')').join(', ');
+      document.getElementById('copilot-banner').querySelector('.banner-desc').textContent =
+        '⚠️ ' + unhealthy + ' unhealthy pod(s): ' + issues + ' — click to diagnose.';
+    } else {
+      document.getElementById('copilot-banner').querySelector('.banner-desc').textContent =
+        'Ask questions about your cluster, diagnose failures, or run fixes using natural language.';
+    }
 
     // Pod table
     const tbody = document.getElementById('pod-tbody');
@@ -832,10 +885,25 @@ function streamOperation(opId) {
     setTerminalStatus(info.status);
     es.close();
     currentEventSource = null;
+
+    // On failure, show the Copilot failure diagnosis banner
+    if (info.status === 'failed') {
+      const termOutput = document.getElementById('terminal-output').textContent || '';
+      // Store failure context for Copilot
+      window._lastFailure = {
+        opId: currentOpId,
+        status: info.status,
+        exitCode: info.exitCode,
+        logTail: termOutput.slice(-3000),
+      };
+      const fb = document.getElementById('copilot-failure-banner');
+      document.getElementById('failure-banner-title').textContent = 'Operation Failed (exit ' + info.exitCode + ')';
+      document.getElementById('failure-banner-desc').textContent = 'The operation failed. Let Copilot analyze the logs and suggest a fix.';
+      fb.style.display = 'flex';
+    }
+
     currentOpId = null;
-    // re-enable buttons
     setInfraButtonsEnabled(true);
-    // refresh everything
     refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
   });
 
@@ -1154,22 +1222,57 @@ async function checkCopilotStatus() {
     const s = await r.json();
     const badge = document.getElementById('chat-badge');
     const status = document.getElementById('chat-conn-status');
+    const bannerStatus = document.getElementById('copilot-banner-status');
     if (s.ready) {
       badge.className = 'badge-dot connected';
       status.className = 'chat-status ok';
       status.textContent = 'connected';
+      bannerStatus.className = 'banner-status ok';
+      bannerStatus.textContent = '● Ready';
     } else if (s.error) {
       badge.className = 'badge-dot disconnected';
       status.className = 'chat-status err';
-      status.textContent = s.hasToken ? 'error' : 'no token';
+      status.textContent = 'error';
+      bannerStatus.className = 'banner-status err';
+      bannerStatus.textContent = '● ' + (s.error.length > 40 ? s.error.slice(0, 40) + '…' : s.error);
     } else {
       badge.className = 'badge-dot loading';
       status.className = 'chat-status init';
       status.textContent = 'connecting…';
+      bannerStatus.className = 'banner-status init';
+      bannerStatus.textContent = '● Connecting…';
     }
   } catch {
     document.getElementById('chat-badge').className = 'badge-dot disconnected';
+    const bs = document.getElementById('copilot-banner-status');
+    bs.className = 'banner-status err';
+    bs.textContent = '● Server unreachable';
   }
+}
+
+// Analyze a failed operation with Copilot
+function analyzeFailureWithCopilot() {
+  const failure = window._lastFailure;
+  if (!failure) return;
+
+  // Hide the failure banner
+  document.getElementById('copilot-failure-banner').style.display = 'none';
+
+  // Build a diagnostic prompt with log context
+  const logExcerpt = failure.logTail.slice(-1500);
+  const prompt = 'A deployment operation just failed with exit code ' + failure.exitCode + '. ' +
+    'Analyze this log excerpt and tell me what went wrong and how to fix it:\n\n```\n' +
+    logExcerpt + '\n```';
+
+  // Open chat and send the prompt
+  if (!chatOpen) toggleChat();
+
+  // Hide welcome
+  const welcome = document.getElementById('chat-welcome');
+  if (welcome) welcome.style.display = 'none';
+
+  document.getElementById('chat-input').value = prompt;
+  sendChatMessage();
 }
 
 checkCopilotStatus();
