@@ -34,8 +34,8 @@ param deployAlerts bool = false
 @description('Deploy Azure SRE Agent for AI-powered diagnostics and remediation')
 param deploySreAgent bool = true
 
-@description('Deploy Azure Data Explorer cluster for propane operations log analytics')
-param deployDataExplorer bool = true
+@description('Deploy Azure Data Explorer cluster for propane operations log analytics (optional — SRE Agent uses Log Analytics directly)')
+param deployDataExplorer bool = false
 
 @description('Deploy default Action Group for alert notifications and incident routing')
 param deployActionGroup bool = false
