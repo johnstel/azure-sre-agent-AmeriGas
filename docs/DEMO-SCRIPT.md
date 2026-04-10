@@ -2,49 +2,75 @@
 
 > **Audience:** AmeriGas IT / Operations leadership
 > **Duration:** ~30–45 minutes
-> **Prerequisites:** Infrastructure already deployed (`deploy`), Mission Control running (`npm start` in `tools/mission-control`)
+> **Prerequisites:** Infrastructure already deployed (`deploy`), all 9 services running in the `propane` namespace
 
 ---
 
 ## Pre-Demo Checklist
 
-- [ ] Infrastructure deployed and healthy (`kgp` shows 8 running pods)
+- [ ] Infrastructure deployed and healthy (`kgp` shows 9 running services, ~12 pods)
 - [ ] Mission Control running at http://localhost:3000
 - [ ] SRE Agent portal open at https://aka.ms/sreagent/portal
 - [ ] Browser tabs ready: Mission Control, SRE Agent Portal, Azure Portal (resource group)
 - [ ] Upload `docs/sre-agent-knowledge.md` as SRE Agent knowledge file
 - [ ] Confirm customer portal external IP is active (check Mission Control status card)
+- [ ] Verify Application Insights is receiving telemetry in Azure Portal → Application Insights → Live Metrics
+- [ ] Verify ADX PropaneLogs database has data: Azure Portal → Azure Data Explorer → PropaneLogs → query `ContainerLog | take 10`
+- [ ] Confirm the OTel Collector pod is running: `kubectl get pod -n propane -l app=otel-collector`
 
 ---
 
-## Act 1 — Set the Stage (5 min)
+## Act 1 — Set the Stage (5–7 min)
 
 ### Talking Points
 
-> "We've built a simulation of an AmeriGas-style propane operations platform running on Azure Kubernetes Service. It includes the services you'd recognize — tank monitoring from smart sensors, inventory management across depots, order fulfillment, and customer-facing portals."
+> "We've built a full simulation of AmeriGas retail propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models real retail cage exchange locations across PA and NJ, with customer-facing portals showing live cage inventory, a dispatch operations center for fleet management, and a full telemetry pipeline feeding into Application Insights and Azure Data Explorer."
 
-> "The platform has **8 microservices** in production, backed by MongoDB for data persistence and RabbitMQ for event processing — much like the architecture patterns you'd see in a real IoT-connected propane distribution system."
+> "The platform has **9 microservices** in production — including an OpenTelemetry Collector that feeds distributed traces and metrics into Azure — backed by MongoDB for cage inventory and transaction data, and RabbitMQ for dispatch events."
 
-### Show: Mission Control Dashboard
+### Show: Customer Portal
 
-1. Open **Mission Control** (http://localhost:3000)
-2. Walk through the status cards: "8 healthy pods, all green"
-3. Point out the service architecture in the pod table
-4. Click the **Customer Portal** link to show the consumer-facing app
-5. Show the **Deployments** panel — all replicas healthy (1/1)
+1. Open the **Customer Portal** via Mission Control or its external IP
+2. Walk through the propane-specific UI:
+   - **Tank fill gauge** — the CSS conic-gradient gauge shows the customer's current tank level with color-coded fill (green → yellow → red)
+   - **Nearby Exchange Locations** — point out the 8 real PA/NJ retail locations: Home Depot King of Prussia, Walmart Collegeville, Lowe's Exton, ACE Hardware Lansdale, Wawa Wayne, ShopRite Norristown, Giant Pottstown, and Costco Plymouth Meeting
+   - **Cage inventory visualization** — each location shows colored tank dots: 🔵 blue = full, ⚪ grey = empty, 🟠 orange = reserved
+   - **Stock status badges** — "In Stock" (green), "Low Stock" (yellow), "Out of Stock" (red)
+3. Point out the usage history table, delivery scheduling, and seasonal demand data
+
+### Show: Dispatch Console — Retail Cage Operations Center
+
+1. Open the **Dispatch Console** (ops-console)
+2. Highlight the **12-location cage monitor grid**:
+   - Each location card shows a 4×5 grid of tank circles (20 tanks per cage)
+   - Tanks are color-coded: blue (full), grey (empty), orange (in transit)
+   - **Critical locations pulse red** when they have ≤3 full tanks — point this out: "See how this card is flashing? That location is about to run out."
+3. Show the **Delivery Priority Queue**:
+   - Sorted by estimated stockout time
+   - Priority labels: URGENT / HIGH / NORMAL
+   - "This is what the dispatch team would use to decide which trucks to send first."
+4. Show the **7-day demand forecast**:
+   - Temperature-based demand projections (High / Normal / Low) for each day
+   - "The system correlates weather forecasts with historical consumption to predict when cages will need restocking."
+5. Point out the **operations log** showing real-time cage events
+
+### Show: Telemetry Pipeline
+
+1. Briefly explain: "Behind the scenes, every service is instrumented with OpenTelemetry. The OTel Collector receives traces and metrics, then exports to Application Insights for real-time monitoring and to Azure Data Explorer for deep analytics."
+2. Optionally show the `propane-telemetry-config` ConfigMap: `kubectl get configmap propane-telemetry-config -n propane -o yaml`
 
 ### Show: SRE Agent Portal
 
 1. Open **SRE Agent Portal** (https://aka.ms/sreagent/portal)
-2. Explain: "This is Azure SRE Agent — an AI-powered site reliability engineer that has access to your cluster, your logs in Log Analytics, your metrics, and the knowledge base we provided about your environment."
+2. Explain: "This is Azure SRE Agent — an AI-powered site reliability engineer that has access to your cluster, your logs in Log Analytics, Application Insights telemetry, and the knowledge base we provided about your environment."
 
 ### Baseline Health Check
 
 In SRE Agent, ask:
 
-> **"Give me a health report for the propane namespace"**
+> **"Give me a health report for the propane namespace. Are all services reporting telemetry to Application Insights?"**
 
-Let the agent show that everything is healthy. This establishes the baseline.
+Let the agent show that everything is healthy and telemetry is flowing. This establishes the baseline.
 
 ---
 
@@ -61,18 +87,23 @@ Pick **2–3 scenarios** from the options below. Recommended flow for maximum im
 **Why this one:** Shows cascading failures and root cause analysis — the most impressive SRE Agent capability.
 
 **1. Set the scene:**
-> "Imagine it's Tuesday morning. The operations team starts getting alerts — tank readings aren't being processed, orders aren't going through. Multiple services seem affected. Let's see what SRE Agent can figure out."
+> "Imagine the operations team at AmeriGas HQ notices the Retail Cage Operations Center dashboard suddenly shows stale data — cage inventory isn't updating, the delivery priority queue is frozen, and the operations log has stopped scrolling. Something is very wrong."
 
-**2. Break it** — click **"MongoDB Down"** in Mission Control's Break Scenarios panel
+**2. Break it** — click **"MongoDB Down"** in Mission Control, or run:
+```bash
+kubectl apply -f k8s/scenarios/mongodb-down.yaml
+```
 
-**3. Watch the cascade** — Mission Control will show:
-- mongodb pod disappears (0 replicas)
-- tank-monitor and order-service may start showing errors/restarts
-- Unhealthy pod count goes red
+**3. Watch the cascade:**
+- MongoDB pod disappears (0 replicas)
+- Tank-monitor and order-service start showing errors/restarts
+- On the **Dispatch Console** — the operations log shows MongoDB connection errors cascading across services
+- On the **Customer Portal** — cage inventory dots stop updating, stock status badges go stale
+- Unhealthy pod count goes red in Mission Control
 
 **4. Ask SRE Agent** (start vague, like a real operator would):
 
-> **"Something is wrong with our propane platform. Tank readings aren't being processed and orders are failing. What's going on?"**
+> **"Something is wrong with our propane platform. Cage inventory isn't updating and the dispatch queue is frozen. What's going on?"**
 
 Let the agent investigate. It should trace the dependency chain:
 - Services failing → can't connect to database → MongoDB has 0 replicas
@@ -81,11 +112,16 @@ Let the agent investigate. It should trace the dependency chain:
 
 > **"What depends on MongoDB? How many services are affected?"**
 
+> **"Can you check Application Insights for error rate spikes across the propane services?"**
+
 > **"What's the fastest way to restore service?"**
 
-**6. Fix it** — click **🔧 Fix All** in Mission Control
+**6. Fix it** — click **🔧 Fix All** in Mission Control, or run:
+```bash
+kubectl apply -f k8s/base/application.yaml
+```
 
-**7. Show recovery** — pods come back to green within 30–60 seconds
+**7. Show recovery** — pods come back to green within 30–60 seconds. Cage inventory resumes updating.
 
 ---
 
@@ -94,11 +130,17 @@ Let the agent investigate. It should trace the dependency chain:
 **Why this one:** Very common in production. Easy to understand.
 
 **1. Set the scene:**
-> "Winter peak season hits. Smart tank sensors are reporting at higher frequency as customers consume more propane. The tank monitor service can't keep up."
+> "Winter peak season hits. Smart tank sensors across all 12 retail locations are reporting at higher frequency as customers consume more propane for heating. The tank monitor service can't keep up with the data volume."
 
-**2. Break it** — click **"OOMKilled"** in Mission Control
+**2. Break it** — click **"OOMKilled"** in Mission Control, or run:
+```bash
+kubectl apply -f k8s/scenarios/oom-killed.yaml
+```
 
-**3. Watch it** — tank-monitor pod cycles between Running and OOMKilled, restart count climbs
+**3. Watch it:**
+- Tank-monitor pod cycles between Running and OOMKilled, restart count climbs
+- On the **Customer Portal** — the "Nearby Exchange Locations" section starts showing errors instead of cage inventory. The colored tank dots disappear because the tank monitor can't process sensor data.
+- Stock status badges may flip to "Out of Stock" as data goes stale
 
 **4. Ask SRE Agent:**
 
@@ -110,7 +152,10 @@ Agent should identify OOMKilled events and the insufficient memory limit (16Mi).
 
 > **"What memory limit should we set to handle peak IoT data volume?"**
 
-**6. Fix it** — click **🔧 Fix All**
+**6. Fix it** — click **🔧 Fix All**, or run:
+```bash
+kubectl apply -f k8s/base/application.yaml
+```
 
 ---
 
@@ -121,9 +166,15 @@ Agent should identify OOMKilled events and the insufficient memory limit (16Mi).
 **1. Set the scene:**
 > "After a security review, someone applied a network policy to isolate the tank monitor. But they blocked too much traffic — now tank data isn't flowing anywhere."
 
-**2. Break it** — click **"Network Block"** in Mission Control
+**2. Break it** — click **"Network Block"** in Mission Control, or run:
+```bash
+kubectl apply -f k8s/scenarios/network-block.yaml
+```
 
-**3. Point out:** "Look — the pod is Running and green. A human looking at this dashboard would think everything is fine. But data isn't flowing."
+**3. Point out the silent failure:**
+> "Look at the Dispatch Console — the cage inventory on the Retail Cage Operations Center looks fine at first glance — tanks still show as full. But look at the delivery priority queue — it hasn't updated. The data pipeline is silently broken. This is the kind of failure that can go unnoticed for hours."
+
+The pod is Running and green. A human looking at pod status would think everything is fine.
 
 **4. Ask SRE Agent:**
 
@@ -135,7 +186,10 @@ Agent should discover the `deny-tank-monitor` NetworkPolicy blocking all traffic
 
 > **"Show me the network policies in the propane namespace"**
 
-**6. Fix it** — click **🌐 Fix Network** in Mission Control
+**6. Fix it** — click **🌐 Fix Network** in Mission Control, or run:
+```bash
+kubectl apply -f k8s/base/application.yaml
+```
 
 ---
 
@@ -144,9 +198,12 @@ Agent should discover the `deny-tank-monitor` NetworkPolicy blocking all traffic
 **Why this one:** Shows a subtle Kubernetes misconfiguration that's hard to spot manually.
 
 **1. Set the scene:**
-> "The team pushed a 'v2 upgrade' of the tank monitor. The deployment went fine, but suddenly nothing can reach it."
+> "The team pushed a 'v2 upgrade' of the tank monitor. The deployment went fine, but suddenly the Customer Portal cage inventory and the Dispatch Console operations data have gone dark."
 
-**2. Break it** — click **"Service Mismatch"**
+**2. Break it** — click **"Service Mismatch"**, or run:
+```bash
+kubectl apply -f k8s/scenarios/service-mismatch.yaml
+```
 
 **3. Ask SRE Agent:**
 
@@ -154,21 +211,48 @@ Agent should discover the `deny-tank-monitor` NetworkPolicy blocking all traffic
 
 Agent should find the Service selector (`app: tank-monitor-v2`) doesn't match the pod label (`app: tank-monitor`).
 
-**4. Fix it** — click **🔧 Fix All**
+**4. Fix it** — click **🔧 Fix All**, or run:
+```bash
+kubectl apply -f k8s/base/application.yaml
+```
 
 ---
 
-## Act 3 — Proactive Capabilities (5 min)
+## Act 3 — Proactive + Observability (7 min)
 
-> "SRE Agent isn't just reactive. It can proactively monitor your environment."
+> "SRE Agent isn't just reactive. It can proactively monitor your environment — and it has deep visibility into your entire telemetry stack."
 
-### Scheduled Health Checks
+### Show: Application Insights
 
-In SRE Agent, ask:
+1. Open **Azure Portal → Application Insights** for the propane resource
+2. Navigate to **Application Map** or **Live Metrics**
+3. Explain: "Here's the distributed tracing from the OTel Collector — you can see the full request flow from the customer portal through the tank monitor to MongoDB and back. Every service is instrumented."
+4. Show a sample transaction end-to-end trace if available
+
+### Show: Azure Data Explorer
+
+1. Open **Azure Portal → Azure Data Explorer** (or use the ADX cluster URI shown during deploy)
+2. Navigate to the **PropaneLogs** database
+3. Run a sample query:
+   ```kusto
+   ContainerLog
+   | where TimeGenerated > ago(1h)
+   | where ContainerName_s has "tank-monitor"
+   | take 20
+   ```
+4. Explain: "And here in Azure Data Explorer, we have the PropaneLogs database with container logs, pod events, and inventory data available for deep analysis. This is the kind of long-term analytical data that SRE Agent can query when diagnosing intermittent issues."
+
+### SRE Agent Proactive Prompts
+
+In SRE Agent, demonstrate these capabilities:
+
+> **"Query Application Insights for the p95 response time of the tank-monitor service over the last hour"**
+
+> **"Are there any error patterns in the propane namespace logs in the last 30 minutes?"**
 
 > **"Check the health of my AKS cluster every hour and alert me if any pods are unhealthy"**
 
-Show how SRE Agent can set up a recurring scheduled task.
+Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 
 ### Best Practice Analysis
 
@@ -184,13 +268,13 @@ Show how SRE Agent can set up a recurring scheduled task.
 
 1. **Mean Time to Diagnosis** — "What took a 3-person war room 45 minutes, SRE Agent diagnosed in under 30 seconds. It correlated logs, metrics, events, and configuration automatically."
 
-2. **Institutional Knowledge** — "We uploaded a knowledge file with your architecture and runbooks. SRE Agent uses this context to give answers specific to your environment, not generic Kubernetes advice."
+2. **Full Observability Pipeline** — "We have full distributed tracing via OpenTelemetry, Application Insights integration, and Azure Data Explorer for deep analytics — SRE Agent leverages ALL of this data. It doesn't just look at pod status; it queries traces, logs, and metrics across the entire stack."
 
 3. **24/7 Coverage** — "SRE Agent doesn't sleep, doesn't go on vacation, and doesn't need to be paged at 3am. It can run scheduled health checks and alert when something deviates."
 
 4. **Safe Remediation** — "SRE Agent can suggest AND execute fixes — with configurable access levels. Set it to 'Review' mode to require approval, or 'High' access for trusted automation."
 
-5. **Azure-Native** — "This integrates with your existing Azure stack — Log Analytics, Application Insights, Azure Monitor, Grafana. No new tools to deploy."
+5. **Azure-Native with OTel + ADX** — "The OpenTelemetry Collector feeds into Application Insights and Azure Data Explorer, giving SRE Agent comprehensive visibility. Combined with Log Analytics and Azure Monitor, there are no blind spots — and no new third-party tools to deploy."
 
 ### Cost Context
 
@@ -202,17 +286,23 @@ Show how SRE Agent can set up a recurring scheduled task.
 
 | Issue | Quick Fix |
 |-------|-----------|
-| Pods stuck after fix | Wait 30–60 seconds, pods need time to pull images and start |
+| Pods stuck after fix | Wait 30–60 seconds; pods need time to pull images and start |
 | Customer portal IP shows "Pending" | LoadBalancer takes 1–2 minutes after initial deploy |
 | SRE Agent is slow to respond | Normal for complex queries — it's analyzing logs and metrics in real-time |
 | Mission Control shows connection error | Verify kubectl context: `kubectl config current-context` |
 | SRE Agent says "no data" | Ensure the knowledge file was uploaded and Log Analytics has had time to ingest data (allow 5–10 min after deploy) |
+| App Insights shows no data | Wait 2–3 min after deploy; check that `deploy.ps1` injected the connection string: `kubectl get configmap propane-telemetry-config -n propane -o yaml` |
+| ADX PropaneLogs empty | Log Analytics data export may take 5–10 min to start flowing after initial deploy |
+| OTel Collector crashing | Check resource limits; verify the `otel-collector-config` ConfigMap is valid YAML: `kubectl describe configmap otel-collector-config -n propane` |
 
 ---
 
 ## Post-Demo Cleanup
 
-1. Click **🔧 Fix All** in Mission Control to restore healthy state
+1. Click **🔧 Fix All** in Mission Control to restore healthy state, or run:
+   ```bash
+   kubectl apply -f k8s/base/application.yaml
+   ```
 2. Optionally run **Destroy** from the Infrastructure panel to tear down Azure resources
 3. Resources cost ~$32–38/day while running — destroy if not needed
 
@@ -222,13 +312,29 @@ Show how SRE Agent can set up a recurring scheduled task.
 
 | Mission Control Button | What Breaks | Business Story |
 |----------------------|-------------|---------------|
-| OOMKilled | tank-monitor memory exhaustion | Winter peak IoT data spike |
+| OOMKilled | tank-monitor memory exhaustion | Winter peak IoT data spike overwhelms cage sensors |
 | CrashLoopBackOff | inventory-service bad config | Invalid pricing configuration |
 | ImagePullBackOff | order-service wrong image | Botched image release |
 | High CPU | CPU stress pod added | Peak season demand forecasting overload |
 | Pending Pods | Unschedulable pods | Fleet telemetry over-provisioned |
 | Probe Failure | Bad health check endpoints | Post-maintenance misconfiguration |
-| Network Block | NetworkPolicy blocks traffic | Overly restrictive security policy |
+| Network Block | NetworkPolicy blocks traffic | Overly restrictive security policy — silent data pipeline failure |
 | Missing Config | Missing ConfigMaps | Delivery zone config not deployed |
-| MongoDB Down | Database scaled to 0 | Database outage — cascading failure |
+| MongoDB Down | Database scaled to 0 | Database outage — cascading failure across cage inventory |
 | Service Mismatch | Selector label drift | Silent routing failure after "v2 upgrade" |
+
+### Platform Services (9 active)
+
+| Service | Role | Replicas |
+|---------|------|----------|
+| `customer-portal` | Consumer portal — tank gauge, cage inventory, exchange locations | 2 |
+| `dispatch-console` | Retail Cage Operations Center — cage grid, delivery queue, forecast | 1 |
+| `tank-monitor` | Smart tank sensor data ingestion & processing | 2 |
+| `inventory-service` | Cage inventory catalog, stock levels, pricing | 2 |
+| `order-service` | Order fulfillment & delivery scheduling | 2 |
+| `usage-simulator` | Retail consumer usage pattern generator | 1 |
+| `otel-collector` | OpenTelemetry Collector — receives OTLP, exports to App Insights & ADX | 1 |
+| `rabbitmq` | Event bus — dispatch events, cage alerts, inventory updates | 1 |
+| `mongodb` | Cage inventory, tank readings, transaction data | 1 |
+
+> **Note:** `order-worker` exists in the manifests but is disabled (`replicas: 0`). The OTel Collector is a platform component — it receives telemetry from all instrumented services and exports to Application Insights (for real-time APM) and through Container Insights to Log Analytics and ADX (for deep analytics).
