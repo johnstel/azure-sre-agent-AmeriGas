@@ -100,7 +100,7 @@ resource dataExportRule 'Microsoft.OperationalInsights/workspaces/dataExports@20
   name: 'export-to-adx'
   properties: {
     destination: {
-      resourceId: adxCluster.id
+      resourceId: database.id
     }
     tableNames: [
       'ContainerLogV2'
