@@ -240,25 +240,44 @@ let copilotReady = false;
 let copilotError = null;
 let chatHistory = [];
 
+// Helper to create a fresh Copilot session
+async function createCopilotSession() {
+  const tools = createTools();
+  return copilotClient.createSession({
+    onPermissionRequest: approveAll, clientName: 'amerigas-mission-control',
+    systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
+    tools, availableTools: tools.map(t => t.name),
+  });
+}
+
 app.get('/api/copilot/status', (req, res) => {
   res.json({ ready: copilotReady, error: copilotError, sessionId: copilotSession?.sessionId || null });
 });
 
 app.post('/api/chat', async (req, res) => {
-  if (!copilotReady || !copilotSession) return res.status(503).json({ error: copilotError || 'Copilot not initialized' });
+  if (!copilotReady || !copilotClient) return res.status(503).json({ error: copilotError || 'Copilot not initialized' });
   const { message } = req.body;
   if (!message || typeof message !== 'string') return res.status(400).json({ error: 'message is required' });
 
   chatHistory.push({ role: 'user', content: message, timestamp: new Date().toISOString() });
 
-  try {
-    const response = await copilotSession.sendAndWait({ prompt: message }, 120000);
-    const content = response?.data?.content || '(no response)';
-    const toolRequests = response?.data?.toolRequests || [];
-    chatHistory.push({ role: 'assistant', content, toolRequests, timestamp: new Date().toISOString() });
-    res.json({ content, toolRequests });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  // Try sending, auto-reconnect if session expired
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (!copilotSession) copilotSession = await createCopilotSession();
+      const response = await copilotSession.sendAndWait({ prompt: message }, 180000);
+      const content = response?.data?.content || '(no response)';
+      const toolRequests = response?.data?.toolRequests || [];
+      chatHistory.push({ role: 'assistant', content, toolRequests, timestamp: new Date().toISOString() });
+      return res.json({ content, toolRequests });
+    } catch (err) {
+      if (attempt === 0 && err.message && err.message.includes('Session not found')) {
+        console.log('  ⚠️  Session expired, creating new session...');
+        try { copilotSession = await createCopilotSession(); } catch (e) { /* fall through */ }
+        continue;
+      }
+      return res.status(500).json({ error: err.message });
+    }
   }
 });
 
@@ -266,13 +285,8 @@ app.get('/api/chat/history', (req, res) => { res.json(chatHistory); });
 
 app.post('/api/chat/reset', async (req, res) => {
   try {
-    if (copilotSession) await copilotSession.disconnect();
-    const tools = createTools();
-    copilotSession = await copilotClient.createSession({
-      onPermissionRequest: approveAll, clientName: 'amerigas-mission-control',
-      systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
-      tools, availableTools: tools.map(t => t.name),
-    });
+    if (copilotSession) await copilotSession.disconnect().catch(() => {});
+    copilotSession = await createCopilotSession();
     chatHistory = [];
     res.json({ success: true, sessionId: copilotSession.sessionId });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -301,12 +315,7 @@ async function preflight() {
   try {
     copilotClient = new CopilotClient({ logLevel: 'error' });
     await copilotClient.start();
-    const tools = createTools();
-    copilotSession = await copilotClient.createSession({
-      onPermissionRequest: approveAll, clientName: 'amerigas-mission-control',
-      systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
-      tools, availableTools: tools.map(t => t.name),
-    });
+    copilotSession = await createCopilotSession();
     copilotReady = true;
     console.log('  ✅ Copilot SDK initialized');
   } catch (err) {
