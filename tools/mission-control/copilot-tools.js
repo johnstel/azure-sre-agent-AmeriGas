@@ -313,6 +313,55 @@ function createTools() {
         return out || '(no output)';
       },
     }),
+
+    defineTool('deploy_infrastructure', {
+      description: 'Deploy the full Azure infrastructure (AKS, ACR, Key Vault, monitoring, SRE Agent) by running scripts/deploy.ps1. This is a long-running operation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string', description: 'Azure region: eastus2, swedencentral, or australiaeast', enum: ['eastus2', 'swedencentral', 'australiaeast'] },
+          workload_name: { type: 'string', description: 'Workload name prefix (default: srelab)' },
+          skip_rbac: { type: 'boolean', description: 'Skip RBAC configuration' },
+          skip_sre_agent: { type: 'boolean', description: 'Skip SRE Agent deployment' },
+        },
+        required: [],
+      },
+      handler: async ({ location, workload_name, skip_rbac, skip_sre_agent }) => {
+        const loc = location || 'eastus2';
+        const wl = workload_name || 'srelab';
+        const scriptPath = path.resolve(REPO_ROOT, 'scripts', 'deploy.ps1');
+        const args = ['-NoLogo', '-NoProfile', '-File', scriptPath, '-Location', loc, '-WorkloadName', wl, '-Yes'];
+        if (skip_rbac) args.push('-SkipRbac');
+        if (skip_sre_agent) args.push('-SkipSreAgent');
+        try {
+          const { stdout, stderr } = await runCommand('pwsh', args, { timeout: 600000 });
+          return `Deployment completed successfully.\n\n${stdout}${stderr ? '\nSTDERR:\n' + stderr : ''}`;
+        } catch (err) {
+          return `Deployment failed (exit code ${err.code || 'unknown'}):\n${err.stdout || ''}\n${err.stderr || err.message}`;
+        }
+      },
+    }),
+
+    defineTool('destroy_infrastructure', {
+      description: 'Destroy all Azure infrastructure by running scripts/destroy.ps1. This permanently deletes all resources (AKS, ACR, Key Vault, etc). Use get_cluster_info first to find the resource group name.',
+      parameters: {
+        type: 'object',
+        properties: {
+          resource_group: { type: 'string', description: 'Resource group name to destroy (e.g. "rg-srelab-eastus2")' },
+        },
+        required: ['resource_group'],
+      },
+      handler: async ({ resource_group }) => {
+        const scriptPath = path.resolve(REPO_ROOT, 'scripts', 'destroy.ps1');
+        const args = ['-NoLogo', '-NoProfile', '-File', scriptPath, '-ResourceGroupName', resource_group, '-Force'];
+        try {
+          const { stdout, stderr } = await runCommand('pwsh', args, { timeout: 600000 });
+          return `Infrastructure destroyed successfully.\n\n${stdout}${stderr ? '\nSTDERR:\n' + stderr : ''}`;
+        } catch (err) {
+          return `Destroy operation failed:\n${err.stdout || ''}\n${err.stderr || err.message}`;
+        }
+      },
+    }),
   ];
 
   // Wrap all tool handlers with error handling so they never throw
