@@ -9,6 +9,7 @@ A fully automated Azure environment for demonstrating **Azure SRE Agent** capabi
 - **Azure SRE Agent** deployed automatically via Bicep for AI-powered diagnostics
 - **Full observability stack**: Log Analytics, Application Insights, Managed Grafana
 - **Ready-to-use scripts** for deployment and teardown
+- **Mission Control dashboard** with built-in GitHub Copilot SDK AI assistant
 - **Dev container** for consistent development experience
 
 ## 🔥 AmeriGas Propane Architecture
@@ -72,11 +73,29 @@ To restore:
 fix-all
 ```
 
-## 🤖 Using SRE Agent
+## 🤖 AI-Powered Diagnostics
+
+This lab includes **two AI assistants** for diagnosing and remediating issues:
+
+### Mission Control Copilot (Local)
+
+The Mission Control dashboard (`tools/mission-control/`) includes a built-in **GitHub Copilot SDK** AI assistant that can directly interact with your cluster:
+
+1. **Launch Mission Control** — type `mission-control` in the dev container terminal
+2. **Open the chat panel** — click the Copilot button or the top banner
+3. **Ask it anything** — the assistant has 19 tools for kubectl, scenarios, and infrastructure operations
+4. **Example prompts**:
+   - "What's the health of the cluster?"
+   - "Break the OOM scenario and then diagnose it"
+   - "Deploy the full infrastructure to eastus2"
+
+> **Requires**: A GitHub Copilot license. See [Mission Control Copilot](#-mission-control-copilot) for details.
+
+### Azure SRE Agent (Cloud)
 
 After deployment:
 
-1. **Open the SRE Agent Portal** — the URL is displayed in deployment output, or visit [aka.ms/sreagent/portal](https://aka.ms/sreagent/portal)
+1. **Open the SRE Agent Portal** — visit [aka.ms/sreagent/portal](https://aka.ms/sreagent/portal)
 2. **Connect it to your resources** (AKS, Log Analytics)
 3. **Ask it to diagnose**:
    - "Why are pods crashing in the propane namespace?"
@@ -108,6 +127,69 @@ See [docs/COSTS.md](docs/COSTS.md) for detailed breakdown and optimization tips.
 | MissingConfig | Delivery zone configuration missing after promotion | Configuration troubleshooting |
 | MongoDBDown | Tank database offline — cascading order failure | Dependency tracing, root cause |
 | ServiceMismatch | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
+
+## 🖥️ Mission Control Copilot
+
+Mission Control is a local Node.js/Express dashboard powered by the **GitHub Copilot SDK** (`@github/copilot-sdk`). It provides a chat-based AI assistant with deep access to your AKS cluster.
+
+### Prerequisites
+
+- **GitHub Copilot license** (Individual, Business, or Enterprise)
+- **GitHub Copilot VS Code extension** installed (included in the dev container)
+- `kubectl` configured with AKS credentials
+- `az` CLI authenticated
+
+### Starting Mission Control
+
+```bash
+# From the dev container terminal
+mission-control
+
+# Or manually
+cd tools/mission-control && npm install && npm start
+```
+
+The dashboard opens at **http://localhost:3000**.
+
+### Copilot Agent Tools
+
+The AI assistant has access to 19 tools organized by category:
+
+| Category | Tools | Description |
+|----------|-------|-------------|
+| **Diagnostics** | `get_pods`, `get_pod_logs`, `describe_pod`, `get_events`, `get_deployments`, `get_services`, `get_nodes`, `get_cluster_health` | Inspect cluster state, pods, logs, events, and services |
+| **Remediation** | `fix_all`, `fix_network`, `fix_extras`, `scale_deployment`, `restart_deployment` | Restore healthy state, remove rogue resources, scale/restart |
+| **Scenarios** | `apply_break_scenario` | Apply any of the 10 breakable failure scenarios |
+| **Infrastructure** | `deploy_infrastructure`, `destroy_infrastructure`, `validate_deployment`, `get_cluster_info` | Deploy/destroy Azure resources, validate health |
+| **Raw Access** | `kubectl_raw` | Run arbitrary kubectl commands |
+
+### Chat API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/copilot/status` | GET | Check Copilot SDK connection status |
+| `/api/chat` | POST | Send a message (`{ "message": "..." }`) |
+| `/api/chat/history` | GET | Retrieve conversation history |
+| `/api/chat/reset` | POST | Reset conversation and create a new session |
+
+### Features
+
+- **Proactive status banner** — shows Copilot Ready/Connecting/Error state at the top of the dashboard
+- **Failure diagnosis banner** — auto-appears after deploy/validate failures with a pre-built diagnosis prompt
+- **Auto-reconnect** — recreates the Copilot session automatically if it expires
+- **Tool cards** — displays which tools the agent invoked during diagnosis
+- **Quick prompts** — one-click prompts for common operations
+- **180-second timeout** — allows time for complex multi-tool diagnosis chains
+
+### Troubleshooting Mission Control
+
+| Issue | Resolution |
+|-------|-----------|
+| "Copilot SDK failed" on startup | Ensure you have a GitHub Copilot license and the VS Code Copilot extension is installed |
+| Chat returns 503 | Copilot SDK didn't initialize — check the terminal for error details |
+| Tools fail with kubectl errors | Verify `kubectl` is configured: `kubectl config current-context` |
+| Session expired errors | The assistant auto-reconnects; retry the message |
+| Long response times | Complex queries that chain multiple tools (e.g., `get_cluster_health`) can take up to 180 seconds |
 
 ## 🛠️ Commands Reference
 
@@ -141,9 +223,11 @@ See [docs/COSTS.md](docs/COSTS.md) for detailed breakdown and optimization tips.
 ## 📚 Documentation
 
 - [SRE Agent Setup Guide](docs/SRE-AGENT-SETUP.md)
-- [Prompts Guide](docs/PROMPTS-GUIDE.md)
+- [Prompts Guide](docs/PROMPTS-GUIDE.md) — prompts for both SRE Agent and Mission Control Copilot
 - [Breakable Scenarios Guide](docs/BREAKABLE-SCENARIOS.md)
+- [Demo Script](docs/DEMO-SCRIPT.md)
 - [Cost Estimation](docs/COSTS.md)
+- [Supportability Guide](docs/SUPPORTABILITY.md)
 
 ## 🤝 Contributing
 

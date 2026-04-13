@@ -17,7 +17,8 @@
 7. [Known Failure Scenarios](#7-known-failure-scenarios)
 8. [Escalation Procedures](#8-escalation-procedures)
 9. [Azure Infrastructure](#9-azure-infrastructure)
-10. [Useful Links & Tools](#10-useful-links--tools)
+10. [Mission Control & Copilot AI Assistant](#10-mission-control--copilot-ai-assistant)
+11. [Useful Links & Tools](#11-useful-links--tools)
 
 ---
 
@@ -500,10 +501,13 @@ kubectl apply -f k8s/base/application.yaml
 
 **Can handle**:
 - Checking pod status and service health
-- Restarting individual deployments
+- Using **Mission Control Copilot** to diagnose issues conversationally (e.g., "What's wrong with the cluster?")
+- Restarting individual deployments (via kubectl or Mission Control Copilot)
 - Applying the baseline manifest to restore healthy state
 - Removing known breakable scenario resources
 - Collecting logs for escalation
+
+> **💡 Tip**: L1 operators can use the Mission Control Copilot at http://localhost:3000 to diagnose and fix many issues without needing to know kubectl commands. Open the chat panel and describe the symptoms in plain language.
 
 **Escalate to L2 when**:
 - Baseline restore doesn't fix the issue
@@ -586,15 +590,151 @@ If Azure SRE Agent is enabled, it provides AI-powered diagnosis:
 
 ---
 
-## 10. Useful Links & Tools
+## 10. Mission Control & Copilot AI Assistant
+
+### Overview
+
+Mission Control is a local Node.js/Express dashboard (`tools/mission-control/`) that provides a web-based operations center with a built-in **GitHub Copilot SDK** AI assistant. It runs at **http://localhost:3000** and connects directly to the AKS cluster via kubectl.
+
+### Prerequisites
+
+| Requirement | Details |
+|-------------|---------|
+| **GitHub Copilot license** | Individual, Business, or Enterprise plan |
+| **VS Code Copilot extension** | `GitHub.copilot` and `GitHub.copilot-chat` (included in the dev container) |
+| **kubectl** | Configured with AKS credentials (`az aks get-credentials`) |
+| **az CLI** | Authenticated (`az login`) |
+| **Node.js** | v18+ (included in the dev container) |
+
+### Starting Mission Control
+
+```bash
+# From the dev container terminal (recommended)
+mission-control
+
+# Or manually
+cd tools/mission-control
+npm install
+npm start
+```
+
+### What Mission Control Provides
+
+1. **Dashboard** — real-time pod status, service health, external IPs
+2. **Break Scenario Buttons** — one-click to apply any of the 10 breakable scenarios
+3. **Fix Buttons** — one-click Fix All, Fix Network, Fix Extras
+4. **Infrastructure Panel** — deploy, validate, and destroy Azure infrastructure
+5. **AI Chat Panel** — GitHub Copilot SDK-powered assistant (see below)
+
+### Copilot AI Assistant
+
+The chat panel (accessed via the Copilot button or top banner) provides a conversational AI assistant with direct cluster access through 19 custom tools:
+
+#### Diagnostic Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_pods` | List all pods in the propane namespace with status, readiness, restarts |
+| `get_pod_logs` | Get recent logs from a specific pod (supports `--previous` for crashed containers) |
+| `describe_pod` | Detailed pod information including events, conditions, container state |
+| `get_events` | Recent Kubernetes events sorted by time (can filter warnings only) |
+| `get_deployments` | All deployments with replica status |
+| `get_services` | Services and their endpoints |
+| `get_nodes` | Node status, capacity, and resource usage |
+| `get_cluster_health` | Comprehensive health check: pods, deployments, services, endpoints, warnings, network policies |
+
+#### Remediation Tools
+
+| Tool | Description |
+|------|-------------|
+| `fix_all` | Restore all services to healthy baseline (`k8s/base/application.yaml`) |
+| `fix_network` | Remove the `deny-tank-monitor` network policy |
+| `fix_extras` | Delete rogue deployments from break scenarios |
+| `scale_deployment` | Scale a deployment to a specified replica count |
+| `restart_deployment` | Trigger a rolling restart of a deployment |
+
+#### Scenario & Infrastructure Tools
+
+| Tool | Description |
+|------|-------------|
+| `apply_break_scenario` | Apply a breakable scenario (oom, crash, image, cpu, pending, probe, network, config, mongodb, service) |
+| `deploy_infrastructure` | Deploy full Azure infrastructure via `scripts/deploy.ps1` |
+| `destroy_infrastructure` | Destroy all Azure resources via `scripts/destroy.ps1` |
+| `validate_deployment` | Run the deployment validation script |
+| `get_cluster_info` | Get Azure context: subscription, resource group, region |
+| `kubectl_raw` | Run arbitrary kubectl commands |
+
+#### Chat API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/copilot/status` | GET | Check Copilot SDK connection status |
+| `/api/chat` | POST | Send a message — body: `{ "message": "..." }` |
+| `/api/chat/history` | GET | Retrieve full conversation history |
+| `/api/chat/reset` | POST | Reset conversation and create a new Copilot session |
+
+#### Example Prompts for Mission Control Copilot
+
+**Diagnosis:**
+- "What's the health of the cluster?"
+- "Why is tank-monitor restarting?"
+- "Show me warning events in the propane namespace"
+- "Are there any pods with high restart counts?"
+
+**Remediation:**
+- "Fix all broken services"
+- "Scale mongodb back to 1 replica"
+- "Restart the order-service deployment"
+- "Delete the deny-tank-monitor network policy"
+
+**Scenarios:**
+- "Apply the OOM scenario"
+- "Break the MongoDB scenario and then diagnose what went wrong"
+
+**Infrastructure:**
+- "Deploy the infrastructure to eastus2"
+- "What resource group is this cluster in?"
+- "Validate the deployment"
+- "Destroy the infrastructure for rg-srelab-eastus2"
+
+### Troubleshooting Mission Control
+
+| Issue | Resolution |
+|-------|-----------|
+| "Copilot SDK failed" on startup | Verify GitHub Copilot license and VS Code Copilot extension are active |
+| Chat returns 503 error | Copilot SDK didn't initialize — check terminal output for error details |
+| Tools return kubectl errors | Verify kubectl context: `kubectl config current-context` and `kubectl get pods -n propane` |
+| Session expired mid-conversation | The assistant auto-reconnects on the next message; retry your prompt |
+| Responses take a long time | Complex multi-tool queries (e.g., full health check) can take up to 180 seconds — this is normal |
+| Port 3000 already in use | Set a different port: `PORT=3001 npm start` |
+| Infrastructure deploy/destroy timeout | These are long-running operations (up to 10 minutes); the tool has a 600-second timeout |
+
+### Mission Control vs. Azure SRE Agent
+
+| Feature | Mission Control Copilot | Azure SRE Agent |
+|---------|------------------------|-----------------|
+| **Runs** | Locally (Node.js) | Cloud (Azure) |
+| **Cluster Access** | Via local kubectl | Via Azure control plane |
+| **Authentication** | GitHub Copilot license | Azure RBAC |
+| **Log Analysis** | kubectl logs only | Log Analytics, App Insights, full telemetry |
+| **Scheduled Tasks** | No | Yes (subagents, cron) |
+| **Break Scenarios** | Can apply and diagnose | Diagnose only |
+| **Infrastructure Ops** | Deploy/destroy via scripts | Read-only diagnostics |
+| **Best For** | Interactive demos, local troubleshooting | Production monitoring, deep observability |
+
+---
+
+## 11. Useful Links & Tools
 
 | Resource | Location |
 |----------|----------|
+| **Mission Control** | `tools/mission-control/` (start with `mission-control` command) |
 | **Breakable Scenarios Guide** | `docs/BREAKABLE-SCENARIOS.md` |
 | **Cost Estimates** | `docs/COSTS.md` |
 | **SRE Agent Setup** | `docs/SRE-AGENT-SETUP.md` |
 | **Demo Script** | `docs/DEMO-SCRIPT.md` |
 | **Prompt Guide** | `docs/PROMPTS-GUIDE.md` |
+| **Supportability Guide** | `docs/SUPPORTABILITY.md` |
 | **Base Manifest** | `k8s/base/application.yaml` |
 | **Scenario Manifests** | `k8s/scenarios/*.yaml` |
 | **Deploy Script** | `scripts/deploy.ps1` |

@@ -1,6 +1,8 @@
-# SRE Agent Prompts Guide
+# SRE Agent & Mission Control Copilot — Prompts Guide
 
-A curated collection of prompts to use with Azure SRE Agent when demoing the AmeriGas Propane SRE Lab. Organized by scenario and intent.
+A curated collection of prompts to use with **Azure SRE Agent** and the **Mission Control Copilot** when demoing the AmeriGas Propane SRE Lab. Organized by scenario and intent.
+
+> **Note**: Most diagnostic prompts work with both Azure SRE Agent (cloud) and Mission Control Copilot (local). Prompts marked with 🖥️ are Mission Control-specific; those marked with ☁️ require Azure SRE Agent's cloud observability access.
 
 ## Getting Started (Healthy Cluster)
 
@@ -183,3 +185,47 @@ After applying a break scenario, instead of asking "what's wrong," try asking ab
 4. **Use follow-ups** — SRE Agent maintains context within a conversation, so build on previous answers
 5. **Try the "naive user" approach** — Phrase prompts like someone who doesn't know Kubernetes: "customers complaining deliveries aren't being tracked" is a great starting point
 6. **Combine observability** — Ask about logs, metrics, and events together: "Correlate the pod restarts with any CPU or memory spikes"
+
+---
+
+## Mission Control Copilot — Specific Prompts
+
+These prompts are specific to the **Mission Control Copilot** (local GitHub Copilot SDK assistant). They leverage the 19 custom tools available in Mission Control.
+
+### Scenario Management 🖥️
+
+| Prompt | What It Does |
+|--------|-------------|
+| "Apply the OOM scenario" | Triggers `apply_break_scenario` with oom |
+| "Break the MongoDB scenario" | Applies `mongodb-down.yaml` |
+| "Apply the network block scenario and then diagnose the issue" | Chains scenario + diagnosis |
+| "Break something and let me practice diagnosing it" | Agent picks a scenario |
+
+### Infrastructure Operations 🖥️
+
+| Prompt | What It Does |
+|--------|-------------|
+| "Deploy the full infrastructure to eastus2" | Runs `deploy_infrastructure` tool |
+| "What resource group is this cluster deployed to?" | Runs `get_cluster_info` |
+| "Validate that the deployment is healthy" | Runs `validate_deployment` |
+| "Destroy the infrastructure for rg-srelab-eastus2" | Runs `destroy_infrastructure` |
+| "Deploy infrastructure to swedencentral without SRE Agent" | Custom deploy parameters |
+
+### Multi-Step Chains 🖥️
+
+These prompts showcase the Copilot agent's ability to chain multiple tools together:
+
+| Prompt | Tools Chained |
+|--------|--------------|
+| "Run a full health check and then fix any issues you find" | `get_cluster_health` → `fix_all` / `fix_network` / `fix_extras` |
+| "Apply the crash loop scenario, diagnose it, then fix it" | `apply_break_scenario` → `get_pods` → `get_pod_logs` → `fix_all` |
+| "Check if MongoDB is running and show me the order-service logs" | `get_pods` → `get_pod_logs` |
+| "Scale tank-monitor to 3 replicas and verify it worked" | `scale_deployment` → `get_deployments` |
+
+### Raw kubectl Access 🖥️
+
+| Prompt | What It Does |
+|--------|-------------|
+| "Run kubectl top pods in the propane namespace sorted by CPU" | Uses `kubectl_raw` |
+| "Show me the configmaps in the propane namespace" | Uses `kubectl_raw` |
+| "Get the YAML spec for the tank-monitor deployment" | Uses `kubectl_raw` |

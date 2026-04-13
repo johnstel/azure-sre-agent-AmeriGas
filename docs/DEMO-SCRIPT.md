@@ -10,6 +10,7 @@
 
 - [ ] Infrastructure deployed and healthy (`kgp` shows 9 running services, ~12 pods)
 - [ ] Mission Control running at http://localhost:3000
+- [ ] Mission Control Copilot status shows "Ready" (green badge in header)
 - [ ] SRE Agent portal open at https://aka.ms/sreagent/portal
 - [ ] Browser tabs ready: Mission Control, SRE Agent Portal, Azure Portal (resource group)
 - [ ] Upload `docs/sre-agent-knowledge.md` as SRE Agent knowledge file
@@ -64,9 +65,22 @@
 1. Open **SRE Agent Portal** (https://aka.ms/sreagent/portal)
 2. Explain: "This is Azure SRE Agent — an AI-powered site reliability engineer that has access to your cluster, your logs in Log Analytics, Application Insights telemetry, and the knowledge base we provided about your environment."
 
+### Show: Mission Control Copilot
+
+1. Click the **Copilot button** (or the status banner) in Mission Control to open the chat panel
+2. Point out the **"Ready"** status badge — "This is our local AI assistant powered by the GitHub Copilot SDK. Unlike SRE Agent which runs in the cloud, this one runs right here on the operator's machine and has direct kubectl access to the cluster."
+3. Show the **quick prompts** at the bottom of the chat for one-click operations
+4. Explain: "This assistant has 19 custom tools — it can inspect pods, read logs, apply break scenarios, fix issues, and even deploy or destroy infrastructure, all through natural conversation."
+
 ### Baseline Health Check
 
-In SRE Agent, ask:
+In Mission Control Copilot, ask:
+
+> **"Give me a full health check of the cluster"**
+
+The Copilot will use its `get_cluster_health` tool to show pods, deployments, services, endpoints, warnings, and network policies in one go.
+
+Then in SRE Agent, ask:
 
 > **"Give me a health report for the propane namespace. Are all services reporting telemetry to Application Insights?"**
 
@@ -290,6 +304,9 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 | Customer portal IP shows "Pending" | LoadBalancer takes 1–2 minutes after initial deploy |
 | SRE Agent is slow to respond | Normal for complex queries — it's analyzing logs and metrics in real-time |
 | Mission Control shows connection error | Verify kubectl context: `kubectl config current-context` |
+| Mission Control Copilot shows "Error" | Ensure GitHub Copilot license is active and VS Code Copilot extension is installed |
+| Copilot chat returns 503 | Copilot SDK failed to initialize — restart Mission Control and check terminal for errors |
+| Copilot takes a long time to respond | Multi-tool queries can take up to 180 seconds — the agent is chaining kubectl calls |
 | SRE Agent says "no data" | Ensure the knowledge file was uploaded and Log Analytics has had time to ingest data (allow 5–10 min after deploy) |
 | App Insights shows no data | Wait 2–3 min after deploy; check that `deploy.ps1` injected the connection string: `kubectl get configmap propane-telemetry-config -n propane -o yaml` |
 | ADX PropaneLogs empty | Log Analytics data export may take 5–10 min to start flowing after initial deploy |
