@@ -49,7 +49,42 @@ function break-mongodb { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\mongod
 function break-service { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\service-mismatch.yaml" }
 
 # Fix commands
-function fix-all { kubectl apply -f "$PSScriptRoot\..\k8s\base\application.yaml" }
+function ensure-credentials {
+    <#
+    .SYNOPSIS
+        Ensures the rabbitmq-credentials Kubernetes Secret exists in the propane namespace.
+        Creates the secret with demo defaults if it does not already exist.
+        For production-grade randomized credentials, use deploy.ps1 instead.
+    #>
+    $null = kubectl get secret rabbitmq-credentials -n propane --output=name 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  🔐 Creating demo RabbitMQ credentials secret..." -ForegroundColor Yellow
+        Write-Host "     ⚠️  Using default DEMO credentials. Run deploy.ps1 for randomized credentials." -ForegroundColor Gray
+        $demoUser = 'amerigas-rmq'
+        $demoPass = 'Amg!P3#rMQ@xDm09'
+        $demoUri  = "amqp://${demoUser}:${demoPass}@rabbitmq:5672/"
+        kubectl create secret generic rabbitmq-credentials `
+            --namespace propane `
+            --from-literal="username=${demoUser}" `
+            --from-literal="password=${demoPass}" `
+            --from-literal="uri=${demoUri}" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✅ RabbitMQ credentials secret created" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  ⚠️  Could not create credentials secret (namespace may not exist yet — it will be created by application.yaml)" -ForegroundColor Yellow
+        }
+    }
+}
+
+function fix-all {
+    # Ensure the propane namespace exists so the Secret can be created before pods start
+    kubectl create namespace propane --dry-run=client -o yaml | kubectl apply -f - 2>$null
+    # Ensure credentials secret exists (preserves any generated credentials from deploy.ps1)
+    ensure-credentials
+    # Apply the full application manifest
+    kubectl apply -f "$PSScriptRoot\..\k8s\base\application.yaml"
+}
 function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
 function fix-extras { kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane 2>$null }
 

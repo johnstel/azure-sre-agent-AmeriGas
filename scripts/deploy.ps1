@@ -60,6 +60,35 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function New-RandomPassword {
+    <#
+    .SYNOPSIS
+        Generates a cryptographically random password suitable for use as a service credential.
+    #>
+    [CmdletBinding()]
+    param(
+        [int]$Length = 24
+    )
+    $lower   = 'abcdefghijklmnopqrstuvwxyz'
+    $upper   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    $digits  = '0123456789'
+    $special = '!@#%^&*'
+    $all     = $lower + $upper + $digits + $special
+
+    # Guarantee at least one character from each class
+    $chars = @(
+        $lower[(Get-Random -Maximum $lower.Length)]
+        $upper[(Get-Random -Maximum $upper.Length)]
+        $digits[(Get-Random -Maximum $digits.Length)]
+        $special[(Get-Random -Maximum $special.Length)]
+    )
+    for ($i = 4; $i -lt $Length; $i++) {
+        $chars += $all[(Get-Random -Maximum $all.Length)]
+    }
+    # Shuffle and return as string
+    return -join ($chars | Get-Random -Count $chars.Count)
+}
+
 function Invoke-AzCliJson {
     [CmdletBinding()]
     param(
@@ -714,6 +743,28 @@ Write-Host "`n📦 Deploying demo application to AKS..." -ForegroundColor Yellow
 $k8sPath = Join-Path $PSScriptRoot "..\k8s\base\application.yaml"
 
 if (Test-Path $k8sPath) {
+    # Ensure the propane namespace exists before creating Secrets
+    kubectl create namespace propane --dry-run=client -o yaml | kubectl apply -f - 2>$null
+
+    # Generate and apply RabbitMQ credentials as a Kubernetes Secret
+    Write-Host "`n🔐 Generating RabbitMQ credentials..." -ForegroundColor Yellow
+    $rabbitMqUser     = 'amerigas-rmq'
+    $rabbitMqPassword = New-RandomPassword -Length 24
+    $rabbitMqUri      = "amqp://${rabbitMqUser}:${rabbitMqPassword}@rabbitmq:5672/"
+
+    kubectl create secret generic rabbitmq-credentials `
+        --namespace propane `
+        --from-literal="username=${rabbitMqUser}" `
+        --from-literal="password=${rabbitMqPassword}" `
+        --from-literal="uri=${rabbitMqUri}" `
+        --dry-run=client -o yaml | kubectl apply -f -
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✅ RabbitMQ credentials secret created/updated" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  ⚠️  Could not create RabbitMQ credentials secret" -ForegroundColor Yellow
+    }
+
     kubectl apply -f $k8sPath
     Write-Host "  ✅ Demo application deployed" -ForegroundColor Green
 

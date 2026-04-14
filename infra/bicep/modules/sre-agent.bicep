@@ -22,6 +22,7 @@ param accessLevel string = 'High'
 @description('Application Insights App ID')
 param appInsightsAppId string
 
+@secure()
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
