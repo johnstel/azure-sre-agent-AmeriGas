@@ -218,6 +218,12 @@ Usage Simulator ──► Tank Monitor (generates synthetic load)
 
 ### 3.10 Order Worker (Disabled)
 
+### 3.11 Public proxy access model
+
+The public `customer-portal` and `dispatch-console` LoadBalancer services now expose only the health probes that the demo UI needs: `GET /api/inventory/health`, `GET /api/tanks/health`, and `GET /api/orders/health`. All other `/api/` requests are rejected with `404`, so write-capable order APIs are not reachable from the public entry points.
+
+For direct access to the internal APIs, use an in-cluster workflow such as `kubectl exec -n propane deploy/customer-portal -- wget -qO- http://inventory-service:3002/health` or `kubectl port-forward -n propane svc/order-service 3001:3001` from a workstation. This demo does not deploy an ingress controller or automatic TLS termination, so the baseline deployment uses the public LoadBalancer on HTTP only. If you need HTTPS for a real deployment, add an ingress controller or Application Gateway in front of these services and terminate TLS there.
+
 | Property | Value |
 |----------|-------|
 | **Deployment** | `order-worker` |
