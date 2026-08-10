@@ -10,7 +10,7 @@ function isIpv4Loopback(address) {
   if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalized)) return false;
   const octets = normalized.split('.').map((part) => Number(part));
   if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) return false;
-  return octets[0] === 127;
+  return octets[0] === 127 && octets[1] === 0 && octets[2] === 0 && octets[3] === 1;
 }
 
 function normalizeLoopbackAddress(address) {
@@ -20,13 +20,15 @@ function normalizeLoopbackAddress(address) {
   if (!trimmed) return null;
 
   const bracketless = trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
-  if (bracketless.startsWith('::ffff:')) {
-    const ipv4 = bracketless.slice(7);
+  const withoutZone = bracketless.split('%')[0];
+
+  if (withoutZone.startsWith('::ffff:')) {
+    const ipv4 = withoutZone.slice(7);
     return isIpv4Loopback(ipv4) ? '127.0.0.1' : null;
   }
 
-  if (bracketless === '::1') return '::1';
-  if (isIpv4Loopback(bracketless)) return bracketless;
+  if (withoutZone === '::1' || withoutZone === '0:0:0:0:0:0:0:1') return '::1';
+  if (isIpv4Loopback(withoutZone)) return withoutZone;
   return null;
 }
 

@@ -54,3 +54,15 @@ test('isLocalRequest ignores forwarded headers and only trusts the socket peer a
 
   assert.equal(isLocalRequest({ socket: { remoteAddress: '::ffff:127.0.0.1' }, connection: {}, headers: {} }), true);
 });
+
+test('isLocalRequest accepts IPv4 and IPv6 loopback addresses only', () => {
+  const loopbackAddresses = ['127.0.0.1', '::1', '0:0:0:0:0:0:0:1', '[::1]', '[::1%lo0]', '::ffff:127.0.0.1'];
+  for (const address of loopbackAddresses) {
+    assert.equal(isLocalRequest({ socket: { remoteAddress: address }, connection: {}, headers: {} }), true, `${address} should be treated as loopback`);
+  }
+
+  const nonLoopbackAddresses = ['127.0.0.2', '::2', '2001:db8::1'];
+  for (const address of nonLoopbackAddresses) {
+    assert.equal(isLocalRequest({ socket: { remoteAddress: address }, connection: {}, headers: {} }), false, `${address} should not be treated as loopback`);
+  }
+});
