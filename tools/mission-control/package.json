@@ -4,7 +4,8 @@
   "description": "AmeriGas Propane SRE Demo Lab - Mission Control with GitHub Copilot SDK",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/security.test.js"
   },
   "keywords": ["copilot-sdk", "sre", "kubernetes", "azure", "aks"],
   "dependencies": {
