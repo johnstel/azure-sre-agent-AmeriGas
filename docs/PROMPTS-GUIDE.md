@@ -144,7 +144,7 @@ Show that SRE Agent can take action, not just report:
 | "Remove the deny-tank-monitor network policy" | Policy management |
 | "Scale MongoDB back to 1 replica" | Dependency restoration |
 
-> **Note**: Remediation requires the SRE Agent to have write permissions (Contributor + AKS Cluster Admin). See [SRE-AGENT-SETUP.md](SRE-AGENT-SETUP.md) for RBAC configuration.
+> **Note**: Mission Control remediation requires an explicit operator approval step before it can run. Azure SRE Agent remediation still requires appropriate RBAC. See [SRE-AGENT-SETUP.md](SRE-AGENT-SETUP.md) for RBAC configuration.
 
 ---
 
@@ -190,7 +190,7 @@ After applying a break scenario, instead of asking "what's wrong," try asking ab
 
 ## Mission Control Copilot — Specific Prompts
 
-These prompts are specific to the **Mission Control Copilot** (local GitHub Copilot SDK assistant). They leverage the 19 custom tools available in Mission Control.
+These prompts are specific to the **Mission Control Copilot** (local GitHub Copilot SDK assistant). They leverage the 19 custom tools available in Mission Control. Cluster telemetry is treated as untrusted data, and remediation or infrastructure actions require explicit approval before they run.
 
 ### Scenario Management 🖥️
 
@@ -208,7 +208,7 @@ These prompts are specific to the **Mission Control Copilot** (local GitHub Copi
 | "Deploy the full infrastructure to eastus2" | Runs `deploy_infrastructure` tool |
 | "What resource group is this cluster deployed to?" | Runs `get_cluster_info` |
 | "Validate that the deployment is healthy" | Runs `validate_deployment` |
-| "Destroy the infrastructure for rg-srelab-eastus2" | Runs `destroy_infrastructure` |
+| "Destroy the infrastructure for rg-srelab-eastus2" | Runs `destroy_infrastructure` (approval required) |
 | "Deploy infrastructure to swedencentral without SRE Agent" | Custom deploy parameters |
 
 ### Multi-Step Chains 🖥️
@@ -226,6 +226,6 @@ These prompts showcase the Copilot agent's ability to chain multiple tools toget
 
 | Prompt | What It Does |
 |--------|-------------|
-| "Run kubectl top pods in the propane namespace sorted by CPU" | Uses `kubectl_raw` |
-| "Show me the configmaps in the propane namespace" | Uses `kubectl_raw` |
-| "Get the YAML spec for the tank-monitor deployment" | Uses `kubectl_raw` |
+| "Run kubectl top pods in the propane namespace sorted by CPU" | Uses `kubectl_readonly` |
+| "Show me the configmaps in the propane namespace" | Uses `kubectl_readonly` |
+| "Get the YAML spec for the tank-monitor deployment" | Uses `kubectl_readonly` |

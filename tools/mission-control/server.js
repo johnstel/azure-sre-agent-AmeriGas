@@ -3,9 +3,10 @@ const { execFile, spawn } = require('child_process');
 const path = require('path');
 const util = require('util');
 const crypto = require('crypto');
-const { CopilotClient, approveAll } = require('@github/copilot-sdk');
+const { CopilotClient } = require('@github/copilot-sdk');
 const { createTools } = require('./copilot-tools');
 const { SYSTEM_PROMPT } = require('./system-prompt');
+const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -28,6 +29,7 @@ const SCENARIO_MAP = {
 
 // --- Operation Tracking (deploy / destroy / validate) ---
 const operations = new Map();
+const securityState = createSecurityState();
 
 function createOperation(type, label) {
   const id = crypto.randomBytes(4).toString('hex');
@@ -242,9 +244,9 @@ let chatHistory = [];
 
 // Helper to create a fresh Copilot session
 async function createCopilotSession() {
-  const tools = createTools();
+  const tools = createTools(securityState);
   return copilotClient.createSession({
-    onPermissionRequest: approveAll, clientName: 'amerigas-mission-control',
+    clientName: 'amerigas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
     tools, availableTools: tools.map(t => t.name),
   });
@@ -252,6 +254,23 @@ async function createCopilotSession() {
 
 app.get('/api/copilot/status', (req, res) => {
   res.json({ ready: copilotReady, error: copilotError, sessionId: copilotSession?.sessionId || null });
+});
+
+app.get('/api/approval/pending', (req, res) => {
+  if (!securityState.pendingApproval) return res.json(null);
+  res.json({ ...securityState.pendingApproval });
+});
+
+app.post('/api/approval/approve', (req, res) => {
+  const { approvalId } = req.body || {};
+  if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
+  res.json(approvePendingApproval(securityState, approvalId));
+});
+
+app.post('/api/approval/deny', (req, res) => {
+  const { approvalId } = req.body || {};
+  if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
+  res.json(denyPendingApproval(securityState, approvalId));
 });
 
 app.post('/api/chat', async (req, res) => {
