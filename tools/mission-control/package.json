@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/security.test.js"
+    "test": "node --test test/*.test.js tests/*.test.js"
   },
   "keywords": ["copilot-sdk", "sre", "kubernetes", "azure", "aks"],
   "dependencies": {

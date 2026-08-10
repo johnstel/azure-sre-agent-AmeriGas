@@ -594,7 +594,7 @@ If Azure SRE Agent is enabled, it provides AI-powered diagnosis:
 
 ### Overview
 
-Mission Control is a local Node.js/Express dashboard (`tools/mission-control/`) that provides a web-based operations center with a built-in **GitHub Copilot SDK** AI assistant. It runs at **http://localhost:3000** and connects directly to the AKS cluster via kubectl.
+Mission Control is a local Node.js/Express dashboard (`tools/mission-control/`) that provides a web-based operations center with a built-in **GitHub Copilot SDK** AI assistant. It runs at **http://localhost:3000** and connects directly to the AKS cluster via kubectl. Cluster telemetry is treated as untrusted data, and remediation or infrastructure actions require explicit approval before they run.
 
 ### Prerequisites
 
@@ -658,11 +658,11 @@ The chat panel (accessed via the Copilot button or top banner) provides a conver
 | Tool | Description |
 |------|-------------|
 | `apply_break_scenario` | Apply a breakable scenario (oom, crash, image, cpu, pending, probe, network, config, mongodb, service) |
-| `deploy_infrastructure` | Deploy full Azure infrastructure via `scripts/deploy.ps1` |
-| `destroy_infrastructure` | Destroy all Azure resources via `scripts/destroy.ps1` |
+| `deploy_infrastructure` | Deploy full Azure infrastructure via `scripts/deploy.ps1` (approval required) |
+| `destroy_infrastructure` | Destroy all Azure resources via `scripts/destroy.ps1` (approval required) |
 | `validate_deployment` | Run the deployment validation script |
 | `get_cluster_info` | Get Azure context: subscription, resource group, region |
-| `kubectl_raw` | Run arbitrary kubectl commands |
+| `kubectl_readonly` | Run a safe, read-only kubectl allowlist (get/describe/logs/top/config current-context) |
 
 #### Chat API Endpoints
 
