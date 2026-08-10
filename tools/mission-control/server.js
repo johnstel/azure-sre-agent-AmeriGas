@@ -7,6 +7,7 @@ const { CopilotClient } = require('@github/copilot-sdk');
 const { createTools } = require('./copilot-tools');
 const { SYSTEM_PROMPT } = require('./system-prompt');
 const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
+const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -256,21 +257,23 @@ app.get('/api/copilot/status', (req, res) => {
   res.json({ ready: copilotReady, error: copilotError, sessionId: copilotSession?.sessionId || null });
 });
 
+app.use('/api/approval', createOperatorAuthMiddleware());
+
 app.get('/api/approval/pending', (req, res) => {
   if (!securityState.pendingApproval) return res.json(null);
   res.json({ ...securityState.pendingApproval });
 });
 
 app.post('/api/approval/approve', (req, res) => {
-  const { approvalId } = req.body || {};
+  const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  res.json(approvePendingApproval(securityState, approvalId));
+  res.json(approvePendingApproval(securityState, approvalId, { sessionId, actionKey }));
 });
 
 app.post('/api/approval/deny', (req, res) => {
-  const { approvalId } = req.body || {};
+  const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  res.json(denyPendingApproval(securityState, approvalId));
+  res.json(denyPendingApproval(securityState, approvalId, { sessionId, actionKey }));
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -284,7 +287,10 @@ app.post('/api/chat', async (req, res) => {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (!copilotSession) copilotSession = await createCopilotSession();
-      const response = await copilotSession.sendAndWait({ prompt: message }, 180000);
+      const turnContext = {
+        sessionId: `${copilotSession.sessionId || 'copilot'}:${crypto.randomBytes(4).toString('hex')}`,
+      };
+      const response = await withApprovalContext(turnContext, () => copilotSession.sendAndWait({ prompt: message }, 180000));
       const content = response?.data?.content || '(no response)';
       const toolRequests = response?.data?.toolRequests || [];
       chatHistory.push({ role: 'assistant', content, toolRequests, timestamp: new Date().toISOString() });

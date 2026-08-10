@@ -50,12 +50,47 @@ test('untrusted telemetry is wrapped before being returned to the operator', () 
 });
 
 test('kubectl allowlist permits read-only diagnostics and blocks destructive commands', () => {
-  const allowed = validateKubectlArgs('get pods -n propane -o wide');
+  const allowed = validateKubectlArgs('get pods');
   assert.equal(allowed.allowed, true);
+  assert.deepEqual(allowed.normalizedArgs, ['get', 'pods']);
 
   const blocked = validateKubectlArgs('delete deployment tank-monitor -n propane');
   assert.equal(blocked.allowed, false);
   assert.match(blocked.reason, /not allowed/i);
+});
+
+test('kubectl restrictions reject namespace overrides, all-namespaces, impersonation, and context flags', () => {
+  for (const payload of [
+    'get pods -n kube-system',
+    'get pods -A',
+    'get pods --all-namespaces',
+    'get pods --as=alice',
+    'get pods --kubeconfig=/tmp/config',
+    'get pods --context=prod',
+    'get pods -o json',
+    'get pods --template={{.items}}',
+  ]) {
+    const result = validateKubectlArgs(payload);
+    assert.equal(result.allowed, false, `${payload} should be rejected`);
+  }
+});
+
+test('approvals are bound to the initiating session and exact action', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'fix_all', {}, { sessionId: 'chat-1' });
+  assert.equal(gate.allowed, false);
+
+  const spoofed = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-2', actionKey: gate.actionKey });
+  assert.equal(spoofed.success, false);
+
+  const mismatchedAction = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: 'different' });
+  assert.equal(mismatchedAction.success, false);
+
+  const approved = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey });
+  assert.equal(approved.success, true);
+
+  const replay = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey });
+  assert.equal(replay.success, false);
 });
 
 test('markTelemetry ignores non-telemetry tools', () => {

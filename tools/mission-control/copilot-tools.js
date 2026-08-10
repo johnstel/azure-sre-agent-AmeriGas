@@ -16,6 +16,7 @@ const {
   wrapUntrustedTelemetry,
   validateKubectlArgs,
 } = require('./security-policy');
+const { getApprovalContext } = require('./auth');
 
 const execFileAsync = util.promisify(execFile);
 const IS_WIN = process.platform === 'win32';
@@ -64,7 +65,8 @@ function safeHandler(fn) {
 
 function createTools(securityState = createSecurityState()) {
   const runTool = async (toolName, params, handler, options = {}) => {
-    const gate = evaluateToolAccess(securityState, toolName, params || {});
+    const context = getApprovalContext();
+    const gate = evaluateToolAccess(securityState, toolName, params || {}, context);
     if (!gate.allowed) return gate.message;
 
     const result = await handler();
@@ -329,7 +331,7 @@ function createTools(securityState = createSecurityState()) {
       handler: async ({ args }) => runTool('kubectl_readonly', { args }, async () => {
         const validation = validateKubectlArgs(args);
         if (!validation.allowed) return validation.reason;
-        const out = await kubectl(...validation.normalizedArgs);
+        const out = await kubectl(...validation.normalizedArgs, '-n', 'propane');
         return out || '(no output)';
       }, { telemetry: true }),
     }),
