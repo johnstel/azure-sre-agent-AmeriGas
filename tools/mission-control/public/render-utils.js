@@ -40,6 +40,19 @@
     return cell;
   }
 
+  function buildChatMessage(role, text, doc = root.document) {
+    const message = doc.createElement('div');
+    message.className = 'chat-msg ' + safeText(role, 'assistant');
+    const content = safeText(text, '');
+    if (doc.createTextNode) {
+      message.appendChild(doc.createTextNode(content));
+      message.textContent = content;
+    } else {
+      message.textContent = content;
+    }
+    return message;
+  }
+
   function buildPodRow(pod, timeAgoFn, onClick, doc = root.document) {
     const row = doc.createElement('tr');
     row.className = 'status-' + statusClass(pod && pod.status);
@@ -137,6 +150,7 @@
   const renderUtils = {
     safeText,
     toSafeHttpUrl,
+    buildChatMessage,
     buildPodRow,
     buildEventRow,
     buildDeploymentRow,

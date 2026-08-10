@@ -37,6 +37,12 @@ class FakeDocument {
   createElement(tagName) {
     return new FakeElement(tagName);
   }
+
+  createTextNode(text) {
+    const node = new FakeElement('#text');
+    node.textContent = String(text);
+    return node;
+  }
 }
 
 test('pod rows keep malicious pod names as text content', () => {
@@ -69,4 +75,13 @@ test('portal links reject javascript URLs', () => {
 
   assert.equal(link.textContent, 'javascript:alert(1) ↗');
   assert.equal(link.getAttribute('href'), undefined);
+});
+
+test('chat messages render malicious error text as plain text', () => {
+  const doc = new FakeDocument();
+  const message = renderUtils.buildChatMessage('assistant', '<img src=x onerror=alert(1)> Error: <script>alert(1)</script>', doc);
+
+  assert.equal(message.textContent, '<img src=x onerror=alert(1)> Error: <script>alert(1)</script>');
+  assert.equal(message.children.filter(child => child.tagName === 'IMG').length, 0);
+  assert.equal(message.children.filter(child => child.tagName === 'SCRIPT').length, 0);
 });
