@@ -32,3 +32,25 @@ test('csrf tokens are single-use and loopback origins are allowed', () => {
   assert.equal(getAllowedOrigin(req), 'http://127.0.0.1:3000');
   assert.equal(isLocalRequest(req), true);
 });
+
+test('isLocalRequest ignores forwarded headers and only trusts the socket peer address', () => {
+  const headerCases = [
+    ['x-forwarded-for', '127.0.0.1'],
+    ['x-forwarded-for', '::1'],
+    ['x-forwarded-for', '127.0.0.1, 10.0.0.13'],
+    ['forwarded', 'for=127.0.0.1;proto=https'],
+    ['x-real-ip', '127.0.0.1'],
+  ];
+
+  for (const [header, value] of headerCases) {
+    const req = {
+      socket: { remoteAddress: '203.0.113.10' },
+      connection: {},
+      headers: { [header]: value },
+    };
+
+    assert.equal(isLocalRequest(req), false, `${header}=${value} should not bypass loopback checks`);
+  }
+
+  assert.equal(isLocalRequest({ socket: { remoteAddress: '::ffff:127.0.0.1' }, connection: {}, headers: {} }), true);
+});

@@ -1,33 +1,50 @@
 const crypto = require('crypto');
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0:0:0:0:0:0:0:1']);
 const KUBERNETES_NAME_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$/;
 const RESOURCE_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,61}$/;
 const WORKLOAD_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{2,9})$/;
 
-function isLoopbackHostname(hostname) {
-  if (!hostname) return false;
-  return LOOPBACK_HOSTS.has(hostname.toLowerCase());
+function isIpv4Loopback(address) {
+  if (typeof address !== 'string') return false;
+  const normalized = address.trim();
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalized)) return false;
+  const octets = normalized.split('.').map((part) => Number(part));
+  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) return false;
+  return octets[0] === 127;
+}
+
+function normalizeLoopbackAddress(address) {
+  if (typeof address !== 'string') return null;
+
+  const trimmed = address.trim();
+  if (!trimmed) return null;
+
+  const bracketless = trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
+  if (bracketless.startsWith('::ffff:')) {
+    const ipv4 = bracketless.slice(7);
+    return isIpv4Loopback(ipv4) ? '127.0.0.1' : null;
+  }
+
+  if (bracketless === '::1') return '::1';
+  if (isIpv4Loopback(bracketless)) return bracketless;
+  return null;
 }
 
 function isLoopbackAddress(address) {
-  if (!address) return false;
-  const normalized = address.replace(/^::ffff:/, '').toLowerCase();
-  return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1';
+  return Boolean(normalizeLoopbackAddress(address));
+}
+
+function isLoopbackHostname(hostname) {
+  if (typeof hostname !== 'string') return false;
+  const normalized = hostname.toLowerCase().trim();
+  if (!normalized) return false;
+  if (normalized === 'localhost' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
+  return normalized === '127.0.0.1' || normalized.startsWith('127.');
 }
 
 function isLocalRequest(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (forwardedFor) {
-    const first = String(forwardedFor).split(',')[0].trim();
-    if (isLoopbackAddress(first)) return true;
-  }
-
-  const remoteAddress = req.socket?.remoteAddress || req.ip || '';
-  if (isLoopbackAddress(remoteAddress)) return true;
-
-  const hostname = req.hostname || req.headers.host || '';
-  return isLoopbackHostname(hostname.split(':')[0]);
+  const remoteAddress = req.socket?.remoteAddress || req.connection?.remoteAddress || '';
+  return isLoopbackAddress(remoteAddress);
 }
 
 function getAllowedOrigin(req) {

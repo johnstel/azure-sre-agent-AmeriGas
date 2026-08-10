@@ -1,6 +1,6 @@
 # Mission Control hardening
 
-Mission Control now binds to loopback by default and requires a CSRF token for state-changing requests.
+Mission Control now binds to loopback by default and requires a CSRF token for state-changing requests. Loopback detection uses the peer socket address only; forwarded headers such as X-Forwarded-For and X-Real-IP are ignored.
 
 ## Defaults
 
