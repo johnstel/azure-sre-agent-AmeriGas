@@ -9,42 +9,54 @@ if (-not (Test-Path -Path $ManifestPath)) {
 }
 
 $content = Get-Content -Path $ManifestPath -Raw
-$checks = @(
-    @{ Name = 'customer portal inventory health route'; Pattern = 'name: customer-portal-nginx'; ShouldExist = $true },
-    @{ Name = 'customer portal inventory health route'; Pattern = 'location = /api/inventory/health'; ShouldExist = $true },
-    @{ Name = 'customer portal tank health route'; Pattern = 'location = /api/tanks/health'; ShouldExist = $true },
-    @{ Name = 'customer portal order health route'; Pattern = 'location = /api/orders/health'; ShouldExist = $true },
-    @{ Name = 'customer portal api catch-all'; Pattern = 'location /api/ {'; ShouldExist = $true },
-    @{ Name = 'customer portal api catch-all response'; Pattern = 'return 404;'; ShouldExist = $true },
-    @{ Name = 'dispatch console inventory health route'; Pattern = 'name: dispatch-console-nginx'; ShouldExist = $true },
-    @{ Name = 'dispatch console inventory health route'; Pattern = 'location = /api/inventory/health'; ShouldExist = $true },
-    @{ Name = 'dispatch console tank health route'; Pattern = 'location = /api/tanks/health'; ShouldExist = $true },
-    @{ Name = 'dispatch console order health route'; Pattern = 'location = /api/orders/health'; ShouldExist = $true },
-    @{ Name = 'dispatch console api catch-all'; Pattern = 'location /api/ {'; ShouldExist = $true },
-    @{ Name = 'dispatch console api catch-all response'; Pattern = 'return 404;'; ShouldExist = $true }
-)
+$documents = [regex]::Split($content, '(?m)^---\s*$')
+$targetNames = @('customer-portal-nginx', 'dispatch-console-nginx')
+$blocks = @{}
 
-$disallowed = @(
-    'location /api/inventory/ {',
-    'location /api/tanks/ {',
-    'location /api/orders/ {'
-)
-
-$failures = @()
-
-foreach ($check in $checks) {
-    $found = $content.Contains($check.Pattern)
-    if ($check.ShouldExist -and -not $found) {
-        $failures += "Missing required pattern: $($check.Pattern)"
-    }
-    if (-not $check.ShouldExist -and $found) {
-        $failures += "Unexpected pattern present: $($check.Pattern)"
+foreach ($document in $documents) {
+    if ($document -match 'kind:\s*ConfigMap' -and $document -match 'name:\s*([A-Za-z0-9_.-]+)') {
+        $name = $matches[1]
+        if ($targetNames -contains $name) {
+            $blocks[$name] = $document
+        }
     }
 }
 
-foreach ($pattern in $disallowed) {
-    if ($content.Contains($pattern)) {
-        $failures += "Disallowed pattern still present: $pattern"
+$failures = New-Object System.Collections.Generic.List[string]
+
+foreach ($name in $targetNames) {
+    if (-not $blocks.ContainsKey($name)) {
+        $failures.Add("Missing ConfigMap block for $name")
+        continue
+    }
+
+    $block = $blocks[$name]
+    $requiredPatterns = @(
+        'location = /api/inventory/health {',
+        'location = /api/tanks/health {',
+        'location = /api/orders/health {',
+        'location /api/ {',
+        'return 404;',
+        'limit_except GET {',
+        'deny all;'
+    )
+
+    foreach ($pattern in $requiredPatterns) {
+        if (-not $block.Contains($pattern)) {
+            $failures.Add("$name is missing required pattern: $pattern")
+        }
+    }
+
+    $disallowedPatterns = @(
+        'location /api/inventory/ {',
+        'location /api/tanks/ {',
+        'location /api/orders/ {'
+    )
+
+    foreach ($pattern in $disallowedPatterns) {
+        if ($block.Contains($pattern)) {
+            $failures.Add("$name still contains disallowed broad proxy route: $pattern")
+        }
     }
 }
 
