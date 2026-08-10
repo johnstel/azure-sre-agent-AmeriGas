@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self';">
 <title>AmeriGas Propane — Mission Control</title>
 <style>
 /* ── Reset & Base ──────────────────────────────────────── */
@@ -259,6 +260,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 #chat-send:disabled{opacity:.4;cursor:not-allowed}
 #chat-send:hover:not(:disabled){opacity:.85}
 </style>
+<script src="/render-utils.js"></script>
 </head>
 <body>
 
@@ -501,7 +503,8 @@ const SCENARIO_INDICATORS = {
 let currentPods = [];
 let networkPolicyActive = false;
 let serviceMismatchActive = false;
-
+const render = window.MissionControlRender;
+  
 /* ── API Helpers ───────────────────────────────────────── */
 async function api(path, opts) {
   const r = await fetch('/api/' + path, opts);
@@ -613,14 +616,7 @@ async function refreshPods() {
 
     // Pod table
     const tbody = document.getElementById('pod-tbody');
-    tbody.innerHTML = pods.map(p => `
-      <tr class="status-${statusClass(p.status)}">
-        <td><a class="pod-link" onclick="showPodLogs('${p.name}')">${p.name}</a></td>
-        <td><span class="badge ${badgeClass(p.status)}">${p.status}</span></td>
-        <td>${p.ready}</td>
-        <td>${p.restarts}</td>
-        <td>${timeAgo(p.age)}</td>
-      </tr>`).join('');
+    tbody.replaceChildren(...pods.map(p => render.buildPodRow(p, timeAgo, name => showPodLogs(name), document)));
 
     // Update scenario indicators
     updateScenarioIndicators();
@@ -636,15 +632,15 @@ async function refreshEvents() {
     const events = (data.items || []).slice(-15).reverse();
     const el = document.getElementById('events-list');
     if (events.length === 0) {
-      el.innerHTML = '<span class="event-msg">No recent events</span>';
+      const empty = document.createElement('span');
+      empty.className = 'event-msg';
+      empty.textContent = 'No recent events';
+      el.replaceChildren(empty);
       return;
     }
-    el.innerHTML = events.map(e => `
-      <div class="event-row">
-        <span class="event-time">${timeAgo(e.lastTimestamp || e.metadata.creationTimestamp)}</span>
-        <span class="event-type ${e.type}">${e.type}</span>
-        <span class="event-msg">${e.involvedObject.name}: ${e.message || ''}</span>
-      </div>`).join('');
+    const fragment = document.createDocumentFragment();
+    events.forEach(e => fragment.appendChild(render.buildEventRow(e, timeAgo, document)));
+    el.replaceChildren(fragment);
   } catch {}
 }
 
@@ -657,8 +653,7 @@ async function refreshServices() {
     if (portal) {
       const ing = portal.status.loadBalancer && portal.status.loadBalancer.ingress;
       if (ing && ing.length > 0) {
-        const ip = ing[0].ip || ing[0].hostname;
-        el.innerHTML = `<a href="http://${ip}" target="_blank">${ip} ↗</a>`;
+        el.replaceChildren(render.buildPortalLink(portal, document));
       } else {
         el.textContent = 'Pending…';
       }
@@ -682,18 +677,9 @@ async function refreshDeployments() {
     if (data.error) return;
     const deps = (data.items || []);
     const el = document.getElementById('deployments-list');
-    el.innerHTML = deps.map(d => {
-      const desired = d.spec.replicas || 0;
-      const ready = d.status.readyReplicas || 0;
-      const pct = desired > 0 ? (ready / desired * 100) : 0;
-      const color = pct === 100 ? 'var(--green)' : pct > 0 ? 'var(--yellow)' : 'var(--red)';
-      return `
-        <div class="deploy-row">
-          <span class="deploy-name">${d.metadata.name}</span>
-          <div class="deploy-bar"><div class="deploy-fill" style="width:${pct}%;background:${color}"></div></div>
-          <span class="deploy-nums" style="color:${color}">${ready}/${desired}</span>
-        </div>`;
-    }).join('');
+    const fragment = document.createDocumentFragment();
+    deps.forEach(d => fragment.appendChild(render.buildDeploymentRow(d, document)));
+    el.replaceChildren(fragment);
   } catch {}
 }
 
