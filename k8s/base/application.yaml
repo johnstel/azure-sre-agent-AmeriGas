@@ -554,7 +554,7 @@ data:
           <div class="metric" id="acct-balance" style="color:var(--green)">--</div>
         </div>
       </div>
- 
+
       <!-- Nearby Exchange Locations -->
       <h2 class="section-title">&#127978; Nearby Exchange Locations</h2>
       <div class="card" style="overflow-x:auto;">
@@ -567,7 +567,7 @@ data:
           </tbody>
         </table>
       </div>
- 
+
       <!-- Usage History -->
       <h2 class="section-title">&#128202; My Usage History</h2>
       <div class="card" style="overflow-x:auto;">
@@ -576,13 +576,13 @@ data:
           <tbody id="usage-body"></tbody>
         </table>
       </div>
- 
+
       <!-- Service Health -->
       <h2 class="section-title">&#128295; Service Health</h2>
       <div class="health-grid" id="health-cards"></div>
     </main>
     <div class="footer">AmeriGas &mdash; Propane Distribution Platform &mdash; Azure SRE Agent Demo Lab</div>
- 
+
     <script>
     /* ---- helpers ---- */
     function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
@@ -675,10 +675,10 @@ data:
         balanceColor:bal>0?'var(--green)':'var(--muted)'
       };
     }
- 
+
     /* ---- clock ---- */
     function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString();}
- 
+
     /* ---- top metrics ---- */
     function updateMetrics(){
       var snapshot=PORTAL_STATE.healthy ? makeMetricSnapshot() : (LAST_KNOWN_METRICS || makeMetricSnapshot());
@@ -690,24 +690,24 @@ data:
       g.style.background='conic-gradient('+gaugeColor+' 0% '+pct+'%, var(--border) '+pct+'% 100%)';
       document.getElementById('tank-pct').textContent=pct+'%';
       document.getElementById('tank-status').textContent=snapshot.statusText;
- 
+
       var de=document.getElementById('days-empty');
       de.innerHTML=snapshot.days+'<sub> days</sub>';
       de.style.color=snapshot.days>14?'var(--green)':snapshot.days>7?'var(--amber)':'var(--red)';
- 
+
       document.getElementById('next-delivery').textContent=snapshot.nextDelivery;
       document.getElementById('delivery-window').textContent=snapshot.deliveryWindow;
- 
+
       document.getElementById('current-price').innerHTML='$'+snapshot.price.toFixed(2)+'<sub> /gal</sub>';
- 
+
       var sd=document.getElementById('season-demand');
       sd.textContent=snapshot.season;sd.className=snapshot.cls;
- 
+
       var be=document.getElementById('acct-balance');
       be.textContent=snapshot.balanceText;
       be.style.color=snapshot.balanceColor;
     }
- 
+
     /* ---- exchange locations ---- */
     var LOCATIONS=[
       {name:'Home Depot King of Prussia',region:'PA-East',cageSize:20,dist:'2.3 mi'},
@@ -719,7 +719,7 @@ data:
       {name:'Giant Pottstown',region:'PA-Central',cageSize:20,dist:'12.4 mi'},
       {name:'Costco Plymouth Meeting',region:'NJ-North',cageSize:24,dist:'7.9 mi'}
     ];
- 
+
     function computeLocationRows(){
       return LOCATIONS.map(function(loc){
         var full=rand(0,loc.cageSize);
@@ -741,7 +741,7 @@ data:
         };
       });
     }
- 
+
     function loadLocations(){
       var rows=PORTAL_STATE.healthy ? computeLocationRows() : (LAST_KNOWN_LOCATIONS || computeLocationRows());
       LAST_KNOWN_LOCATIONS=rows;
@@ -754,7 +754,7 @@ data:
         for(var i=0;i<loc.dots.reserved;i++) dots+='<span class="tank-dot reserved"></span>';
         var tr=document.createElement('tr');
         tr.className='loc-row';
-        tr.innerHTML='<td style="font-weight:600">'+loc.name+'</td>'+ 
+        tr.innerHTML='<td style="font-weight:600">'+loc.name+'</td>'+
           '<td>'+loc.region+'</td>'+
           '<td><div class="cage">'+dots+'</div></td>'+
           '<td><div class="cage-counts">'+loc.dots.full+' Full / '+loc.dots.empty+' Empty / '+loc.dots.reserved+' Reserved</div></td>'+
@@ -763,7 +763,7 @@ data:
         tbody.appendChild(tr);
       });
     }
- 
+
     /* ---- usage history ---- */
     function computeUsageRows(){
       var level=rand(55,85);
@@ -782,7 +782,7 @@ data:
       }
       return rows;
     }
- 
+
     function loadUsage(){
       var rows=PORTAL_STATE.healthy ? computeUsageRows() : (LAST_KNOWN_USAGE || computeUsageRows());
       LAST_KNOWN_USAGE=rows;
@@ -797,7 +797,7 @@ data:
         tbody.appendChild(tr);
       });
     }
- 
+
     /* ---- service health ---- */
     var SERVICES=[
       {name:'Inventory Service',url:'/api/inventory/health'},
@@ -806,7 +806,7 @@ data:
       {name:'MongoDB',url:null},
       {name:'RabbitMQ',url:null}
     ];
- 
+
     function fetchHealth(url){
       return fetch(url,{signal:AbortSignal.timeout(3000)})
         .then(function(response){
@@ -819,7 +819,7 @@ data:
           return {ok:false,status:err && err.message ? err.message : 'unreachable'};
         });
     }
- 
+
     function applyOperationalState(details){
       PORTAL_STATE=Object.assign({}, PORTAL_STATE, details);
       if(details.healthy){
@@ -828,7 +828,7 @@ data:
         setPortalBanner('degraded', details.message || 'Customer-facing data may be temporarily delayed while the propane platform reconnects.', details.lastUpdated);
       }
     }
- 
+
     function loadHealth(){
       var c=document.getElementById('health-cards');
       c.innerHTML='';
@@ -885,7 +885,7 @@ data:
         });
       });
     }
- 
+
     /* ---- init ---- */
     updateClock();
     setPortalBanner('healthy','Live operational data is current.', new Date().toISOString());
@@ -1137,7 +1137,7 @@ data:
         <div class="card"><h3>Deliveries Today</h3><div class="metric" style="color:var(--amber)" id="m-deliveries">--</div></div>
         <div class="card"><h3>Tomorrow Forecast</h3><div class="metric" style="font-size:1.3rem" id="m-forecast">--</div></div>
       </div>
- 
+
       <h2 class="section-title">&#127978; Retail Cage Inventory Monitor</h2>
       <div class="legend">
         <span><span class="legend-dot" style="background:var(--blue)"></span> Full</span>
@@ -1145,7 +1145,7 @@ data:
         <span><span class="legend-dot" style="background:var(--orange)"></span> In-Transit</span>
       </div>
       <div class="cage-grid" id="cage-grid"></div>
- 
+
       <h2 class="section-title">&#128197; Delivery Schedule &amp; Priority Queue</h2>
       <div class="card" style="overflow-x:auto">
         <table>
@@ -1153,7 +1153,7 @@ data:
           <tbody id="delivery-body"></tbody>
         </table>
       </div>
- 
+
       <h2 class="section-title">&#127777;&#65039; Demand Forecast</h2>
       <div class="card" style="overflow-x:auto">
         <table>
@@ -1161,15 +1161,15 @@ data:
           <tbody id="forecast-body"></tbody>
         </table>
       </div>
- 
+
       <h2 class="section-title">&#128223; Operations Log</h2>
       <div class="log-box" id="ops-log"></div>
- 
+
       <h2 class="section-title">&#128295; Platform Health</h2>
       <div class="grid" id="health-grid"></div>
     </main>
     <div class="footer">AmeriGas &mdash; Retail Cage Operations Center &mdash; Azure SRE Agent Demo Lab</div>
- 
+
     <script>
     const LOCATIONS = [
       { name: 'Home Depot KoP', region: 'PA-East' },
@@ -1185,7 +1185,7 @@ data:
       { name: 'Tractor Supply Quakertown', region: 'PA-Central' },
       { name: 'Walmart Easton', region: 'PA-Central' },
     ];
- 
+
     const DELIVERY_TIMES = ['Tomorrow 6AM', 'Tomorrow 2PM', 'Thu 8AM', 'Thu 2PM', 'Fri 6AM', 'Fri 10AM', 'Sat 7AM', 'None Scheduled'];
     const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const FORECAST_NOTES = [
@@ -1194,7 +1194,7 @@ data:
       'Below-average temps forecast', 'Seasonal transition period',
       'Post-storm recovery demand', 'Normal consumption pattern',
     ];
- 
+
     let locationData = [];
     let LAST_KNOWN_LOCATION_DATA = [];
     let DISPATCH_STATE = { healthy: true, message: 'Live dispatch telemetry is current.', lastUpdated: new Date().toISOString() };
@@ -1244,7 +1244,7 @@ data:
 
     function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
     function randF(min, max) { return +(min + Math.random() * (max - min)).toFixed(1); }
- 
+
     function setDispatchBanner(status, message, timestamp) {
       const banner = document.getElementById('dispatch-banner');
       if (!banner) return;
@@ -1254,9 +1254,9 @@ data:
       banner.style.color = status === 'healthy' ? 'var(--green)' : 'var(--amber)';
       banner.innerHTML = '<strong>' + (status === 'healthy' ? 'All dispatch systems normal' : 'Platform visibility is temporarily degraded') + '.</strong> ' + message + (timestamp ? ' Last updated ' + new Date(timestamp).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) + '.' : '');
     }
- 
+
     function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
- 
+
     function generateLocationData() {
       const next = LOCATIONS.map(loc => {
         const full = rand(2, 18);
@@ -1272,7 +1272,7 @@ data:
       locationData = next;
       return next;
     }
- 
+
     function updateMetrics() {
       const source = DISPATCH_STATE.healthy ? locationData : (LAST_KNOWN_LOCATION_DATA.length ? LAST_KNOWN_LOCATION_DATA : locationData);
       const totalLocs = source.length ? source.length : rand(42, 48);
@@ -1284,7 +1284,7 @@ data:
       const tomorrowTemp = temps[rand(0, temps.length - 1)];
       const forecast = tomorrowTemp <= 35 ? 'High Demand' : tomorrowTemp <= 55 ? 'Normal' : 'Light';
       const fColor = forecast === 'High Demand' ? 'var(--red)' : forecast === 'Normal' ? 'var(--green)' : 'var(--cyan)';
- 
+
       document.getElementById('m-locations').textContent = totalLocs;
       document.getElementById('m-tanks').textContent = totalTanks;
       document.getElementById('m-fill').innerHTML = avgFill + '<sub> %</sub>';
@@ -1292,7 +1292,7 @@ data:
       document.getElementById('m-deliveries').textContent = deliveries;
       document.getElementById('m-forecast').innerHTML = '<span style="color:' + fColor + '">' + forecast + '</span>';
     }
- 
+
     function renderCageGrid() {
       const container = document.getElementById('cage-grid');
       container.innerHTML = '';
@@ -1301,13 +1301,13 @@ data:
         const card = document.createElement('div');
         const isCritical = loc.full <= 3;
         card.className = 'cage-card' + (isCritical ? ' critical-loc' : '');
- 
+
         let statusBadge, statusClass;
         if (loc.full > 10) { statusBadge = '&#9989; Stocked'; statusClass = 'stocked'; }
         else if (loc.full >= 4) { statusBadge = '&#9888;&#65039; Low Stock'; statusClass = 'low'; }
         else if (loc.transit > 0 && loc.full <= 6) { statusBadge = '&#128230; Restock Scheduled'; statusClass = 'restock'; }
         else { statusBadge = '&#128308; Critical'; statusClass = 'critical'; }
- 
+
         let tanks = '';
         let idx = 0;
         for (let r = 0; r < 4; r++) {
@@ -1320,7 +1320,7 @@ data:
             idx++;
           }
         }
- 
+
         card.innerHTML =
           '<div class="loc-header"><span class="loc-name">' + loc.name + '</span><span class="region-badge">' + loc.region + '</span></div>' +
           '<div class="tank-grid">' + tanks + '</div>' +
@@ -1330,7 +1330,7 @@ data:
         container.appendChild(card);
       });
     }
- 
+
     function renderDeliveryQueue() {
       const tbody = document.getElementById('delivery-body');
       tbody.innerHTML = '';
@@ -1356,7 +1356,7 @@ data:
         tbody.appendChild(tr);
       });
     }
- 
+
     function renderForecast() {
       const tbody = document.getElementById('forecast-body');
       tbody.innerHTML = '';
@@ -1378,7 +1378,7 @@ data:
         tbody.appendChild(tr);
       });
     }
- 
+
     const LOG_MESSAGES = [
       { level: 'info', msg: 'Cage restocked at Home Depot KoP: +20 tanks' },
       { level: 'warn', msg: 'Low stock alert: ACE Lansdale down to {n} full tanks' },
@@ -1393,7 +1393,7 @@ data:
       { level: 'info', msg: "Lowe's Exton cage inspection passed — all seals intact" },
       { level: 'warn', msg: 'Delivery T-{id} delayed: traffic on I-76 ({n}min ETA slip)' },
     ];
- 
+
     function addLogEntry() {
       const box = document.getElementById('ops-log');
       const tmpl = LOG_MESSAGES[rand(0, LOG_MESSAGES.length - 1)];
@@ -1404,7 +1404,7 @@ data:
       box.prepend(line);
       if (box.children.length > 50) box.removeChild(box.lastChild);
     }
- 
+
     function fetchHealth(url){
       return fetch(url, { signal: AbortSignal.timeout(3000) })
         .then(function(response){
@@ -1415,7 +1415,7 @@ data:
           return { ok: false, status: err && err.message ? err.message : 'unreachable' };
         });
     }
- 
+
     function applyDispatchState(healthy, message, timestamp){
       DISPATCH_STATE = { healthy: healthy, message: message, lastUpdated: timestamp || new Date().toISOString() };
       if (healthy) {
@@ -1424,7 +1424,7 @@ data:
         setDispatchBanner('degraded', message || 'Operations data is temporarily delayed while the dispatch pipeline recovers.', DISPATCH_STATE.lastUpdated);
       }
     }
- 
+
     function loadHealth() {
       const grid = document.getElementById('health-grid');
       grid.innerHTML = '';
@@ -1475,9 +1475,9 @@ data:
         });
       });
     }
- 
+
     function refreshCages() { generateLocationData(); renderCageGrid(); renderDeliveryQueue(); }
- 
+
     generateLocationData();
     setDispatchBanner('healthy', 'Live dispatch telemetry is current.', new Date().toISOString());
     updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); loadHealth();
