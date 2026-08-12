@@ -62,17 +62,38 @@ test('kubectl allowlist permits read-only diagnostics and blocks destructive com
 test('kubectl restrictions reject namespace overrides, all-namespaces, impersonation, and context flags', () => {
   for (const payload of [
     'get pods -n kube-system',
+    'get pods --namespace=kube-system',
     'get pods -A',
     'get pods --all-namespaces',
     'get pods --as=alice',
+    'get pods --as alice',
     'get pods --kubeconfig=/tmp/config',
     'get pods --context=prod',
+    'get pods --server=https://evil.example',
+    'get pods --token=abc123',
     'get pods -o json',
+    'get pods --output=json',
     'get pods --template={{.items}}',
+    'get pods -f ./pod.yaml',
+    'get pods --filename=./pod.yaml',
   ]) {
     const result = validateKubectlArgs(payload);
     assert.equal(result.allowed, false, `${payload} should be rejected`);
   }
+});
+
+test('expired approvals are rejected and replaced with a fresh pending request', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'fix_all', {}, { sessionId: 'chat-expired' });
+  assert.equal(gate.allowed, false);
+  state.pendingApproval.expiresAt = Date.now() - 1000;
+
+  const expired = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-expired', actionKey: gate.actionKey });
+  assert.equal(expired.success, false);
+
+  const replacement = evaluateToolAccess(state, 'fix_all', {}, { sessionId: 'chat-expired' });
+  assert.equal(replacement.allowed, false);
+  assert.notEqual(replacement.approvalId, gate.approvalId);
 });
 
 test('approvals are bound to the initiating session and exact action', () => {
