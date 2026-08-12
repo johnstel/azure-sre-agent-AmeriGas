@@ -30,11 +30,40 @@ const SCENARIO_INDICATORS = {
 let currentPods = [];
 let networkPolicyActive = false;
 let serviceMismatchActive = false;
+let csrfToken = null;
+let csrfTokenPromise = null;
 const render = window.MissionControlRender;
-  
+
+async function getCsrfToken() {
+  if (csrfToken) return csrfToken;
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = fetch('/api/csrf-token')
+      .then(async (r) => {
+        const data = r.ok ? await r.json() : null;
+        csrfToken = data?.token || null;
+        return csrfToken;
+      })
+      .catch(() => null);
+  }
+  return csrfTokenPromise;
+}
+
+async function buildRequestOptions(opts = {}) {
+  const headers = new Headers(opts.headers || {});
+  const method = String(opts.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    const token = await getCsrfToken();
+    if (token) headers.set('X-CSRF-Token', token);
+  }
+  if (opts.body !== undefined && !headers.has('Content-Type') && !(opts.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
+  return { ...opts, headers };
+}
+   
 /* ── API Helpers ───────────────────────────────────────── */
-async function api(path, opts) {
-  const r = await fetch('/api/' + path, opts);
+async function api(path, opts = {}) {
+  const r = await fetch('/api/' + path, await buildRequestOptions(opts));
   return r.json();
 }
 
@@ -469,11 +498,11 @@ async function startDeploy() {
 
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/deploy', {
+    const r = await fetch('/api/deploy', await buildRequestOptions({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ location, workloadName, skipRbac, skipSreAgent }),
-    });
+    }));
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Deploy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Deployment started');
@@ -499,11 +528,11 @@ async function executeDestroy() {
   const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/destroy', {
+    const r = await fetch('/api/destroy', await buildRequestOptions({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resourceGroupName: rg }),
-    });
+    }));
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Destroy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Destroy operation started');
@@ -518,11 +547,11 @@ async function startValidate() {
   const rg = document.getElementById('validate-rg').value || 'rg-srelab-eastus2';
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/validate', {
+    const r = await fetch('/api/validate', await buildRequestOptions({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resourceGroupName: rg }),
-    });
+    }));
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Validate failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Validation started');
@@ -536,7 +565,7 @@ async function startValidate() {
 async function cancelOperation() {
   if (!currentOpId) return;
   try {
-    await fetch('/api/operations/' + currentOpId, { method: 'DELETE' });
+    await fetch('/api/operations/' + currentOpId, await buildRequestOptions({ method: 'DELETE' }));
     toast('Operation cancelled');
   } catch (e) {
     toast('Cancel failed: ' + e.message, 'error');
@@ -760,11 +789,11 @@ async function sendChatMessage() {
   showTyping();
 
   try {
-    const resp = await fetch('/api/chat', {
+    const resp = await fetch('/api/chat', await buildRequestOptions({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
-    });
+    }));
 
     hideTyping();
 
@@ -786,7 +815,7 @@ async function sendChatMessage() {
 
 async function resetChat() {
   try {
-    await fetch('/api/chat/reset', { method: 'POST' });
+    await fetch('/api/chat/reset', await buildRequestOptions({ method: 'POST' }));
     const container = document.getElementById('chat-messages');
     container.innerHTML = '';
     const welcome = document.getElementById('chat-welcome');

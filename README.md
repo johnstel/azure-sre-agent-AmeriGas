@@ -83,7 +83,7 @@ The Mission Control dashboard (`tools/mission-control/`) includes a built-in **G
 
 1. **Launch Mission Control** — type `mission-control` in the dev container terminal
 2. **Open the chat panel** — click the Copilot button or the top banner
-3. **Ask it anything** — the assistant has 19 tools for kubectl, scenarios, and infrastructure operations
+3. **Ask it anything** — the assistant has 19 tools for diagnostics, remediation, and constrained kubectl access
 4. **Example prompts**:
    - "What's the health of the cluster?"
    - "Break the OOM scenario and then diagnose it"
@@ -153,15 +153,15 @@ The dashboard opens at **http://localhost:3000**.
 
 ### Copilot Agent Tools
 
-The AI assistant has access to 19 tools organized by category:
+The AI assistant has access to 19 tools organized by category. Cluster telemetry is treated as untrusted data, and write or destructive actions require explicit human approval before they run:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Diagnostics** | `get_pods`, `get_pod_logs`, `describe_pod`, `get_events`, `get_deployments`, `get_services`, `get_nodes`, `get_cluster_health` | Inspect cluster state, pods, logs, events, and services |
-| **Remediation** | `fix_all`, `fix_network`, `fix_extras`, `scale_deployment`, `restart_deployment` | Restore healthy state, remove rogue resources, scale/restart |
-| **Scenarios** | `apply_break_scenario` | Apply any of the 10 breakable failure scenarios |
-| **Infrastructure** | `deploy_infrastructure`, `destroy_infrastructure`, `validate_deployment`, `get_cluster_info` | Deploy/destroy Azure resources, validate health |
-| **Raw Access** | `kubectl_raw` | Run arbitrary kubectl commands |
+| **Read-only diagnostics** | `get_pods`, `get_pod_logs`, `describe_pod`, `get_events`, `get_deployments`, `get_services`, `get_nodes`, `get_cluster_health`, `validate_deployment`, `get_cluster_info` | Inspect cluster state, pods, logs, events, services, and deployment health |
+| **Approval-gated remediation** | `fix_all`, `fix_network`, `fix_extras`, `scale_deployment`, `restart_deployment` | Restore healthy state, remove rogue resources, scale/restart after explicit approval |
+| **Approval-gated scenarios** | `apply_break_scenario` | Apply any of the 10 breakable failure scenarios after explicit approval |
+| **Approval-gated infrastructure** | `deploy_infrastructure`, `destroy_infrastructure` | Deploy or destroy Azure resources after explicit approval |
+| **Safe kubectl diagnostics** | `kubectl_readonly` | Run a safe allowlisted set of read-only kubectl commands |
 
 ### Chat API
 

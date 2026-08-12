@@ -3,14 +3,27 @@ const { execFile, spawn } = require('child_process');
 const path = require('path');
 const util = require('util');
 const crypto = require('crypto');
-const { CopilotClient, approveAll } = require('@github/copilot-sdk');
+const { CopilotClient } = require('@github/copilot-sdk');
 const { createTools } = require('./copilot-tools');
 const { SYSTEM_PROMPT } = require('./system-prompt');
+const {
+  createCsrfTokenStore,
+  getAllowedOrigin,
+  isLocalRequest,
+  validateCsrf,
+  validateResourceName,
+  validateWorkloadName,
+} = require('./security');
+const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
+const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const HOST = process.env.MISSION_CONTROL_HOST || (process.env.MISSION_CONTROL_ALLOW_REMOTE === 'true' ? '0.0.0.0' : '127.0.0.1');
+const AUTH_TOKEN = process.env.MISSION_CONTROL_AUTH_TOKEN || '';
+const csrfTokenStore = createCsrfTokenStore();
 
 // Scenario file mapping
 const SCENARIO_MAP = {
@@ -28,6 +41,7 @@ const SCENARIO_MAP = {
 
 // --- Operation Tracking (deploy / destroy / validate) ---
 const operations = new Map();
+const securityState = createSecurityState();
 
 function createOperation(type, label) {
   const id = crypto.randomBytes(4).toString('hex');
@@ -58,14 +72,40 @@ function finishOperation(op, exitCode) {
 // Middleware
 app.use(express.json());
 app.use((req, res, next) => {
-  res.header('Content-Security-Policy', "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self';");
-  res.header('Access-Control-Allow-Origin', '*');
+  const allowedOrigin = getAllowedOrigin(req);
+  if (allowedOrigin) {
+    res.header('Access-Control-Allow-Origin', allowedOrigin);
+  }
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token, X-Mission-Control-Token');
+  res.header('Access-Control-Expose-Headers', 'X-CSRF-Token');
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('Referrer-Policy', 'no-referrer');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('Content-Security-Policy', "default-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self';");
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/approval')) return next();
+  if (req.path.startsWith('/api/') && !isLocalRequest(req)) {
+    const token = req.get('x-mission-control-token') || req.headers['x-mission-control-token'];
+    if (AUTH_TOKEN && token !== AUTH_TOKEN) return res.status(401).json({ error: 'Authentication required for privileged operations' });
+    if (!AUTH_TOKEN) return res.status(403).json({ error: 'Remote access is disabled by default. Configure MISSION_CONTROL_AUTH_TOKEN to enable it.' });
+  }
+
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (isLocalRequest(req) || req.path === '/api/csrf-token') return next();
+  if (!validateCsrf(req, csrfTokenStore, { isLocal: false })) {
+    return res.status(403).json({ error: 'Invalid CSRF token' });
+  }
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/api/csrf-token', (req, res) => {
+  res.json({ token: csrfTokenStore.issue() });
+});
 
 const IS_WIN = process.platform === 'win32';
 
@@ -203,9 +243,15 @@ app.post('/api/deploy', (req, res) => {
   for (const op of operations.values()) { if (op.status === 'running' && (op.type === 'deploy' || op.type === 'destroy')) return res.status(409).json({ error: `A ${op.type} operation is already running (${op.id})` }); }
   const { location = 'eastus2', workloadName = 'srelab', skipRbac = false, skipSreAgent = false } = req.body || {};
   if (!['eastus2', 'swedencentral', 'australiaeast'].includes(location)) return res.status(400).json({ error: `Location must be one of: eastus2, swedencentral, australiaeast` });
+  let validatedWorkloadName;
+  try {
+    validatedWorkloadName = validateWorkloadName(workloadName, 'workloadName');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
   const op = createOperation('deploy', `Deploy to ${location}`);
-  appendLog(op, 'system', `🚀 Starting deployment: ${location} / ${workloadName}`);
-  const args = ['-Location', location, '-WorkloadName', workloadName, '-Yes'];
+  appendLog(op, 'system', `🚀 Starting deployment: ${location} / ${validatedWorkloadName}`);
+  const args = ['-Location', location, '-WorkloadName', validatedWorkloadName, '-Yes'];
   if (skipRbac) args.push('-SkipRbac');
   if (skipSreAgent) args.push('-SkipSreAgent');
   spawnPwsh(op, path.resolve(REPO_ROOT, 'scripts', 'deploy.ps1'), args);
@@ -215,17 +261,29 @@ app.post('/api/deploy', (req, res) => {
 app.post('/api/destroy', (req, res) => {
   for (const op of operations.values()) { if (op.status === 'running' && (op.type === 'deploy' || op.type === 'destroy')) return res.status(409).json({ error: `A ${op.type} operation is already running (${op.id})` }); }
   const { resourceGroupName = 'rg-srelab-eastus2' } = req.body || {};
-  const op = createOperation('destroy', `Destroy ${resourceGroupName}`);
-  appendLog(op, 'system', `🗑️  Destroying: ${resourceGroupName}`);
-  spawnPwsh(op, path.resolve(REPO_ROOT, 'scripts', 'destroy.ps1'), ['-ResourceGroupName', resourceGroupName, '-Force']);
+  let validatedResourceGroupName;
+  try {
+    validatedResourceGroupName = validateResourceName(resourceGroupName, 'resourceGroupName');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  const op = createOperation('destroy', `Destroy ${validatedResourceGroupName}`);
+  appendLog(op, 'system', `🗑️  Destroying: ${validatedResourceGroupName}`);
+  spawnPwsh(op, path.resolve(REPO_ROOT, 'scripts', 'destroy.ps1'), ['-ResourceGroupName', validatedResourceGroupName, '-Force']);
   res.json({ id: op.id, type: op.type, label: op.label });
 });
 
 app.post('/api/validate', (req, res) => {
   const { resourceGroupName = 'rg-srelab-eastus2' } = req.body || {};
-  const op = createOperation('validate', `Validate ${resourceGroupName}`);
-  appendLog(op, 'system', `🔍 Validating deployment: ${resourceGroupName}`);
-  spawnPwsh(op, path.resolve(REPO_ROOT, 'scripts', 'validate-deployment.ps1'), ['-ResourceGroupName', resourceGroupName, '-Detailed']);
+  let validatedResourceGroupName;
+  try {
+    validatedResourceGroupName = validateResourceName(resourceGroupName, 'resourceGroupName');
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  const op = createOperation('validate', `Validate ${validatedResourceGroupName}`);
+  appendLog(op, 'system', `🔍 Validating deployment: ${validatedResourceGroupName}`);
+  spawnPwsh(op, path.resolve(REPO_ROOT, 'scripts', 'validate-deployment.ps1'), ['-ResourceGroupName', validatedResourceGroupName, '-Detailed']);
   res.json({ id: op.id, type: op.type, label: op.label });
 });
 
@@ -243,9 +301,9 @@ let chatHistory = [];
 
 // Helper to create a fresh Copilot session
 async function createCopilotSession() {
-  const tools = createTools();
+  const tools = createTools(securityState);
   return copilotClient.createSession({
-    onPermissionRequest: approveAll, clientName: 'amerigas-mission-control',
+    clientName: 'amerigas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
     tools, availableTools: tools.map(t => t.name),
   });
@@ -253,6 +311,25 @@ async function createCopilotSession() {
 
 app.get('/api/copilot/status', (req, res) => {
   res.json({ ready: copilotReady, error: copilotError, sessionId: copilotSession?.sessionId || null });
+});
+
+app.use('/api/approval', createOperatorAuthMiddleware());
+
+app.get('/api/approval/pending', (req, res) => {
+  if (!securityState.pendingApproval) return res.json(null);
+  res.json({ ...securityState.pendingApproval });
+});
+
+app.post('/api/approval/approve', (req, res) => {
+  const { approvalId, sessionId, actionKey } = req.body || {};
+  if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
+  res.json(approvePendingApproval(securityState, approvalId, { sessionId, actionKey }));
+});
+
+app.post('/api/approval/deny', (req, res) => {
+  const { approvalId, sessionId, actionKey } = req.body || {};
+  if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
+  res.json(denyPendingApproval(securityState, approvalId, { sessionId, actionKey }));
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -266,7 +343,10 @@ app.post('/api/chat', async (req, res) => {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (!copilotSession) copilotSession = await createCopilotSession();
-      const response = await copilotSession.sendAndWait({ prompt: message }, 180000);
+      const turnContext = {
+        sessionId: `${copilotSession.sessionId || 'copilot'}:${crypto.randomBytes(4).toString('hex')}`,
+      };
+      const response = await withApprovalContext(turnContext, () => copilotSession.sendAndWait({ prompt: message }, 180000));
       const content = response?.data?.content || '(no response)';
       const toolRequests = response?.data?.toolRequests || [];
       chatHistory.push({ role: 'assistant', content, toolRequests, timestamp: new Date().toISOString() });
@@ -324,9 +404,11 @@ async function preflight() {
     console.log(`  ⚠️  Copilot SDK failed: ${err.message}`);
   }
 
-  app.listen(PORT, () => {
+  app.listen(PORT, HOST, () => {
     console.log('');
-    console.log(`  🚀 Dashboard → http://localhost:${PORT}`);
+    console.log(`  🚀 Dashboard → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
     console.log('');
   });
 })();
+
+module.exports = { app };

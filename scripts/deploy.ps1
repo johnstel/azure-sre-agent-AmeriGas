@@ -42,7 +42,7 @@ param(
     [string]$Location = 'eastus2',
 
     [Parameter()]
-    [ValidateLength(3, 10)]
+    [ValidatePattern('^[a-z0-9](?:[a-z0-9-]{2,9})$')]
     [string]$WorkloadName = 'srelab',
 
     [Parameter()]
@@ -64,11 +64,11 @@ function Invoke-AzCliJson {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$Command
+        [string[]]$Arguments
     )
 
     # Run command and capture all output
-    $raw = Invoke-Expression $Command 2>&1 | Out-String
+    $raw = & az @Arguments 2>&1 | Out-String
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
@@ -193,14 +193,14 @@ function Write-ResourceGroupDeploymentFailureSummary {
         [string]$Indent = '    '
     )
 
-    $operations = Invoke-AzCliJson -Command "az deployment operation group list --resource-group $ResourceGroupName --name $DeploymentName --output json"
+    $operations = Invoke-AzCliJson -Arguments @('deployment', 'operation', 'group', 'list', '--resource-group', $ResourceGroupName, '--name', $DeploymentName, '--output', 'json')
     if ($operations.ExitCode -ne 0 -or -not $operations.Json) {
         return
     }
 
     $failedOperations = @($operations.Json | Where-Object { $_.properties.provisioningState -eq 'Failed' })
     if ($failedOperations.Count -eq 0) {
-        $deployment = Invoke-AzCliJson -Command "az deployment group show --resource-group $ResourceGroupName --name $DeploymentName --output json"
+        $deployment = Invoke-AzCliJson -Arguments @('deployment', 'group', 'show', '--resource-group', $ResourceGroupName, '--name', $DeploymentName, '--output', 'json')
         if ($deployment.ExitCode -ne 0 -or -not $deployment.Json -or -not $deployment.Json.properties.error) {
             return
         }
@@ -241,7 +241,7 @@ function Write-SubscriptionDeploymentFailureSummary {
         [string]$ResourceGroupName
     )
 
-    $operations = Invoke-AzCliJson -Command "az deployment operation sub list --name $DeploymentName --output json"
+    $operations = Invoke-AzCliJson -Arguments @('deployment', 'operation', 'sub', 'list', '--name', $DeploymentName, '--output', 'json')
     if ($operations.ExitCode -ne 0 -or -not $operations.Json) {
         return
     }
@@ -276,7 +276,7 @@ function Get-DeletedKeyVaultConflict {
         [string]$ResourceGroupName
     )
 
-    $deployment = Invoke-AzCliJson -Command "az deployment group show --resource-group $ResourceGroupName --name deploy-keyvault --output json"
+    $deployment = Invoke-AzCliJson -Arguments @('deployment', 'group', 'show', '--resource-group', $ResourceGroupName, '--name', 'deploy-keyvault', '--output', 'json')
     if ($deployment.ExitCode -ne 0 -or -not $deployment.Json -or -not $deployment.Json.properties.error) {
         return $null
     }
@@ -286,7 +286,7 @@ function Get-DeletedKeyVaultConflict {
         return $null
     }
 
-    $operations = Invoke-AzCliJson -Command "az deployment operation group list --resource-group $ResourceGroupName --name deploy-keyvault --output json"
+    $operations = Invoke-AzCliJson -Arguments @('deployment', 'operation', 'group', 'list', '--resource-group', $ResourceGroupName, '--name', 'deploy-keyvault', '--output', 'json')
     if ($operations.ExitCode -ne 0 -or -not $operations.Json) {
         return $null
     }
@@ -322,9 +322,9 @@ function Resolve-DeletedKeyVaultConflict {
     Write-Host "`n🧹 Found soft-deleted Key Vault blocking redeploy: $VaultName" -ForegroundColor Yellow
     Write-Host "  Purging deleted Key Vault entry so the deployment can continue..." -ForegroundColor Gray
 
-    $purgeOutput = az keyvault purge --name $VaultName --location $Location 2>&1 | Out-String
+    $purgeOutput = & az keyvault purge --name $VaultName --location $Location 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
-        $deletedVaultCount = az keyvault list-deleted --query "[?name=='$VaultName'] | length(@)" --output tsv 2>$null
+        $deletedVaultCount = & az keyvault list-deleted --query "[?name=='$VaultName'] | length(@)" --output tsv 2>$null
         if ($purgeOutput -match 'DeletedVaultNotFound' -and $LASTEXITCODE -eq 0 -and $deletedVaultCount -eq '0') {
             Write-Host "  ℹ️  Deleted Key Vault entry is already gone. Waiting for Azure to release the name..." -ForegroundColor Yellow
             Start-Sleep -Seconds 20
@@ -340,7 +340,7 @@ function Resolve-DeletedKeyVaultConflict {
     $deadline = (Get-Date).AddMinutes(2)
     do {
         Start-Sleep -Seconds 5
-        $deletedVaultCount = az keyvault list-deleted --query "[?name=='$VaultName'] | length(@)" --output tsv 2>$null
+        $deletedVaultCount = & az keyvault list-deleted --query "[?name=='$VaultName'] | length(@)" --output tsv 2>$null
         if ($LASTEXITCODE -eq 0 -and $deletedVaultCount -eq '0') {
             Write-Host "  ✅ Deleted Key Vault entry purged" -ForegroundColor Green
             Start-Sleep -Seconds 20
@@ -356,7 +356,7 @@ function Get-SreAgentProviderStatus {
     [CmdletBinding()]
     param()
 
-    $providerRaw = az provider show --namespace Microsoft.App --output json 2>$null | Out-String
+    $providerRaw = & az provider show --namespace Microsoft.App --output json 2>$null | Out-String
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($providerRaw)) {
         return [pscustomobject]@{
             RegistrationState  = 'Unknown'
@@ -413,7 +413,7 @@ Write-Host "🔍 Checking prerequisites..." -ForegroundColor Yellow
 
 # Check Azure CLI
 try {
-    $azVersion = az version --output json | ConvertFrom-Json
+    $azVersion = & az version --output json | ConvertFrom-Json
     Write-Host "  ✅ Azure CLI version: $($azVersion.'azure-cli')" -ForegroundColor Green
 }
 catch {
@@ -423,29 +423,29 @@ catch {
 
 # Check Bicep
 try {
-    $bicepVersion = az bicep version 2>&1
+    $bicepVersion = & az bicep version 2>&1
     Write-Host "  ✅ Bicep: $bicepVersion" -ForegroundColor Green
 }
 catch {
     Write-Host "  ⚠️  Bicep not found, installing..." -ForegroundColor Yellow
-    az bicep install
+    & az bicep install
 }
 
 # Check login status
 Write-Host "`n🔐 Checking Azure authentication..." -ForegroundColor Yellow
-$account = az account show --output json 2>$null | ConvertFrom-Json
+$account = & az account show --output json 2>$null | ConvertFrom-Json
 
 if (-not $account) {
     Write-Host "  Not logged in. Initiating device code authentication..." -ForegroundColor Yellow
     Write-Host "  This method works well in dev containers and codespaces." -ForegroundColor Gray
-    az login --use-device-code
-    $account = az account show --output json | ConvertFrom-Json
+    & az login --use-device-code
+    $account = & az account show --output json | ConvertFrom-Json
 }
 
 Write-Host "  ✅ Logged in as: $($account.user.name)" -ForegroundColor Green
 
 Write-Host "`n🔎 Validating Azure subscription context..." -ForegroundColor Yellow
-$null = az group list --subscription $account.id --query "[0].id" --output tsv 2>$null
+$null = & az group list --subscription $account.id --query "[0].id" --output tsv 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Error "The current Azure context is not a usable subscription. Run 'az account set --subscription <subscription-id>' and retry."
     exit 1
@@ -464,7 +464,7 @@ if ($deploySreAgent) {
 
     if ($sreAgentProvider.RegistrationState -ne 'Registered') {
         Write-Host "  Microsoft.App provider is not registered. Attempting registration..." -ForegroundColor Yellow
-        az provider register --namespace Microsoft.App --wait --only-show-errors | Out-Null
+        & az provider register --namespace Microsoft.App --wait --only-show-errors | Out-Null
         $sreAgentProvider = Get-SreAgentProviderStatus
     }
 
@@ -520,11 +520,14 @@ Write-Host "`n🔍 Validating Bicep template..." -ForegroundColor Yellow
 
 if ($WhatIf) {
     Write-Host "  Running what-if analysis..." -ForegroundColor Gray
-    $whatIfOutput = az deployment sub what-if `
-        --location $Location `
-        --template-file $bicepFile `
-        --parameters location=$Location workloadName=$WorkloadName deploySreAgent=$deploySreAgentValue `
-        --name $deploymentName 2>&1 | Out-String
+    $whatIfArgs = @(
+        'deployment', 'sub', 'what-if',
+        '--location', $Location,
+        '--template-file', $bicepFile,
+        '--parameters', "location=$Location", "workloadName=$WorkloadName", "deploySreAgent=$deploySreAgentValue",
+        '--name', $deploymentName
+    )
+    $whatIfOutput = & az @whatIfArgs 2>&1 | Out-String
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host $whatIfOutput.Trim() -ForegroundColor Red
@@ -547,19 +550,22 @@ Write-Host "  This will take approximately 15-25 minutes." -ForegroundColor Gray
 $startTime = Get-Date
 
 try {
-    $createCmd = @(
-        "az deployment sub create",
-        "--location $Location",
-        "--template-file `"$bicepFile`"",
-        "--parameters `"$parametersFile`" location=$Location workloadName=$WorkloadName deploySreAgent=$deploySreAgentValue",
-        "--name $deploymentName",
-        "--only-show-errors",
-        "--output json"
-    ) -join ' '
+    $createArgs = @(
+        'deployment', 'sub', 'create',
+        '--location', $Location,
+        '--template-file', $bicepFile,
+        '--parameters', $parametersFile,
+        "location=$Location",
+        "workloadName=$WorkloadName",
+        "deploySreAgent=$deploySreAgentValue",
+        '--name', $deploymentName,
+        '--only-show-errors',
+        '--output', 'json'
+    )
 
     $deployment = $null
     for ($attempt = 1; $attempt -le 2; $attempt++) {
-        $create = Invoke-AzCliJson -Command $createCmd
+        $create = Invoke-AzCliJson -Arguments $createArgs
 
         if ($create.ExitCode -eq 0 -and $create.Json) {
             $deployment = $create.Json
@@ -572,8 +578,8 @@ try {
         }
 
         # Best-effort: if a deployment record exists, pull structured error details.
-        $showCmd = "az deployment sub show --name $deploymentName --output json"
-        $show = Invoke-AzCliJson -Command $showCmd
+        $showArgs = @('deployment', 'sub', 'show', '--name', $deploymentName, '--output', 'json')
+        $show = Invoke-AzCliJson -Arguments $showArgs
         if ($show.ExitCode -eq 0 -and $show.Json) {
             $state = $show.Json.properties.provisioningState
             Write-Host "`nDeployment provisioningState: $state" -ForegroundColor Yellow
