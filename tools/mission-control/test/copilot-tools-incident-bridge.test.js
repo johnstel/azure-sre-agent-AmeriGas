@@ -203,4 +203,3 @@ test('deploy_infrastructure records a successful action result when the underlyi
   const resultMilestone = stored.milestones.find((m) => m.type === 'action_executed');
   assert.equal(resultMilestone.data.success, true);
 });
-

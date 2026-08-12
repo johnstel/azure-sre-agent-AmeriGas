@@ -440,4 +440,3 @@ test('an organic health-poll recovery (no action ever proposed) still finalizes 
   const stored = engine.getIncident(incident.correlationId);
   assert.equal(stored.finalState, FINAL_STATE.RECOVERED);
 });
-
