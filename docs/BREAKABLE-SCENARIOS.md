@@ -4,24 +4,26 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 
 ## Quick Reference
 
-| Scenario | File | AmeriGas Narrative | SRE Agent Diagnosis |
-|----------|------|-------------------|---------------------|
-| OOMKilled | `oom-killed.yaml` | Tank monitor overwhelmed by winter peak readings | Identifies OOM events, recommends memory limits |
-| CrashLoop | `crash-loop.yaml` | Inventory service crash — invalid pricing config | Shows exit codes, logs analysis |
-| ImagePullBackOff | `image-pull-backoff.yaml` | Order service fails after botched image release | Registry/image troubleshooting |
-| High CPU | `high-cpu.yaml` | Demand forecast overload during peak heating season | Performance analysis |
-| Pending Pods | `pending-pods.yaml` | Fleet telemetry monitor pods can't schedule | Scheduling analysis |
-| Probe Failure | `probe-failure.yaml` | Safety compliance monitor misconfigured after maintenance | Probe configuration analysis |
-| Network Block | `network-block.yaml` | Tank monitor isolated by bad security policy | Network policy analysis |
-| Missing Config | `missing-config.yaml` | Delivery zone configuration missing | Configuration troubleshooting |
-| MongoDB Down | `mongodb-down.yaml` | Tank database outage — cascading order failure | Dependency tracing, root cause |
-| Service Mismatch | `service-mismatch.yaml` | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
+| Scenario | File | Domain | AmeriGas Narrative | SRE Agent Diagnosis |
+|----------|------|--------|-------------------|---------------------|
+| OOMKilled | `oom-killed.yaml` | Bulk Tank | Tank monitor overwhelmed by winter peak readings | Identifies OOM events, recommends memory limits |
+| CrashLoop | `crash-loop.yaml` | Shared | Inventory service crash — invalid pricing config | Shows exit codes, logs analysis |
+| ImagePullBackOff | `image-pull-backoff.yaml` | Shared | Order service fails after botched image release | Registry/image troubleshooting |
+| High CPU | `high-cpu.yaml` | Cylinder Exchange | Demand forecast overload during peak heating season | Performance analysis |
+| Pending Pods | `pending-pods.yaml` | Shared | Fleet telemetry monitor pods can't schedule | Scheduling analysis |
+| Probe Failure | `probe-failure.yaml` | Shared | Safety compliance monitor misconfigured after maintenance | Probe configuration analysis |
+| Network Block | `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policy analysis |
+| Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
+| MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause |
+| Service Mismatch | `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
 
 ## Scenario Details
 
 ---
 
 ### 1. OOMKilled — Tank Monitor Memory Exhaustion
+
+**Domain:** Bulk Tank
 
 **File:** `k8s/scenarios/oom-killed.yaml`
 
@@ -63,6 +65,8 @@ kubectl apply -f k8s/base/application.yaml
 
 ### 2. CrashLoopBackOff — Inventory Service Configuration Failure
 
+**Domain:** Shared (Bulk Tank pricing & Cylinder Exchange cage catalog)
+
 **File:** `k8s/scenarios/crash-loop.yaml`
 
 **What happens:**
@@ -97,6 +101,8 @@ kubectl apply -f k8s/base/application.yaml
 ---
 
 ### 3. ImagePullBackOff — Failed Order Service Deployment
+
+**Domain:** Shared (Bulk Tank delivery orders & Cylinder Exchange restock orders)
 
 **File:** `k8s/scenarios/image-pull-backoff.yaml`
 
@@ -133,6 +139,8 @@ kubectl apply -f k8s/base/application.yaml
 
 ### 4. High CPU — Demand Forecast Overload
 
+**Domain:** Cylinder Exchange (cage restock demand forecasting)
+
 **File:** `k8s/scenarios/high-cpu.yaml`
 
 **What happens:**
@@ -167,6 +175,8 @@ kubectl delete deployment demand-forecast-overload -n propane
 ---
 
 ### 5. Pending Pods — Fleet Telemetry Monitor Can't Schedule
+
+**Domain:** Shared (delivery fleet telemetry)
 
 **File:** `k8s/scenarios/pending-pods.yaml`
 
@@ -203,6 +213,8 @@ kubectl delete deployment fleet-telemetry-monitor -n propane
 
 ### 6. Failed Liveness Probe — Safety Compliance Monitor Misconfigured
 
+**Domain:** Shared (safety compliance across both domains)
+
 **File:** `k8s/scenarios/probe-failure.yaml`
 
 **What happens:**
@@ -238,6 +250,8 @@ kubectl delete deployment safety-compliance-monitor -n propane
 
 ### 7. Network Policy Blocking — Tank Monitor Isolated
 
+**Domain:** Bulk Tank
+
 **File:** `k8s/scenarios/network-block.yaml`
 
 **What happens:**
@@ -270,6 +284,8 @@ kubectl delete networkpolicy deny-tank-monitor -n propane
 ---
 
 ### 8. Missing ConfigMap — Delivery Zone Configuration Missing
+
+**Domain:** Shared (delivery routing for both domains)
 
 **File:** `k8s/scenarios/missing-config.yaml`
 
@@ -305,6 +321,8 @@ kubectl delete deployment delivery-zone-config -n propane
 ---
 
 ### 9. MongoDB Down — Tank Database Outage (Cascading Failure)
+
+**Domain:** Shared (Bulk Tank readings & delivery/order records)
 
 **File:** `k8s/scenarios/mongodb-down.yaml`
 
@@ -345,6 +363,8 @@ kubectl apply -f k8s/base/application.yaml
 ---
 
 ### 10. Service Selector Mismatch — Tank Monitor Service Failure
+
+**Domain:** Bulk Tank
 
 **File:** `k8s/scenarios/service-mismatch.yaml`
 

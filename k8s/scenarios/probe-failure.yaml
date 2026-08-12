@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 6: Failed Liveness Probe - Safety Compliance Monitor Misconfigured
+# Domain: Shared (safety compliance applies to both domains)
 # =============================================================================
 # Safety compliance monitoring probe misconfigured after maintenance window,
 # causing Kubernetes to continuously restart the pod.

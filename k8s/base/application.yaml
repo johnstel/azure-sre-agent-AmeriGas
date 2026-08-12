@@ -4,19 +4,30 @@
 # This is the healthy baseline deployment of the AmeriGas Propane Distribution
 # Platform for demonstrating Azure SRE Agent diagnosis capabilities.
 #
+# Domain Model — this platform supports TWO distinct propane business
+# domains. See docs/sre-agent-knowledge.md "Domain Model" for full detail.
+#   - Bulk Tank: residential/commercial bulk propane tanks & deliveries.
+#     Vocabulary: gallons, tank percentage, consumption, refill
+#     recommendation, delivery scheduling.
+#   - Cylinder Exchange: retail cylinder exchange cages at partner stores.
+#     Vocabulary: full/empty/reserved cylinder counts, cage replenishment,
+#     exchange-location terminology.
+# Each resource below is annotated with its Domain in a comment header.
+#
 # Architecture:
-# - customer-portal: Vue.js customer self-service portal
-# - dispatch-console: Vue.js fleet dispatch & operations console
-# - tank-monitor: Node.js IoT tank level monitoring API
-# - inventory-service: Rust-based propane inventory & pricing API
-# - order-service: Go order fulfillment & processing
-# - demand-service: Python propane demand forecasting (optional)
-# - usage-simulator: Customer propane usage pattern generator
-# - order-worker: Order processing worker
+# - customer-portal: Vue.js customer self-service portal (Bulk Tank account
+#   view + Cylinder Exchange nearby-location browsing)
+# - dispatch-console: Vue.js Retail Cage Operations Center (Cylinder Exchange)
+# - tank-monitor: Node.js IoT tank level monitoring API (Bulk Tank)
+# - inventory-service: Rust-based propane inventory & pricing API (Shared)
+# - order-service: Go order fulfillment & processing (Shared)
+# - demand-service: Python propane demand forecasting (optional, Shared)
+# - usage-simulator: Customer propane usage pattern generator (Bulk Tank)
+# - order-worker: Order processing worker (Shared)
 #
 # Data Services (in-cluster):
-# - rabbitmq: Event bus (tank alerts, order events, fulfillment updates)
-# - mongodb: Tank readings, delivery records, customer data
+# - rabbitmq: Event bus (tank alerts, order events, fulfillment updates) (Shared)
+# - mongodb: Tank readings, delivery records, customer data (Shared)
 # =============================================================================
 
 ---
@@ -49,6 +60,8 @@ data:
 ---
 # =============================================================================
 # RabbitMQ - Event bus (tank alerts, order events, fulfillment updates)
+# Domain: Shared — carries Bulk Tank alerts (tank-events) and delivery/order
+# events used by both the Bulk Tank and Cylinder Exchange domains.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -130,6 +143,8 @@ spec:
 ---
 # =============================================================================
 # MongoDB - Tank readings, delivery records, customer data (Azure Managed Disk via CSI driver)
+# Domain: Shared — persists Bulk Tank readings (tank_readings collection) plus
+# delivery/order and customer account records used across both domains.
 # =============================================================================
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -149,6 +164,7 @@ spec:
 ---
 # =============================================================================
 # MongoDB - Tank & Delivery Database
+# Domain: Shared (see above)
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -205,6 +221,9 @@ spec:
 ---
 # =============================================================================
 # Inventory Service - Rust-based propane inventory & pricing API
+# Domain: Shared — serves the Bulk Tank product catalog (delivery pricing per
+# gallon) and the Cylinder Exchange cage catalog (cage capacity, cylinder
+# pricing tiers) from a single pricing/catalog API.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -274,6 +293,10 @@ spec:
 ---
 # =============================================================================
 # Tank Monitor - Node.js IoT tank level monitoring API
+# Domain: Bulk Tank — ingests smart sensor telemetry from residential and
+# commercial bulk propane tanks only (gallons, tank percentage, leak
+# detection). Not used for retail cylinder exchange cage inventory, which is
+# tracked separately via exchange/inventory transaction counts.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -359,6 +382,8 @@ spec:
 ---
 # =============================================================================
 # Order Service - Go order fulfillment & processing
+# Domain: Shared — processes both Bulk Tank delivery/refill orders and
+# Cylinder Exchange cage restock orders.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -449,6 +474,11 @@ spec:
 ---
 # =============================================================================
 # Customer Portal - Customer self-service portal (nginx serving custom HTML)
+# Domain: Shared UI — hosts two distinct domain sections in one portal:
+#   1. Bulk Tank (residential/commercial delivery account: gallons, tank
+#      percentage, consumption, refill recommendation, delivery scheduling)
+#   2. Cylinder Exchange (retail cage locations: full/empty/reserved
+#      cylinder counts, cage replenishment, exchange-location terminology)
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -497,13 +527,14 @@ data:
       .gauge { width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; position: relative; }
       .gauge-inner { width: 58px; height: 58px; border-radius: 50%; background: var(--card); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; font-weight: 700; }
       .gauge-label { font-size: .8rem; color: var(--muted); }
-      /* Cage viz */
+      /* Cylinder Exchange cage viz */
       .cage { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
-      .tank-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-      .tank-dot.full { background: var(--accent); box-shadow: 0 0 3px rgba(0,61,165,.5); }
-      .tank-dot.empty { background: var(--border); }
-      .tank-dot.reserved { background: var(--orange); box-shadow: 0 0 3px rgba(255,105,0,.4); }
+      .cylinder-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+      .cylinder-dot.full { background: var(--accent); box-shadow: 0 0 3px rgba(0,61,165,.5); }
+      .cylinder-dot.empty { background: var(--border); }
+      .cylinder-dot.reserved { background: var(--orange); box-shadow: 0 0 3px rgba(255,105,0,.4); }
       .cage-counts { font-size: .75rem; color: var(--muted); margin-top: 3px; }
+      .domain-tag { font-size: .68rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: -.5rem 0 .8rem; }
       .loc-row:hover { background: rgba(51,65,85,.4); }
       .footer { text-align: center; padding: 2rem; color: var(--muted); font-size: .75rem; border-top: 1px solid var(--border); margin-top: 2rem; }
       @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
@@ -523,6 +554,9 @@ data:
     </header>
     <main>
       <div id="portal-banner" style="display:none;margin:0 0 1rem;padding:.8rem 1rem;border-radius:10px;border:1px solid rgba(34,197,94,0.3);background:rgba(34,197,94,0.12);color:var(--green);font-size:.85rem;line-height:1.4;"></div>
+      <!-- Domain: Bulk Tank -->
+      <h2 class="section-title">&#128738; My Bulk Tank</h2>
+      <div class="domain-tag">Bulk Tank Account &mdash; gallons &amp; tank percentage</div>
       <!-- Top Metrics -->
       <div class="metrics-grid">
         <div class="card">
@@ -555,25 +589,26 @@ data:
         </div>
       </div>
 
-      <!-- Nearby Exchange Locations -->
-      <h2 class="section-title">&#127978; Nearby Exchange Locations</h2>
-      <div class="card" style="overflow-x:auto;">
-        <table>
-          <thead>
-            <tr><th>Location</th><th>Region</th><th>Cage Inventory</th><th>Counts</th><th>Status</th><th>Distance</th></tr>
-          </thead>
-          <tbody id="locations-body">
-            <tr><td colspan="6" class="loading">Loading exchange locations&hellip;</td></tr>
-          </tbody>
-        </table>
-      </div>
-
       <!-- Usage History -->
-      <h2 class="section-title">&#128202; My Usage History</h2>
+      <h2 class="section-title">&#128202; My Bulk Tank Usage History</h2>
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr><th>Date</th><th>Gallons Used</th><th>Tank Level</th><th>Daily Avg</th></tr></thead>
           <tbody id="usage-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Domain: Cylinder Exchange -->
+      <h2 class="section-title">&#127978; Nearby Exchange Locations</h2>
+      <div class="domain-tag">Cylinder Exchange &mdash; full / empty / reserved cylinder counts</div>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr><th>Location</th><th>Region</th><th>Cage Inventory</th><th>Cylinder Counts</th><th>Status</th><th>Distance</th></tr>
+          </thead>
+          <tbody id="locations-body">
+            <tr><td colspan="6" class="loading">Loading exchange locations&hellip;</td></tr>
+          </tbody>
         </table>
       </div>
 
@@ -584,7 +619,7 @@ data:
     <div class="footer">AmeriGas &mdash; Propane Distribution Platform &mdash; Azure SRE Agent Demo Lab</div>
 
     <script>
-    /* ---- helpers ---- */
+    /* ---- helpers (Domain: Shared) ---- */
     function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
     function randF(a,b){return+(Math.random()*(b-a)+a).toFixed(2);}
     function fmt(n){return n.toLocaleString();}
@@ -644,6 +679,7 @@ data:
       banner.style.color=status==='healthy'?'var(--green)':'var(--amber)';
       banner.innerHTML='<strong>' + (status==='healthy'?'All systems normal':'Customer visibility is temporarily degraded') + '.</strong> ' + message + (timestamp ? ' Last updated ' + new Date(timestamp).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) + '.' : '');
     }
+    /* ---- top metrics (Domain: Bulk Tank) ---- */
     function makeMetricSnapshot(){
       var pct=rand(30,85);
       var gaugeColor=pct>50?'var(--green)':pct>25?'var(--amber)':'var(--red)';
@@ -676,10 +712,10 @@ data:
       };
     }
 
-    /* ---- clock ---- */
+    /* ---- clock (Domain: Shared) ---- */
     function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString();}
 
-    /* ---- top metrics ---- */
+    /* ---- top metrics (Domain: Bulk Tank) ---- */
     function updateMetrics(){
       var snapshot=PORTAL_STATE.healthy ? makeMetricSnapshot() : (LAST_KNOWN_METRICS || makeMetricSnapshot());
       LAST_KNOWN_METRICS=snapshot;
@@ -708,7 +744,7 @@ data:
       be.style.color=snapshot.balanceColor;
     }
 
-    /* ---- exchange locations ---- */
+    /* ---- exchange locations (Domain: Cylinder Exchange) ---- */
     var LOCATIONS=[
       {name:'Home Depot King of Prussia',region:'PA-East',cageSize:20,dist:'2.3 mi'},
       {name:'Walmart Collegeville',region:'PA-East',cageSize:20,dist:'4.1 mi'},
@@ -749,22 +785,22 @@ data:
       tbody.innerHTML='';
       rows.forEach(function(loc){
         var dots='';
-        for(var i=0;i<loc.dots.full;i++) dots+='<span class="tank-dot full"></span>';
-        for(var i=0;i<loc.dots.empty;i++) dots+='<span class="tank-dot empty"></span>';
-        for(var i=0;i<loc.dots.reserved;i++) dots+='<span class="tank-dot reserved"></span>';
+        for(var i=0;i<loc.dots.full;i++) dots+='<span class="cylinder-dot full"></span>';
+        for(var i=0;i<loc.dots.empty;i++) dots+='<span class="cylinder-dot empty"></span>';
+        for(var i=0;i<loc.dots.reserved;i++) dots+='<span class="cylinder-dot reserved"></span>';
         var tr=document.createElement('tr');
         tr.className='loc-row';
         tr.innerHTML='<td style="font-weight:600">'+loc.name+'</td>'+
           '<td>'+loc.region+'</td>'+
           '<td><div class="cage">'+dots+'</div></td>'+
-          '<td><div class="cage-counts">'+loc.dots.full+' Full / '+loc.dots.empty+' Empty / '+loc.dots.reserved+' Reserved</div></td>'+
+          '<td><div class="cage-counts">'+loc.dots.full+' Full / '+loc.dots.empty+' Empty / '+loc.dots.reserved+' Reserved (cylinders)</div></td>'+
           '<td><span class="badge '+loc.statusClass+'">'+loc.statusLabel+'</span></td>'+
           '<td>'+loc.dist+'</td>';
         tbody.appendChild(tr);
       });
     }
 
-    /* ---- usage history ---- */
+    /* ---- usage history (Domain: Bulk Tank) ---- */
     function computeUsageRows(){
       var level=rand(55,85);
       var rows=[];
@@ -798,7 +834,7 @@ data:
       });
     }
 
-    /* ---- service health ---- */
+    /* ---- service health (Domain: Shared) ---- */
     var SERVICES=[
       {name:'Inventory Service',url:'/api/inventory/health'},
       {name:'Tank Monitor',url:'/api/tanks/health'},
@@ -886,7 +922,7 @@ data:
       });
     }
 
-    /* ---- init ---- */
+    /* ---- init (Domain: Shared) ---- */
     updateClock();
     setPortalBanner('healthy','Live operational data is current.', new Date().toISOString());
     updateMetrics();
@@ -1037,7 +1073,9 @@ spec:
 
 ---
 # =============================================================================
-# Dispatch Console - Fleet dispatch & operations console (nginx serving custom HTML)
+# Dispatch Console - Retail Cage Operations Center (nginx serving custom HTML)
+# Domain: Cylinder Exchange — cage grid, cylinder counts, delivery/restock
+# queue, and demand forecast for retail cylinder exchange cage locations.
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -1080,11 +1118,11 @@ data:
       .legend { display: flex; gap: 1.5rem; font-size: .8rem; color: var(--muted); margin-bottom: 1rem; }
       .legend span { display: flex; align-items: center; gap: .3rem; }
       .legend-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
-      .tank-grid { display: grid; grid-template-columns: repeat(5, 18px); grid-template-rows: repeat(4, 18px); gap: 4px; margin: .6rem 0; }
-      .tank { width: 18px; height: 18px; border-radius: 50%; }
-      .tank.full { background: var(--blue); box-shadow: 0 0 4px rgba(0,61,165,0.5); }
-      .tank.empty { background: var(--empty); }
-      .tank.transit { background: var(--orange); box-shadow: 0 0 4px rgba(255,105,0,0.4); }
+      .cylinder-grid { display: grid; grid-template-columns: repeat(5, 18px); grid-template-rows: repeat(4, 18px); gap: 4px; margin: .6rem 0; }
+      .cylinder { width: 18px; height: 18px; border-radius: 50%; }
+      .cylinder.full { background: var(--blue); box-shadow: 0 0 4px rgba(0,61,165,0.5); }
+      .cylinder.empty { background: var(--empty); }
+      .cylinder.transit { background: var(--orange); box-shadow: 0 0 4px rgba(255,105,0,0.4); }
       .cage-card { background: var(--card); border-radius: 10px; padding: 1rem; border: 1px solid #334155; }
       .cage-card .loc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .4rem; }
       .cage-card .loc-name { font-weight: 600; font-size: .95rem; }
@@ -1124,14 +1162,16 @@ data:
       <h1>&#9881;&#65039; AmeriGas &mdash; Retail Cage Operations Center</h1>
       <div class="status-bar">
         <div class="item"><span class="dot green"></span> Dispatcher Mode</div>
+        <div class="item">Cylinder Exchange Domain</div>
         <div class="item" id="clock"></div>
       </div>
     </header>
     <main>
+      <!-- Domain: Cylinder Exchange -->
       <div id="dispatch-banner" style="display:none;margin:0 0 1rem;padding:.8rem 1rem;border-radius:10px;border:1px solid rgba(34,197,94,0.3);background:rgba(34,197,94,0.12);color:var(--green);font-size:.85rem;line-height:1.4;"></div>
       <div class="metrics-row">
         <div class="card"><h3>Total Retail Locations</h3><div class="metric" style="color:var(--accent)" id="m-locations">--</div></div>
-        <div class="card"><h3>Tanks in Field</h3><div class="metric" style="color:var(--cyan)" id="m-tanks">--</div></div>
+        <div class="card"><h3>Cylinders in Field</h3><div class="metric" style="color:var(--cyan)" id="m-cylinders">--</div></div>
         <div class="card"><h3>Avg Fill Rate</h3><div class="metric" style="color:var(--green)" id="m-fill">--<sub> %</sub></div></div>
         <div class="card"><h3>Critical Locations</h3><div class="metric" style="color:var(--red)" id="m-critical">--</div></div>
         <div class="card"><h3>Deliveries Today</h3><div class="metric" style="color:var(--amber)" id="m-deliveries">--</div></div>
@@ -1157,7 +1197,7 @@ data:
       <h2 class="section-title">&#127777;&#65039; Demand Forecast</h2>
       <div class="card" style="overflow-x:auto">
         <table>
-          <thead><tr><th>Day</th><th>High Temp (&deg;F)</th><th>Demand Level</th><th>Est. Tanks Needed</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Day</th><th>High Temp (&deg;F)</th><th>Demand Level</th><th>Est. Cylinders Needed</th><th>Notes</th></tr></thead>
           <tbody id="forecast-body"></tbody>
         </table>
       </div>
@@ -1171,6 +1211,7 @@ data:
     <div class="footer">AmeriGas &mdash; Retail Cage Operations Center &mdash; Azure SRE Agent Demo Lab</div>
 
     <script>
+    // Domain: Cylinder Exchange
     const LOCATIONS = [
       { name: 'Home Depot KoP', region: 'PA-East' },
       { name: 'Walmart Collegeville', region: 'PA-East' },
@@ -1198,6 +1239,7 @@ data:
     let locationData = [];
     let LAST_KNOWN_LOCATION_DATA = [];
     let DISPATCH_STATE = { healthy: true, message: 'Live dispatch telemetry is current.', lastUpdated: new Date().toISOString() };
+    // Domain: Shared
     const PortalHealthState = (typeof window !== 'undefined' && window.PortalHealthState) || (function () {
       function normalizeServiceState(service) {
         if (!service) return { ok: true, code: 'unknown', degraded: false, name: 'Service' };
@@ -1257,6 +1299,7 @@ data:
 
     function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
 
+    // Domain: Cylinder Exchange
     function generateLocationData() {
       const next = LOCATIONS.map(loc => {
         const full = rand(2, 18);
@@ -1276,7 +1319,7 @@ data:
     function updateMetrics() {
       const source = DISPATCH_STATE.healthy ? locationData : (LAST_KNOWN_LOCATION_DATA.length ? LAST_KNOWN_LOCATION_DATA : locationData);
       const totalLocs = source.length ? source.length : rand(42, 48);
-      const totalTanks = source.reduce((sum, loc) => sum + loc.full + loc.transit, 0) || rand(680, 720);
+      const totalCylinders = source.reduce((sum, loc) => sum + loc.full + loc.transit, 0) || rand(680, 720);
       const critCount = source.filter(l => l.full <= 3).length || rand(2, 6);
       const avgFill = source.length ? (source.reduce((s, l) => s + l.full, 0) / (source.length * 20) * 100).toFixed(1) : randF(65, 85);
       const deliveries = rand(8, 18);
@@ -1286,7 +1329,7 @@ data:
       const fColor = forecast === 'High Demand' ? 'var(--red)' : forecast === 'Normal' ? 'var(--green)' : 'var(--cyan)';
 
       document.getElementById('m-locations').textContent = totalLocs;
-      document.getElementById('m-tanks').textContent = totalTanks;
+      document.getElementById('m-cylinders').textContent = totalCylinders;
       document.getElementById('m-fill').innerHTML = avgFill + '<sub> %</sub>';
       document.getElementById('m-critical').textContent = critCount;
       document.getElementById('m-deliveries').textContent = deliveries;
@@ -1308,25 +1351,25 @@ data:
         else if (loc.transit > 0 && loc.full <= 6) { statusBadge = '&#128230; Restock Scheduled'; statusClass = 'restock'; }
         else { statusBadge = '&#128308; Critical'; statusClass = 'critical'; }
 
-        let tanks = '';
+        let cylinders = '';
         let idx = 0;
         for (let r = 0; r < 4; r++) {
           for (let c = 0; c < 5; c++) {
-            let cls = 'tank ';
+            let cls = 'cylinder ';
             if (idx < loc.full) cls += 'full';
             else if (idx < loc.full + loc.transit) cls += 'transit';
             else cls += 'empty';
-            tanks += '<div class="' + cls + '"></div>';
+            cylinders += '<div class="' + cls + '"></div>';
             idx++;
           }
         }
 
         card.innerHTML =
           '<div class="loc-header"><span class="loc-name">' + loc.name + '</span><span class="region-badge">' + loc.region + '</span></div>' +
-          '<div class="tank-grid">' + tanks + '</div>' +
+          '<div class="cylinder-grid">' + cylinders + '</div>' +
           '<div class="summary">' + loc.full + ' Full | ' + loc.empty + ' Empty | ' + loc.transit + ' In-Transit</div>' +
           '<span class="status-badge ' + statusClass + '">' + statusBadge + '</span>' +
-          '<div class="detail-row"><span>Next: ' + loc.nextDelivery + '</span><span>~' + loc.turnover + ' tanks/day</span></div>';
+          '<div class="detail-row"><span>Next: ' + loc.nextDelivery + '</span><span>~' + loc.turnover + ' cylinders/day</span></div>';
         container.appendChild(card);
       });
     }
@@ -1380,13 +1423,13 @@ data:
     }
 
     const LOG_MESSAGES = [
-      { level: 'info', msg: 'Cage restocked at Home Depot KoP: +20 tanks' },
-      { level: 'warn', msg: 'Low stock alert: ACE Lansdale down to {n} full tanks' },
+      { level: 'info', msg: 'Cage restocked at Home Depot KoP: +20 cylinders' },
+      { level: 'warn', msg: 'Low stock alert: ACE Lansdale down to {n} full cylinders' },
       { level: 'info', msg: 'Delivery truck T-{id} en route to Walmart Collegeville (ETA {n}min)' },
       { level: 'info', msg: 'Daily cage audit complete: {n} locations below threshold' },
       { level: 'warn', msg: 'Temperature drop forecast — demand increase expected Thu-Fri' },
       { level: 'info', msg: 'Restock priority recalculated: {n} urgent locations' },
-      { level: 'info', msg: 'Cage swap completed at Giant Pottstown: 18 full tanks placed' },
+      { level: 'info', msg: 'Cage swap completed at Giant Pottstown: 18 full cylinders placed' },
       { level: 'err',  msg: 'Connection timeout to MongoDB replica' },
       { level: 'warn', msg: 'Costco Plymouth Meeting cage at capacity — hold deliveries' },
       { level: 'info', msg: 'RabbitMQ consumer reconnected successfully' },
@@ -1405,6 +1448,7 @@ data:
       if (box.children.length > 50) box.removeChild(box.lastChild);
     }
 
+    // Domain: Shared
     function fetchHealth(url){
       return fetch(url, { signal: AbortSignal.timeout(3000) })
         .then(function(response){
@@ -1478,6 +1522,7 @@ data:
 
     function refreshCages() { generateLocationData(); renderCageGrid(); renderDeliveryQueue(); }
 
+    // Domain: Shared
     generateLocationData();
     setDispatchBanner('healthy', 'Live dispatch telemetry is current.', new Date().toISOString());
     updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); loadHealth();
@@ -1761,6 +1806,8 @@ spec:
 ---
 # =============================================================================
 # Usage Simulator - Customer propane usage pattern generator
+# Domain: Bulk Tank — generates simulated residential/commercial bulk tank
+# consumption (gallons) against the Tank Monitor API only.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -1805,6 +1852,8 @@ spec:
 ---
 # =============================================================================
 # Order Worker - Order processing worker (disabled by default)
+# Domain: Shared — consumes the same order queue as Order Service, covering
+# both Bulk Tank delivery and Cylinder Exchange restock orders.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment

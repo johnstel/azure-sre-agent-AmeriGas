@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 9: MongoDB Down - Tank Database Outage (Cascading Failure)
+# Domain: Shared (Bulk Tank readings & delivery/order records for both domains)
 # =============================================================================
 # Tank readings database goes offline, causing cascading failures:
 # order-service can't process readings, tank data queues in RabbitMQ

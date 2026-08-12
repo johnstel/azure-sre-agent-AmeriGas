@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 5: Pending Pods - Fleet Telemetry Monitor Can't Schedule
+# Domain: Shared (delivery fleet telemetry for both domains)
 # =============================================================================
 # New fleet telemetry monitoring pods request more resources than available,
 # remaining stuck in Pending state — cluster capacity exhausted.

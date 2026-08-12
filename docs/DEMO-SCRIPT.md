@@ -25,37 +25,49 @@
 
 ### Talking Points
 
-> "We've built a full simulation of AmeriGas retail propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models real retail cage exchange locations across PA and NJ, with customer-facing portals showing live cage inventory, a dispatch operations center for fleet management, and a full telemetry pipeline feeding into Application Insights and Azure Data Explorer."
+> "We've built a full simulation of AmeriGas propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models **two distinct propane business domains**: residential/commercial **bulk tank** delivery accounts (gallons, tank percentage, refill scheduling) and retail **cylinder exchange** cage locations across PA and NJ (full/empty/reserved cylinder counts, cage replenishment). The customer-facing portal shows both; the dispatch console runs the Retail Cage Operations Center. A full telemetry pipeline feeds into Application Insights and Azure Data Explorer."
 
-> "The platform has **9 microservices** in production — including an OpenTelemetry Collector that feeds distributed traces and metrics into Azure — backed by MongoDB for cage inventory and transaction data, and RabbitMQ for dispatch events."
+> "The platform has **9 microservices** in production — including an OpenTelemetry Collector that feeds distributed traces and metrics into Azure — backed by MongoDB for bulk tank readings and order/delivery data, and RabbitMQ for tank alerts and dispatch events."
 
 ### Show: Customer Portal
 
 > The portal now surfaces degraded conditions with a banner, the last-known values stamped with a timestamp, and customer-safe messaging instead of blank failures. The same applies to the Dispatch Console when MongoDB, RabbitMQ, or the underlying service chain is disrupted.
 
 1. Open the **Customer Portal** via Mission Control or its external IP
-2. Walk through the propane-specific UI:
-   - **Tank fill gauge** — the CSS conic-gradient gauge shows the customer's current tank level with color-coded fill (green → yellow → red)
-   - **Nearby Exchange Locations** — point out the 8 real PA/NJ retail locations: Home Depot King of Prussia, Walmart Collegeville, Lowe's Exton, ACE Hardware Lansdale, Wawa Wayne, ShopRite Norristown, Giant Pottstown, and Costco Plymouth Meeting
-   - **Cage inventory visualization** — each location shows colored tank dots: 🔵 blue = full, ⚪ grey = empty, 🟠 orange = reserved
+
+**Domain:** Bulk Tank
+
+2. Walk through the **"My Bulk Tank"** section:
+   - **Tank fill gauge** — the CSS conic-gradient gauge shows the customer's current tank level (gallons/percentage) with color-coded fill (green → yellow → red)
+   - Est. days until empty, next delivery window, current price per gallon, seasonal demand, and account balance
+3. Point out the usage history table (gallons used, tank level, daily average)
+
+**Domain:** Cylinder Exchange
+
+4. Walk through the **"Nearby Exchange Locations"** section:
+   - Point out the 8 real PA/NJ retail locations: Home Depot King of Prussia, Walmart Collegeville, Lowe's Exton, ACE Hardware Lansdale, Wawa Wayne, ShopRite Norristown, Giant Pottstown, and Costco Plymouth Meeting
+   - **Cage inventory visualization** — each location shows colored cylinder dots: 🔵 blue = full, ⚪ grey = empty, 🟠 orange = reserved
    - **Stock status badges** — "In Stock" (green), "Low Stock" (yellow), "Out of Stock" (red)
-3. Point out the usage history table, delivery scheduling, and seasonal demand data
 
 ### Show: Dispatch Console — Retail Cage Operations Center
 
-1. Open the **Dispatch Console** (ops-console)
+**Domain:** Cylinder Exchange
+
+1. Open the **Dispatch Console** (ops-console) — this console is entirely Cylinder Exchange domain
 2. Highlight the **12-location cage monitor grid**:
-   - Each location card shows a 4×5 grid of tank circles (20 tanks per cage)
-   - Tanks are color-coded: blue (full), grey (empty), orange (in transit)
-   - **Critical locations pulse red** when they have ≤3 full tanks — point this out: "See how this card is flashing? That location is about to run out."
+   - Each location card shows a 4×5 grid of cylinder circles (20 cylinders per cage)
+   - Cylinders are color-coded: blue (full), grey (empty), orange (in transit)
+   - **Critical locations pulse red** when they have ≤3 full cylinders — point this out: "See how this card is flashing? That location is about to run out."
 3. Show the **Delivery Priority Queue**:
    - Sorted by estimated stockout time
    - Priority labels: URGENT / HIGH / NORMAL
    - "This is what the dispatch team would use to decide which trucks to send first."
 4. Show the **7-day demand forecast**:
-   - Temperature-based demand projections (High / Normal / Low) for each day
+   - Temperature-based demand projections (High / Normal / Low) and estimated cylinders needed for each day
    - "The system correlates weather forecasts with historical consumption to predict when cages will need restocking."
-5. Point out the **operations log** showing real-time cage events
+5. Point out the **operations log** showing real-time cage restock events
+
+**Domain:** Shared
 
 ### Show: Telemetry Pipeline
 
@@ -100,6 +112,8 @@ Pick **2–3 scenarios** from the options below. Recommended flow for maximum im
 
 ### Scenario A: MongoDB Outage — Cascading Failure ⭐ (Recommended first)
 
+**Domain:** Shared
+
 **Why this one:** Shows cascading failures and root cause analysis — the most impressive SRE Agent capability.
 
 **1. Set the scene:**
@@ -143,10 +157,12 @@ kubectl apply -f k8s/base/application.yaml
 
 ### Scenario B: OOMKilled — Tank Monitor Memory Exhaustion
 
+**Domain:** Bulk Tank
+
 **Why this one:** Very common in production. Easy to understand.
 
 **1. Set the scene:**
-> "Winter peak season hits. Smart tank sensors across all 12 retail locations are reporting at higher frequency as customers consume more propane for heating. The tank monitor service can't keep up with the data volume."
+> "Winter peak season hits. Smart sensors on residential and commercial **bulk propane tanks** are reporting at higher frequency as customers consume more propane for heating. The tank-monitor service can't keep up with the data volume."
 
 **2. Break it** — click **"OOMKilled"** in Mission Control, or run:
 ```bash
@@ -155,8 +171,13 @@ kubectl apply -f k8s/scenarios/oom-killed.yaml
 
 **3. Watch it:**
 - Tank-monitor pod cycles between Running and OOMKilled, restart count climbs
-- On the **Customer Portal** — the "Nearby Exchange Locations" section starts showing errors instead of cage inventory. The colored tank dots disappear because the tank monitor can't process sensor data.
-- Stock status badges may flip to "Out of Stock" as data goes stale
+- On the **Customer Portal** — the **"My Bulk Tank"** section stops refreshing tank-level data.
+- Stock status badges may flip to "Out of Stock" while data is marked stale
+
+<!-- Domain: Shared -->
+> Because portal health is a shared signal across both domains, the **"Nearby Exchange Locations"** (Cylinder Exchange) section also shows a stale/degraded banner even though its own cage inventory data is unaffected — a good talking point on shared health-check design.
+
+**Domain:** Bulk Tank
 
 **4. Ask SRE Agent:**
 
@@ -177,6 +198,8 @@ kubectl apply -f k8s/base/application.yaml
 
 ### Scenario C: Network Policy — Silent Failure
 
+**Domain:** Bulk Tank
+
 **Why this one:** Demonstrates a "silent" failure — everything looks healthy but nothing works. Shows SRE Agent's ability to investigate beyond pod status.
 
 **1. Set the scene:**
@@ -188,7 +211,7 @@ kubectl apply -f k8s/scenarios/network-block.yaml
 ```
 
 **3. Point out the silent failure:**
-> "Look at the Dispatch Console — the cage inventory on the Retail Cage Operations Center looks fine at first glance — tanks still show as full. But look at the delivery priority queue — it hasn't updated. The data pipeline is silently broken. This is the kind of failure that can go unnoticed for hours."
+> "The tank-monitor pod is Running and green — a human checking pod status would think everything is fine. But no new tank readings are reaching MongoDB, and the customer's tank-level data has quietly stopped updating. This is the kind of failure that can go unnoticed for hours."
 
 The pod is Running and green. A human looking at pod status would think everything is fine.
 
@@ -211,10 +234,12 @@ kubectl apply -f k8s/base/application.yaml
 
 ### Scenario D: Service Mismatch — Post-Upgrade Failure (Alternative)
 
+**Domain:** Bulk Tank
+
 **Why this one:** Shows a subtle Kubernetes misconfiguration that's hard to spot manually.
 
 **1. Set the scene:**
-> "The team pushed a 'v2 upgrade' of the tank monitor. The deployment went fine, but suddenly the Customer Portal cage inventory and the Dispatch Console operations data have gone dark."
+> "The team pushed a 'v2 upgrade' of the tank monitor. The deployment went fine, but suddenly the Customer Portal's bulk tank readings have gone dark."
 
 **2. Break it** — click **"Service Mismatch"**, or run:
 ```bash
@@ -233,6 +258,8 @@ kubectl apply -f k8s/base/application.yaml
 ```
 
 ---
+
+**Domain:** Shared
 
 ## Act 3 — Proactive + Observability (7 min)
 
@@ -331,29 +358,29 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 
 | Mission Control Button | What Breaks | Business Story |
 |----------------------|-------------|---------------|
-| OOMKilled | tank-monitor memory exhaustion | Winter peak IoT data spike overwhelms cage sensors |
+| OOMKilled | tank-monitor memory exhaustion | Winter peak bulk-tank sensor data spike overwhelms the service |
 | CrashLoopBackOff | inventory-service bad config | Invalid pricing configuration |
 | ImagePullBackOff | order-service wrong image | Botched image release |
-| High CPU | CPU stress pod added | Peak season demand forecasting overload |
+| High CPU | CPU stress pod added | Peak season cylinder-exchange demand forecasting overload |
 | Pending Pods | Unschedulable pods | Fleet telemetry over-provisioned |
 | Probe Failure | Bad health check endpoints | Post-maintenance misconfiguration |
 | Network Block | NetworkPolicy blocks traffic | Overly restrictive security policy — silent data pipeline failure |
 | Missing Config | Missing ConfigMaps | Delivery zone config not deployed |
-| MongoDB Down | Database scaled to 0 | Database outage — cascading failure across cage inventory |
+| MongoDB Down | Database scaled to 0 | Database outage — cascading failure across bulk tank readings and order processing |
 | Service Mismatch | Selector label drift | Silent routing failure after "v2 upgrade" |
 
 ### Platform Services (9 active)
 
-| Service | Role | Replicas |
-|---------|------|----------|
-| `customer-portal` | Consumer portal — tank gauge, cage inventory, exchange locations | 2 |
-| `dispatch-console` | Retail Cage Operations Center — cage grid, delivery queue, forecast | 1 |
-| `tank-monitor` | Smart tank sensor data ingestion & processing | 2 |
-| `inventory-service` | Cage inventory catalog, stock levels, pricing | 2 |
-| `order-service` | Order fulfillment & delivery scheduling | 2 |
-| `usage-simulator` | Retail consumer usage pattern generator | 1 |
-| `otel-collector` | OpenTelemetry Collector — receives OTLP, exports to App Insights & ADX | 1 |
-| `rabbitmq` | Event bus — dispatch events, cage alerts, inventory updates | 1 |
-| `mongodb` | Cage inventory, tank readings, transaction data | 1 |
+| Service | Role | Domain | Replicas |
+|---------|------|--------|----------|
+| `customer-portal` | Consumer portal — bulk tank gauge, cylinder exchange cage inventory, exchange locations | Bulk Tank + Cylinder Exchange | 2 |
+| `dispatch-console` | Retail Cage Operations Center — cage grid, delivery queue, forecast | Cylinder Exchange | 1 |
+| `tank-monitor` | Smart bulk propane tank sensor data ingestion & processing | Bulk Tank | 2 |
+| `inventory-service` | Bulk delivery pricing & retail cylinder exchange cage catalog | Shared | 2 |
+| `order-service` | Order fulfillment & delivery scheduling (bulk tank + cylinder exchange) | Shared | 2 |
+| `usage-simulator` | Residential/commercial bulk propane tank usage pattern generator | Bulk Tank | 1 |
+| `otel-collector` | OpenTelemetry Collector — receives OTLP, exports to App Insights & ADX | Shared | 1 |
+| `rabbitmq` | Event bus — bulk tank alerts, order events, dispatch coordination | Shared | 1 |
+| `mongodb` | Bulk tank readings, delivery/order records, customer data | Shared | 1 |
 
 > **Note:** `order-worker` exists in the manifests but is disabled (`replicas: 0`). The OTel Collector is a platform component — it receives telemetry from all instrumented services and exports to Application Insights (for real-time APM) and through Container Insights to Log Analytics and ADX (for deep analytics).

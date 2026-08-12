@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 7: Network Policy Blocking - Tank Monitor Isolated
+# Domain: Bulk Tank
 # =============================================================================
 # A security policy update isolates tank-monitor, blocking all ingress and
 # egress traffic.

@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 8: Missing ConfigMap - Delivery Zone Configuration Missing
+# Domain: Shared (delivery routing for both Bulk Tank & Cylinder Exchange)
 # =============================================================================
 # Delivery zone configuration is missing after environment promotion,
 # preventing the pod from starting.

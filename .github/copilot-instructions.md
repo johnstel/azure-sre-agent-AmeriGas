@@ -12,19 +12,27 @@ This repository contains a fully automated Azure SRE Agent demo lab environment 
 
 The platform simulates a retail propane distributor with propane distribution and customer services using in-cluster MongoDB and RabbitMQ with Azure Managed Disk storage.
 
+## Domain Model
+
+This platform supports **two distinct propane business domains**. Every simulator, service, UI section, metric, event, and breakable scenario belongs to exactly one domain (or is explicitly Shared). Never mix vocabulary across domains — see `docs/sre-agent-knowledge.md` for the full model.
+
+- **Bulk Tank** — residential/commercial bulk propane tanks & deliveries. Vocabulary: gallons, tank percentage, consumption, refill recommendation, delivery scheduling. Owned by `tank-monitor`, `usage-simulator`, and the Customer Portal "My Bulk Tank" section.
+- **Cylinder Exchange** — retail cylinder exchange cages at partner stores. Vocabulary: full/empty/reserved cylinder counts, cage replenishment, exchange-location terminology. Owned by `dispatch-console` (Retail Cage Operations Center) and the Customer Portal "Nearby Exchange Locations" section.
+- **Shared** — `inventory-service`, `order-service`, `order-worker`, `rabbitmq`, `mongodb`, `otel-collector` serve both domains.
+
 ## AmeriGas Propane Architecture
 
-| Service | Role | Technology |
-|---------|------|------------|
-| `customer-portal` | Customer portal (account, deliveries, tank levels) | Vue.js |
-| `dispatch-console` | Operations console for fleet & orders | Vue.js |
-| `tank-monitor` | IoT tank level monitoring & refill alerts | Node.js |
-| `inventory-service` | Propane inventory, pricing, product catalog | Rust |
-| `order-service` | Order fulfillment & processing | Go |
-| `usage-simulator` | Customer propane usage pattern generator | Python |
-| `order-worker` | Order processing worker (disabled) | Python |
-| `rabbitmq` | Event bus (tank alerts, delivery orders, fulfillment updates) | RabbitMQ |
-| `mongodb` | Tank readings, delivery records, customer data | MongoDB |
+| Service | Role | Domain | Technology |
+|---------|------|--------|------------|
+| `customer-portal` | Customer portal (bulk tank account, deliveries, cylinder exchange locations) | Bulk Tank + Cylinder Exchange | Vue.js |
+| `dispatch-console` | Retail Cage Operations Center for fleet & cage restock orders | Cylinder Exchange | Vue.js |
+| `tank-monitor` | IoT bulk tank level monitoring & refill alerts | Bulk Tank | Node.js |
+| `inventory-service` | Propane inventory, pricing, product catalog (bulk delivery + cylinder exchange) | Shared | Rust |
+| `order-service` | Order fulfillment & processing | Shared | Go |
+| `usage-simulator` | Customer bulk tank propane usage pattern generator | Bulk Tank | Python |
+| `order-worker` | Order processing worker (disabled) | Shared | Python |
+| `rabbitmq` | Event bus (tank alerts, delivery orders, fulfillment updates) | Shared | RabbitMQ |
+| `mongodb` | Tank readings, delivery records, customer data | Shared | MongoDB |
 
 ## Technology Stack
 
@@ -72,18 +80,18 @@ For general diagnosis:
 
 Located in `k8s/scenarios/`:
 
-| File | AmeriGas Narrative | SRE Agent Can Diagnose |
-|------|-------------------|----------------------|
-| `oom-killed.yaml` | Tank monitor overwhelmed by winter peak readings | OOMKilled events, memory limits |
-| `crash-loop.yaml` | Inventory service crash — invalid pricing config | CrashLoopBackOff, exit codes |
-| `image-pull-backoff.yaml` | Order service fails after botched image release | Registry/image issues |
-| `high-cpu.yaml` | Demand forecast overload during peak heating season | CPU contention |
-| `pending-pods.yaml` | Fleet telemetry monitor can't schedule | Scheduling issues |
-| `probe-failure.yaml` | Safety compliance monitor misconfigured | Probe configuration |
-| `network-block.yaml` | Tank monitor isolated by bad security policy | Network policies |
-| `missing-config.yaml` | Delivery zone configuration missing | Configuration issues |
-| `mongodb-down.yaml` | Tank database outage — cascading failure | Dependency tracing, root cause |
-| `service-mismatch.yaml` | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
+| File | Domain | AmeriGas Narrative | SRE Agent Can Diagnose |
+|------|--------|-------------------|----------------------|
+| `oom-killed.yaml` | Bulk Tank | Tank monitor overwhelmed by winter peak readings | OOMKilled events, memory limits |
+| `crash-loop.yaml` | Shared | Inventory service crash — invalid pricing config | CrashLoopBackOff, exit codes |
+| `image-pull-backoff.yaml` | Shared | Order service fails after botched image release | Registry/image issues |
+| `high-cpu.yaml` | Cylinder Exchange | Demand forecast overload during peak heating season | CPU contention |
+| `pending-pods.yaml` | Shared | Fleet telemetry monitor can't schedule | Scheduling issues |
+| `probe-failure.yaml` | Shared | Safety compliance monitor misconfigured | Probe configuration |
+| `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policies |
+| `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration issues |
+| `mongodb-down.yaml` | Shared | Tank database outage — cascading failure | Dependency tracing, root cause |
+| `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
 
 ## Common Operations
 
@@ -145,3 +153,4 @@ kubectl apply -f k8s/base/application.yaml
 3. **For scripts**: Use PowerShell, include error handling, support `-WhatIf`
 4. **For docs**: Keep formatting consistent, include code examples
 5. **For new scenarios**: Add to `k8s/scenarios/` and update `docs/BREAKABLE-SCENARIOS.md`
+6. **For domain vocabulary**: Never mix Bulk Tank terms (gallons, tank percentage) with Cylinder Exchange terms (full/empty/reserved cylinder counts, cage) in the same UI section or metric. Tag new content with an explicit `Domain:` marker and run `scripts/validate-domain-terminology.ps1` before committing.
