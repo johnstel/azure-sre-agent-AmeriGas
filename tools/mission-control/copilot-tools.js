@@ -217,9 +217,11 @@ function createTools(securityState = createSecurityState()) {
     }),
 
     defineTool('fix_all', {
-      description: 'Restore ALL services to the healthy baseline by applying k8s/base/application.yaml. This remediates the cluster and requires explicit approval.',
+      description: 'Restore ALL services to the healthy baseline by removing the simulated Bulk Tank safety scenario and reapplying k8s/base/application.yaml. This remediates the cluster and requires explicit approval.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => runTool('fix_all', {}, async () => {
+        await kubectl('delete', 'deployment', 'safety-compliance-monitor', '-n', 'propane', '--ignore-not-found');
+        await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
         const yamlPath = path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml');
         const out = await kubectl('apply', '-f', yamlPath);
         return `Healthy baseline restored:\n${out}`;
@@ -236,14 +238,15 @@ function createTools(securityState = createSecurityState()) {
     }),
 
     defineTool('fix_extras', {
-      description: 'Delete rogue deployments created by break scenarios. Requires explicit approval.',
+      description: 'Delete rogue deployments and scenario config created by break scenarios. Requires explicit approval.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => runTool('fix_extras', {}, async () => {
-        const out = await kubectl('delete', 'deployment',
+        const deploymentOut = await kubectl('delete', 'deployment',
           'demand-forecast-overload', 'fleet-telemetry-monitor',
           'safety-compliance-monitor', 'delivery-zone-config',
           '-n', 'propane', '--ignore-not-found');
-        return out || 'Extra deployments removed';
+        const configOut = await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
+        return [deploymentOut, configOut].filter(Boolean).join('\n') || 'Extra deployments and scenario config removed';
       }),
     }),
 

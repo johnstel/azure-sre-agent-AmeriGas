@@ -196,7 +196,12 @@ app.post('/api/break/:scenario', async (req, res) => {
 });
 
 app.post('/api/fix/all', async (req, res) => {
-  try { const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml')); res.json({ success: true, message: out.trim() }); }
+  try {
+    await kubectl('delete', 'deployment', 'safety-compliance-monitor', '-n', 'propane', '--ignore-not-found');
+    await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
+    const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml'));
+    res.json({ success: true, message: out.trim() });
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -206,7 +211,12 @@ app.post('/api/fix/network', async (req, res) => {
 });
 
 app.post('/api/fix/extras', async (req, res) => {
-  try { const out = await kubectl('delete', 'deployment', 'demand-forecast-overload', 'fleet-telemetry-monitor', 'safety-compliance-monitor', 'delivery-zone-config', '-n', 'propane', '--ignore-not-found'); res.json({ success: true, message: out.trim() || 'Extra deployments removed' }); }
+  try {
+    const deploymentOut = await kubectl('delete', 'deployment', 'demand-forecast-overload', 'fleet-telemetry-monitor', 'safety-compliance-monitor', 'delivery-zone-config', '-n', 'propane', '--ignore-not-found');
+    const configOut = await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
+    const message = [deploymentOut, configOut].filter(Boolean).join('\n') || 'Extra deployments and scenario config removed';
+    res.json({ success: true, message });
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 

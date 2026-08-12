@@ -87,7 +87,7 @@ Located in `k8s/scenarios/`:
 | `image-pull-backoff.yaml` | Shared | Order service fails after botched image release | Registry/image issues |
 | `high-cpu.yaml` | Cylinder Exchange | Demand forecast overload during peak heating season | CPU contention |
 | `pending-pods.yaml` | Shared | Fleet telemetry monitor can't schedule | Scheduling issues |
-| `probe-failure.yaml` | Shared | Safety compliance monitor misconfigured | Probe configuration |
+| `probe-failure.yaml` | Bulk Tank | Simulated rapid tank-level drop with suppressed alarm processing | Healthy workload + delayed safety alarm |
 | `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policies |
 | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration issues |
 | `mongodb-down.yaml` | Shared | Tank database outage — cascading failure | Dependency tracing, root cause |

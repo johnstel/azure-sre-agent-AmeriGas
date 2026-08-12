@@ -6,7 +6,7 @@ const SCENARIOS = [
   { id:'image',   name:'ImagePullBackOff', desc:'Order service wrong image tag',             icon:'🖼️' },
   { id:'cpu',     name:'High CPU',         desc:'Demand forecast calculation overload',      icon:'🔥' },
   { id:'pending', name:'Pending Pods',     desc:'Fleet telemetry over-provisioned requests', icon:'⏳' },
-  { id:'probe',   name:'Probe Failure',    desc:'Safety compliance monitor bad probes',      icon:'💓' },
+  { id:'probe',   name:'Bulk Tank Safety Alarm', desc:'Healthy workload + delayed safety alarm', icon:'💓' },
   { id:'network', name:'Network Block',    desc:'Tank monitor network policy isolation',     icon:'🌐' },
   { id:'config',  name:'Missing Config',   desc:'Delivery zone missing ConfigMap',           icon:'📄' },
   { id:'mongodb', name:'MongoDB Down',     desc:'Database outage — cascading failure',       icon:'🗄️' },

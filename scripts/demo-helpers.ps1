@@ -82,13 +82,19 @@ function ensure-credentials {
 function fix-all {
     # Ensure the propane namespace exists so the Secret can be created before pods start
     kubectl create namespace propane --dry-run=client -o yaml | kubectl apply -f - 2>$null
+    # Clean up the simulated Bulk Tank safety scenario and any stale config that breaks the healthy baseline
+    kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
     # Ensure credentials secret exists (preserves any generated credentials from deploy.ps1)
     ensure-credentials
     # Apply the full application manifest
     kubectl apply -f "$PSScriptRoot\..\k8s\base\application.yaml"
 }
 function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
-function fix-extras { kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane 2>$null }
+function fix-extras {
+    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+}
 
 # Site URL
 function site {
@@ -146,7 +152,7 @@ function menu {
 ║    break-image                 - ImagePullBackOff (order-service)            ║
 ║    break-cpu                   - High CPU (demand forecast overload)         ║
 ║    break-pending               - Pending pods (fleet telemetry monitor)      ║
-║    break-probe                 - Liveness probe failure                      ║
+║    break-probe                 - Bulk Tank safety alarm                     ║
 ║    break-network               - Network policy blocking                     ║
 ║    break-config                - Missing ConfigMap                           ║
 ║    break-mongodb               - MongoDB down (cascading failure)            ║

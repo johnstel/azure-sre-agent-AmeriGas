@@ -233,15 +233,17 @@ kubectl delete deployment demand-forecast-overload -n propane
 kubectl delete deployment fleet-telemetry-monitor -n propane
 ```
 
-### 6. Probe Failure — Safety Compliance Monitor
+### 6. Bulk Tank Safety Alarm — Simulated Abnormal Reading Suppressed by Processing Delay
 
-**Domain:** Shared (safety compliance across both domains)
+**Domain:** Bulk Tank
 
-**Symptoms:** Pods named `safety-compliance-monitor-*` failing readiness/liveness probes, frequent restarts
-**Root cause:** Liveness and readiness probes point at a non-existent endpoint after maintenance update
-**Resolution:** Remove the extra deployment:
+**Symptoms:** `tank-monitor` continues running normally, but a simulated bulk tank safety alarm stays pending or delayed in the Dispatch Console and telemetry stream. Workload pods remain healthy while the alarm is suppressed.
+**Root cause:** The scenario creates a deterministic abnormal tank-level reading, then deliberately delays and suppresses alarm processing in `safety-compliance-monitor` to mimic a healthy-but-suppressed safety failure. The alert is explicitly labeled as simulated and requires AmeriGas safety SME validation before acting on it as production policy.
+**Resolution:** Remove the scenario deployment and config, then restore the base environment:
 ```
-kubectl delete deployment safety-compliance-monitor -n propane
+kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found
+kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found
+kubectl apply -f k8s/base/application.yaml
 ```
 
 ### 7. Network Block — Tank Monitor Isolation
