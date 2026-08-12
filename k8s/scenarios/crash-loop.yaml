@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 2: CrashLoopBackOff - Inventory Service Startup Failure
+# Domain: Shared (Bulk Tank pricing & Cylinder Exchange cage catalog)
 # =============================================================================
 # The inventory-service crashes on startup due to invalid pricing configuration,
 # entering a CrashLoopBackOff state.

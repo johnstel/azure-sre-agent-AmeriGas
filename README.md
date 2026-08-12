@@ -14,18 +14,21 @@ A fully automated Azure environment for demonstrating **Azure SRE Agent** capabi
 
 ## 🔥 AmeriGas Propane Architecture
 
-The platform simulates a retail propane distributor with propane distribution and customer services:
+The platform simulates a retail propane distributor with propane distribution and customer services. It supports **two distinct business domains** — see [`docs/sre-agent-knowledge.md`](docs/sre-agent-knowledge.md#domain-model) for the full domain model:
 
-| Service | Role | Technology |
-|---------|------|------------|
-| **customer-portal** | Customer portal (account, deliveries, tank levels) | Vue.js |
-| **dispatch-console** | Operations console for fleet & orders | Vue.js |
-| **tank-monitor** | IoT tank level monitoring & refill alerts | Node.js |
-| **inventory-service** | Propane inventory, pricing, product catalog | Rust |
-| **order-service** | Order fulfillment & processing | Go |
-| **usage-simulator** | Customer propane usage pattern generator | Python |
-| **rabbitmq** | Event bus (tank alerts, delivery orders, fulfillment updates) | RabbitMQ |
-| **mongodb** | Tank readings, delivery records, customer data | MongoDB |
+- **Bulk Tank** — residential/commercial bulk propane tanks & deliveries (gallons, tank percentage, refill scheduling).
+- **Cylinder Exchange** — retail cylinder exchange cages at partner stores (full/empty/reserved cylinder counts, cage replenishment).
+
+| Service | Role | Domain | Technology |
+|---------|------|--------|------------|
+| **customer-portal** | Customer portal (bulk tank account, deliveries, cylinder exchange locations) | Bulk Tank + Cylinder Exchange | Vue.js |
+| **dispatch-console** | Retail Cage Operations Center for fleet & cage restock orders | Cylinder Exchange | Vue.js |
+| **tank-monitor** | IoT bulk tank level monitoring & refill alerts | Bulk Tank | Node.js |
+| **inventory-service** | Propane inventory, pricing, product catalog (bulk delivery + cylinder exchange) | Shared | Rust |
+| **order-service** | Order fulfillment & processing | Shared | Go |
+| **usage-simulator** | Customer bulk tank propane usage pattern generator | Bulk Tank | Python |
+| **rabbitmq** | Event bus (tank alerts, delivery orders, fulfillment updates) | Shared | RabbitMQ |
+| **mongodb** | Tank readings, delivery records, customer data | Shared | MongoDB |
 
 ## 🚀 Quick Start
 

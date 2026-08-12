@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 3: ImagePullBackOff - Failed Order Service Deployment
+# Domain: Shared (Bulk Tank delivery orders & Cylinder Exchange restock orders)
 # =============================================================================
 # The order-service deployment fails after a botched container image
 # release, referencing a non-existent image tag.

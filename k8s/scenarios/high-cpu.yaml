@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 4: High CPU - Demand Forecast Overload
+# Domain: Cylinder Exchange (cage restock demand forecasting)
 # =============================================================================
 # Peak heating season triggers intensive demand forecasting calculations,
 # consuming excessive CPU and affecting other workloads.

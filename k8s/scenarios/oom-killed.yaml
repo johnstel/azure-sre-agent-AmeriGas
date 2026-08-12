@@ -12,8 +12,10 @@
 
 # =============================================================================
 # SCENARIO 1: OOMKilled - Tank Monitor Memory Exhaustion
+# Domain: Bulk Tank
 # =============================================================================
-# Winter peak demand overwhelms tank-monitor with IoT tank level readings.
+# Winter peak demand overwhelms tank-monitor with IoT tank level readings
+# from residential/commercial bulk propane tanks (gallons, tank percentage).
 # SRE Agent can diagnose: "Pod is OOMKilled", recommend increasing memory limits.
 #
 # HOW TO BREAK:

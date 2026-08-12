@@ -1,5 +1,6 @@
 # =============================================================================
 # SCENARIO 10: Service Selector Mismatch - Tank Monitor Routing Failure
+# Domain: Bulk Tank
 # =============================================================================
 # After a "v2 upgrade" the tank-monitor Service selector was changed to
 # target pods labeled 'tank-monitor-v2', but actual pods still have
