@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self';">
 <title>AmeriGas Propane — Mission Control</title>
 <style>
 /* ── Reset & Base ──────────────────────────────────────── */
@@ -259,6 +260,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 #chat-send:disabled{opacity:.4;cursor:not-allowed}
 #chat-send:hover:not(:disabled){opacity:.85}
 </style>
+<script src="/render-utils.js"></script>
 </head>
 <body>
 
@@ -286,13 +288,13 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
   </section>
 
   <!-- Copilot AI Banner -->
-  <div id="copilot-banner" onclick="toggleChat()">
+  <div id="copilot-banner" data-action="toggle-chat">
     <div class="banner-icon">🤖</div>
     <div class="banner-text">
       <div class="banner-title">GitHub Copilot AI Assistant <span id="copilot-banner-status" class="banner-status init">connecting…</span></div>
       <div class="banner-desc">Ask questions about your cluster, diagnose failures, or run fixes using natural language.</div>
     </div>
-    <button class="banner-cta" onclick="event.stopPropagation(); toggleChat()">Open Assistant</button>
+    <button class="banner-cta" data-action="toggle-chat" data-stop-propagation="true">Open Assistant</button>
   </div>
 
   <!-- Failure Diagnosis Banner (shown when deploy/validate fails) -->
@@ -302,7 +304,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
       <div class="banner-title" id="failure-banner-title">Operation Failed</div>
       <div class="banner-desc" id="failure-banner-desc">A deployment operation has failed. Let Copilot analyze the logs and suggest a fix.</div>
     </div>
-    <button class="failure-cta" onclick="analyzeFailureWithCopilot()">🤖 Diagnose with Copilot</button>
+    <button class="failure-cta" data-action="analyze-failure">🤖 Diagnose with Copilot</button>
   </div>
 
   <!-- Pod Table + Events -->
@@ -338,9 +340,9 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
   <div class="panel">
     <h2>🔧 Remediation</h2>
     <div class="fix-bar">
-      <button class="fix-btn primary" onclick="fix('all',this)">🔧 Fix All</button>
-      <button class="fix-btn secondary" onclick="fix('network',this)">🌐 Fix Network</button>
-      <button class="fix-btn secondary" onclick="fix('extras',this)">🗑️ Fix Extras</button>
+      <button class="fix-btn primary" data-action="fix" data-fix-type="all">🔧 Fix All</button>
+      <button class="fix-btn secondary" data-action="fix" data-fix-type="network">🌐 Fix Network</button>
+      <button class="fix-btn secondary" data-action="fix" data-fix-type="extras">🗑️ Fix Extras</button>
     </div>
   </div>
 
@@ -368,7 +370,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
             <label><input type="checkbox" id="deploy-skip-sre"> Skip SRE Agent</label>
           </div>
         </div>
-        <button class="infra-btn deploy" id="btn-deploy" onclick="startDeploy()">🚀 Deploy Infrastructure</button>
+        <button class="infra-btn deploy" id="btn-deploy" data-action="deploy">🚀 Deploy Infrastructure</button>
       </div>
 
       <!-- Validate Card -->
@@ -380,7 +382,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
             <input type="text" id="validate-rg" value="rg-srelab-eastus2" placeholder="rg-srelab-eastus2">
           </label>
         </div>
-        <button class="infra-btn validate" id="btn-validate" onclick="startValidate()">🔍 Validate Deployment</button>
+        <button class="infra-btn validate" id="btn-validate" data-action="validate">🔍 Validate Deployment</button>
       </div>
 
       <!-- Destroy Card -->
@@ -392,7 +394,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
             <input type="text" id="destroy-rg" value="rg-srelab-eastus2" placeholder="rg-srelab-eastus2">
           </label>
         </div>
-        <button class="infra-btn destroy" id="btn-destroy" onclick="confirmDestroy()">🗑️ Destroy Infrastructure</button>
+        <button class="infra-btn destroy" id="btn-destroy" data-action="confirm-destroy">🗑️ Destroy Infrastructure</button>
       </div>
     </div>
   </div>
@@ -402,8 +404,8 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     <h2>
       <span>📟 Terminal Output</span>
       <span id="terminal-status" class="terminal-badge">idle</span>
-      <button class="terminal-close-btn" onclick="closeTerminal()">✕</button>
-      <button class="terminal-cancel-btn" id="btn-cancel-op" onclick="cancelOperation()" style="display:none">⏹ Cancel</button>
+      <button class="terminal-close-btn" data-action="close-terminal">✕</button>
+      <button class="terminal-cancel-btn" id="btn-cancel-op" data-action="cancel-op" style="display:none">⏹ Cancel</button>
     </h2>
     <div id="terminal-output" class="terminal-output"></div>
   </div>
@@ -417,8 +419,8 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     <p>This will <strong>permanently delete</strong> all resources in <code id="destroy-modal-rg"></code>.</p>
     <p>This action cannot be undone.</p>
     <div class="modal-buttons">
-      <button class="fix-btn secondary" onclick="dismissDestroyModal()">Cancel</button>
-      <button class="infra-btn destroy" onclick="executeDestroy()">🗑️ Yes, Destroy</button>
+      <button class="fix-btn secondary" data-action="dismiss-destroy">Cancel</button>
+      <button class="infra-btn destroy" data-action="execute-destroy">🗑️ Yes, Destroy</button>
     </div>
   </div>
 </div>
@@ -429,13 +431,13 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     <h3>📋 Pod Logs: <code id="log-modal-pod"></code></h3>
     <pre id="log-modal-content" class="log-content">Loading...</pre>
     <div class="modal-buttons">
-      <button class="fix-btn secondary" onclick="closeLogModal()">Close</button>
+      <button class="fix-btn secondary" data-action="close-log">Close</button>
     </div>
   </div>
 </div>
 
 <!-- AI Chat Toggle -->
-<button id="chat-toggle" onclick="toggleChat()" title="AI Assistant">
+<button id="chat-toggle" data-action="toggle-chat" title="AI Assistant">
   <span class="toggle-icon">🤖</span> Copilot
   <span id="chat-badge" class="badge-dot loading"></span>
 </button>
@@ -445,863 +447,30 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
   <div class="chat-header">
     <h3>🤖 Copilot Assistant</h3>
     <span id="chat-conn-status" class="chat-status init">connecting…</span>
-    <button class="chat-header-btn" onclick="resetChat()" title="New conversation">🔄</button>
-    <button class="chat-header-btn" onclick="toggleChat()" title="Close">✕</button>
+    <button class="chat-header-btn" data-action="reset-chat" title="New conversation">🔄</button>
+    <button class="chat-header-btn" data-action="toggle-chat" title="Close">✕</button>
   </div>
   <div class="chat-messages" id="chat-messages">
     <div class="chat-welcome" id="chat-welcome">
       <h4>🔥 AmeriGas AI Operations Assistant</h4>
       <p>Powered by GitHub Copilot SDK — ask me anything about your propane platform.</p>
       <div class="quick-prompts">
-        <button class="quick-prompt" onclick="sendQuickPrompt(this)">What's the health of my cluster?</button>
-        <button class="quick-prompt" onclick="sendQuickPrompt(this)">Why is order-service restarting?</button>
-        <button class="quick-prompt" onclick="sendQuickPrompt(this)">Fix all broken services</button>
-        <button class="quick-prompt" onclick="sendQuickPrompt(this)">Show me recent warning events</button>
-        <button class="quick-prompt" onclick="sendQuickPrompt(this)">Validate the deployment</button>
+        <button class="quick-prompt" data-action="quick-prompt">What's the health of my cluster?</button>
+        <button class="quick-prompt" data-action="quick-prompt">Why is order-service restarting?</button>
+        <button class="quick-prompt" data-action="quick-prompt">Fix all broken services</button>
+        <button class="quick-prompt" data-action="quick-prompt">Show me recent warning events</button>
+        <button class="quick-prompt" data-action="quick-prompt">Validate the deployment</button>
       </div>
     </div>
   </div>
   <div class="chat-input-area">
-    <textarea id="chat-input" rows="1" placeholder="Ask about your cluster…" onkeydown="handleChatKey(event)"></textarea>
-    <button id="chat-send" onclick="sendChatMessage()" title="Send">➤</button>
+    <textarea id="chat-input" rows="1" placeholder="Ask about your cluster…"></textarea>
+    <button id="chat-send" data-action="send-chat" title="Send">➤</button>
   </div>
 </div>
 
 <div id="toast-container"></div>
 
-<script>
-/* ── Scenario Definitions ─────────────────────────────── */
-const SCENARIOS = [
-  { id:'oom',     name:'OOMKilled',        desc:'Tank monitor memory exhaustion',           icon:'💾' },
-  { id:'crash',   name:'CrashLoopBackOff', desc:'Inventory service bad config crash',       icon:'💥' },
-  { id:'image',   name:'ImagePullBackOff', desc:'Order service wrong image tag',             icon:'🖼️' },
-  { id:'cpu',     name:'High CPU',         desc:'Demand forecast calculation overload',      icon:'🔥' },
-  { id:'pending', name:'Pending Pods',     desc:'Fleet telemetry over-provisioned requests', icon:'⏳' },
-  { id:'probe',   name:'Probe Failure',    desc:'Safety compliance monitor bad probes',      icon:'💓' },
-  { id:'network', name:'Network Block',    desc:'Tank monitor network policy isolation',     icon:'🌐' },
-  { id:'config',  name:'Missing Config',   desc:'Delivery zone missing ConfigMap',           icon:'📄' },
-  { id:'mongodb', name:'MongoDB Down',     desc:'Database outage — cascading failure',       icon:'🗄️' },
-  { id:'service', name:'Service Mismatch', desc:'Tank monitor selector drift after v2',      icon:'🔀' },
-];
-
-// Pods whose presence/state indicate a scenario is active
-const SCENARIO_INDICATORS = {
-  oom:     p => p.name.startsWith('tank-monitor') && (p.reason === 'OOMKilled' || p.status === 'CrashLoopBackOff' || p.restarts > 2),
-  crash:   p => p.name.startsWith('inventory-service') && (p.status === 'CrashLoopBackOff' || p.status === 'Error'),
-  image:   p => p.name.startsWith('order-service') && (p.status === 'ImagePullBackOff' || p.status === 'ErrImagePull'),
-  cpu:     p => p.name.startsWith('demand-forecast'),
-  pending: p => p.name.startsWith('fleet-telemetry'),
-  probe:   p => p.name.startsWith('safety-compliance'),
-  config:  p => p.name.startsWith('delivery-zone'),
-  mongodb: p => p.name.startsWith('mongodb') && (p.ready === '0/1' || p.status !== 'Running'),
-  network: null, // detected via networkpolicies API
-  service: null, // detected via endpoints API
-};
-
-let currentPods = [];
-let networkPolicyActive = false;
-let serviceMismatchActive = false;
-let csrfToken = null;
-
-/* ── API Helpers ───────────────────────────────────────── */
-async function getCsrfToken() {
-  if (csrfToken) return csrfToken;
-  try {
-    const r = await fetch('/api/csrf-token');
-    if (!r.ok) return null;
-    const data = await r.json();
-    csrfToken = data.token || null;
-    return csrfToken;
-  } catch {
-    return null;
-  }
-}
-
-async function buildRequestOptions(opts = {}) {
-  const headers = new Headers(opts.headers || {});
-  const method = (opts.method || 'GET').toUpperCase();
-  if (opts.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  if (method !== 'GET' && method !== 'HEAD') {
-    const token = await getCsrfToken();
-    if (token) headers.set('X-CSRF-Token', token);
-  }
-  return { ...opts, headers };
-}
-
-async function api(path, opts = {}) {
-  const r = await fetch('/api/' + path, await buildRequestOptions(opts));
-  return r.json();
-}
-
-/* ── Toast ─────────────────────────────────────────────── */
-function toast(msg, type='success') {
-  const el = document.createElement('div');
-  el.className = 'toast ' + type;
-  el.textContent = msg;
-  document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 4000);
-}
-
-/* ── Time Ago ──────────────────────────────────────────── */
-function timeAgo(dateStr) {
-  if (!dateStr) return '–';
-  const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
-  if (diff < 60) return Math.floor(diff) + 's';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h';
-  return Math.floor(diff / 86400) + 'd';
-}
-
-/* ── Pod Status Parsing ────────────────────────────────── */
-function parsePodStatus(pod) {
-  const cs = pod.status.containerStatuses || [];
-  let status = pod.status.phase;
-  let reason = '';
-  let restarts = 0;
-  let ready = '0/0';
-
-  if (cs.length > 0) {
-    const readyCount = cs.filter(c => c.ready).length;
-    ready = readyCount + '/' + cs.length;
-    restarts = cs.reduce((s, c) => s + (c.restartCount || 0), 0);
-    for (const c of cs) {
-      if (c.state.waiting) {
-        status = c.state.waiting.reason || 'Waiting';
-        reason = c.state.waiting.reason || '';
-      } else if (c.state.terminated) {
-        status = c.state.terminated.reason || 'Terminated';
-        reason = c.state.terminated.reason || '';
-      }
-    }
-  }
-
-  // Check init containers too
-  const ics = pod.status.initContainerStatuses || [];
-  for (const c of ics) {
-    if (c.state && c.state.waiting) {
-      status = 'Init:' + (c.state.waiting.reason || 'Waiting');
-      reason = c.state.waiting.reason || '';
-    }
-  }
-
-  return {
-    name: pod.metadata.name,
-    status,
-    reason,
-    ready,
-    restarts,
-    age: pod.metadata.creationTimestamp,
-  };
-}
-
-function statusClass(s) {
-  if (s === 'Running' || s === 'Succeeded') return 'running';
-  if (['Pending','ContainerCreating'].includes(s) || s.startsWith('Init:')) return 'pending';
-  return 'failed';
-}
-
-function badgeClass(s) {
-  if (s === 'Running' || s === 'Succeeded') return 'badge-running';
-  if (['Pending','ContainerCreating'].includes(s) || s.startsWith('Init:')) return 'badge-pending';
-  return 'badge-error';
-}
-
-/* ── Refresh Functions ─────────────────────────────────── */
-async function refreshPods() {
-  try {
-    const data = await api('pods');
-    if (data.error) throw new Error(data.error);
-    document.getElementById('conn-banner').style.display = 'none';
-
-    const pods = (data.items || []).map(parsePodStatus);
-    currentPods = pods;
-    const total = pods.length;
-    const healthy = pods.filter(p => p.status === 'Running' || p.status === 'Succeeded').length;
-    const unhealthy = total - healthy;
-
-    document.getElementById('total-pods').textContent = total;
-    document.getElementById('healthy-pods').textContent = healthy;
-    const uhEl = document.getElementById('unhealthy-pods');
-    uhEl.textContent = unhealthy;
-    uhEl.className = 'value ' + (unhealthy > 0 ? 'red' : 'green');
-
-    // Update Copilot banner with cluster health context
-    if (unhealthy > 0) {
-      const issues = pods.filter(p => p.status !== 'Running' && p.status !== 'Succeeded')
-        .map(p => p.name + ' (' + p.status + ')').join(', ');
-      document.getElementById('copilot-banner').querySelector('.banner-desc').textContent =
-        '⚠️ ' + unhealthy + ' unhealthy pod(s): ' + issues + ' — click to diagnose.';
-    } else {
-      document.getElementById('copilot-banner').querySelector('.banner-desc').textContent =
-        'Ask questions about your cluster, diagnose failures, or run fixes using natural language.';
-    }
-
-    // Pod table
-    const tbody = document.getElementById('pod-tbody');
-    tbody.innerHTML = pods.map(p => `
-      <tr class="status-${statusClass(p.status)}">
-        <td><a class="pod-link" onclick="showPodLogs('${p.name}')">${p.name}</a></td>
-        <td><span class="badge ${badgeClass(p.status)}">${p.status}</span></td>
-        <td>${p.ready}</td>
-        <td>${p.restarts}</td>
-        <td>${timeAgo(p.age)}</td>
-      </tr>`).join('');
-
-    // Update scenario indicators
-    updateScenarioIndicators();
-  } catch (e) {
-    document.getElementById('conn-banner').style.display = 'block';
-  }
-}
-
-async function refreshEvents() {
-  try {
-    const data = await api('events');
-    if (data.error) return;
-    const events = (data.items || []).slice(-15).reverse();
-    const el = document.getElementById('events-list');
-    if (events.length === 0) {
-      el.innerHTML = '<span class="event-msg">No recent events</span>';
-      return;
-    }
-    el.innerHTML = events.map(e => `
-      <div class="event-row">
-        <span class="event-time">${timeAgo(e.lastTimestamp || e.metadata.creationTimestamp)}</span>
-        <span class="event-type ${e.type}">${e.type}</span>
-        <span class="event-msg">${e.involvedObject.name}: ${e.message || ''}</span>
-      </div>`).join('');
-  } catch {}
-}
-
-async function refreshServices() {
-  try {
-    const data = await api('services');
-    if (data.error) return;
-    const portal = (data.items || []).find(s => s.metadata.name === 'customer-portal');
-    const el = document.getElementById('portal-link');
-    if (portal) {
-      const ing = portal.status.loadBalancer && portal.status.loadBalancer.ingress;
-      if (ing && ing.length > 0) {
-        const ip = ing[0].ip || ing[0].hostname;
-        el.innerHTML = `<a href="http://${ip}" target="_blank">${ip} ↗</a>`;
-      } else {
-        el.textContent = 'Pending…';
-      }
-    } else {
-      el.textContent = 'N/A';
-    }
-  } catch {}
-}
-
-async function refreshNodes() {
-  try {
-    const data = await api('nodes');
-    if (data.error) return;
-    document.getElementById('node-count').textContent = (data.items || []).length;
-  } catch {}
-}
-
-async function refreshDeployments() {
-  try {
-    const data = await api('deployments');
-    if (data.error) return;
-    const deps = (data.items || []);
-    const el = document.getElementById('deployments-list');
-    el.innerHTML = deps.map(d => {
-      const desired = d.spec.replicas || 0;
-      const ready = d.status.readyReplicas || 0;
-      const pct = desired > 0 ? (ready / desired * 100) : 0;
-      const color = pct === 100 ? 'var(--green)' : pct > 0 ? 'var(--yellow)' : 'var(--red)';
-      return `
-        <div class="deploy-row">
-          <span class="deploy-name">${d.metadata.name}</span>
-          <div class="deploy-bar"><div class="deploy-fill" style="width:${pct}%;background:${color}"></div></div>
-          <span class="deploy-nums" style="color:${color}">${ready}/${desired}</span>
-        </div>`;
-    }).join('');
-  } catch {}
-}
-
-async function refreshClusterInfo() {
-  try {
-    const data = await api('cluster-info');
-    if (data.error) return;
-    document.getElementById('cluster-ctx').textContent = data.context || '–';
-    document.getElementById('azure-sub').textContent = data.subscription || '–';
-    document.getElementById('rg-name').textContent = data.resourceGroup || '–';
-  } catch {}
-}
-
-/* ── Scenario Indicators ──────────────────────────────── */
-function updateScenarioIndicators() {
-  for (const sc of SCENARIOS) {
-    const indicator = document.getElementById('ind-' + sc.id);
-    if (!indicator) continue;
-
-    let isActive = false;
-    if (sc.id === 'network') {
-      isActive = networkPolicyActive;
-    } else if (sc.id === 'service') {
-      isActive = serviceMismatchActive;
-    } else {
-      const fn = SCENARIO_INDICATORS[sc.id];
-      if (!fn) { indicator.textContent = '–'; indicator.className = 'sc-status'; continue; }
-      isActive = currentPods.some(fn);
-    }
-
-    indicator.textContent = isActive ? '● ACTIVE' : '○ Healthy';
-    indicator.className = 'sc-status ' + (isActive ? 'active' : 'ok');
-  }
-}
-
-/* ── Build Scenario Cards ─────────────────────────────── */
-function buildScenarioGrid() {
-  const grid = document.getElementById('scenarios-grid');
-  grid.innerHTML = SCENARIOS.map(sc => `
-    <div class="scenario-card">
-      <div class="sc-name">${sc.icon} ${sc.name}</div>
-      <div class="sc-desc">${sc.desc}</div>
-      <div id="ind-${sc.id}" class="sc-status">–</div>
-      <button class="break-btn" onclick="breakScenario('${sc.id}',this)">💥 Break</button>
-    </div>`).join('');
-}
-
-/* ── Break / Fix Actions ──────────────────────────────── */
-async function breakScenario(id, btn) {
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Breaking…';
-  try {
-    const data = await api('break/' + id, { method: 'POST' });
-    if (data.error) throw new Error(data.error);
-    toast('Scenario applied: ' + id);
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '💥 Break';
-    refreshPods();
-  }
-}
-
-async function fix(type, btn) {
-  btn.disabled = true;
-  const orig = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner"></span> Fixing…';
-  try {
-    const data = await api('fix/' + type, { method: 'POST' });
-    if (data.error) throw new Error(data.error);
-    toast('Fix applied: ' + type);
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = orig;
-    refreshPods();
-    refreshDeployments();
-  }
-}
-
-/* ── Network Policy & Endpoint Detection ──────────────── */
-async function refreshNetworkPolicies() {
-  try {
-    const data = await api('networkpolicies');
-    if (data.error) { networkPolicyActive = false; return; }
-    networkPolicyActive = (data.items || []).some(np => np.metadata.name === 'deny-tank-monitor');
-    updateScenarioIndicators();
-  } catch { networkPolicyActive = false; }
-}
-
-async function refreshEndpoints() {
-  try {
-    const data = await api('endpoints');
-    if (data.error) { serviceMismatchActive = false; return; }
-    const ep = (data.items || []).find(e => e.metadata.name === 'tank-monitor');
-    if (ep) {
-      const addrs = (ep.subsets || []).flatMap(s => s.addresses || []);
-      // Service mismatch = service exists but has no endpoints (and tank-monitor pod IS running)
-      const tankRunning = currentPods.some(p => p.name.startsWith('tank-monitor') && p.status === 'Running');
-      serviceMismatchActive = addrs.length === 0 && tankRunning;
-    } else {
-      serviceMismatchActive = false;
-    }
-    updateScenarioIndicators();
-  } catch { serviceMismatchActive = false; }
-}
-
-/* ── Init ──────────────────────────────────────────────── */
-buildScenarioGrid();
-refreshPods();
-refreshEvents();
-refreshServices();
-refreshNodes();
-refreshDeployments();
-refreshClusterInfo();
-refreshNetworkPolicies();
-refreshEndpoints();
-
-setInterval(refreshPods, 5000);
-setInterval(refreshEvents, 10000);
-setInterval(refreshServices, 15000);
-setInterval(refreshDeployments, 10000);
-setInterval(refreshNodes, 30000);
-setInterval(refreshNetworkPolicies, 5000);
-setInterval(refreshEndpoints, 5000);
-
-/* ── Infrastructure Operations ────────────────────────── */
-let currentOpId = null;
-let currentEventSource = null;
-
-function autoDetectRG() {
-  const rgEl = document.getElementById('rg-name');
-  if (rgEl && rgEl.textContent && rgEl.textContent !== '–' && rgEl.textContent !== 'Not found') {
-    document.getElementById('validate-rg').value = rgEl.textContent;
-    document.getElementById('destroy-rg').value = rgEl.textContent;
-  }
-}
-
-// Update the deploy-workload and location when cluster-info arrives to keep RG inputs in sync
-const origRefreshClusterInfo = refreshClusterInfo;
-refreshClusterInfo = async function() {
-  await origRefreshClusterInfo();
-  autoDetectRG();
-};
-
-function showTerminal() {
-  document.getElementById('terminal-panel').style.display = '';
-  document.getElementById('terminal-panel').scrollIntoView({ behavior: 'smooth' });
-}
-
-function closeTerminal() {
-  document.getElementById('terminal-panel').style.display = 'none';
-  if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
-}
-
-function setTerminalStatus(status) {
-  const badge = document.getElementById('terminal-status');
-  badge.textContent = status;
-  badge.className = 'terminal-badge ' + status;
-  const cancelBtn = document.getElementById('btn-cancel-op');
-  cancelBtn.style.display = status === 'running' ? '' : 'none';
-}
-
-function streamOperation(opId) {
-  currentOpId = opId;
-  const out = document.getElementById('terminal-output');
-  out.textContent = '';
-  setTerminalStatus('running');
-  showTerminal();
-
-  if (currentEventSource) currentEventSource.close();
-  const es = new EventSource('/api/operations/' + opId + '/stream');
-  currentEventSource = es;
-
-  es.onmessage = (e) => {
-    const entry = JSON.parse(e.data);
-    const span = document.createElement('span');
-    if (entry.stream === 'stderr') span.style.color = '#f85149';
-    else if (entry.stream === 'system') span.style.color = '#58a6ff';
-    span.textContent = entry.text;
-    out.appendChild(span);
-    out.scrollTop = out.scrollHeight;
-  };
-
-  es.addEventListener('done', (e) => {
-    const info = JSON.parse(e.data);
-    setTerminalStatus(info.status);
-    es.close();
-    currentEventSource = null;
-
-    // On failure, show the Copilot failure diagnosis banner
-    if (info.status === 'failed') {
-      const termOutput = document.getElementById('terminal-output').textContent || '';
-      // Store failure context for Copilot
-      window._lastFailure = {
-        opId: currentOpId,
-        status: info.status,
-        exitCode: info.exitCode,
-        logTail: termOutput.slice(-3000),
-      };
-      const fb = document.getElementById('copilot-failure-banner');
-      document.getElementById('failure-banner-title').textContent = 'Operation Failed (exit ' + info.exitCode + ')';
-      document.getElementById('failure-banner-desc').textContent = 'The operation failed. Let Copilot analyze the logs and suggest a fix.';
-      fb.style.display = 'flex';
-    }
-
-    currentOpId = null;
-    setInfraButtonsEnabled(true);
-    refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
-  });
-
-  es.onerror = () => {
-    setTerminalStatus('failed');
-    es.close();
-    currentEventSource = null;
-    currentOpId = null;
-    setInfraButtonsEnabled(true);
-  };
-}
-
-function setInfraButtonsEnabled(enabled) {
-  ['btn-deploy','btn-destroy','btn-validate'].forEach(id => {
-    document.getElementById(id).disabled = !enabled;
-  });
-}
-
-async function startDeploy() {
-  const location = document.getElementById('deploy-location').value;
-  const workloadName = document.getElementById('deploy-workload').value || 'srelab';
-  const skipRbac = document.getElementById('deploy-skip-rbac').checked;
-  const skipSreAgent = document.getElementById('deploy-skip-sre').checked;
-
-  setInfraButtonsEnabled(false);
-  try {
-    const r = await fetch('/api/deploy', await buildRequestOptions({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ location, workloadName, skipRbac, skipSreAgent }),
-    }));
-    const data = await r.json();
-    if (!r.ok) { toast(data.error || 'Deploy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
-    toast('Deployment started');
-    streamOperation(data.id);
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-    setInfraButtonsEnabled(true);
-  }
-}
-
-function confirmDestroy() {
-  const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
-  document.getElementById('destroy-modal-rg').textContent = rg;
-  document.getElementById('destroy-modal').style.display = '';
-}
-
-function dismissDestroyModal() {
-  document.getElementById('destroy-modal').style.display = 'none';
-}
-
-async function executeDestroy() {
-  dismissDestroyModal();
-  const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
-  setInfraButtonsEnabled(false);
-  try {
-    const r = await fetch('/api/destroy', await buildRequestOptions({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resourceGroupName: rg }),
-    }));
-    const data = await r.json();
-    if (!r.ok) { toast(data.error || 'Destroy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
-    toast('Destroy operation started');
-    streamOperation(data.id);
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-    setInfraButtonsEnabled(true);
-  }
-}
-
-async function startValidate() {
-  const rg = document.getElementById('validate-rg').value || 'rg-srelab-eastus2';
-  setInfraButtonsEnabled(false);
-  try {
-    const r = await fetch('/api/validate', await buildRequestOptions({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resourceGroupName: rg }),
-    }));
-    const data = await r.json();
-    if (!r.ok) { toast(data.error || 'Validate failed to start', 'error'); setInfraButtonsEnabled(true); return; }
-    toast('Validation started');
-    streamOperation(data.id);
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-    setInfraButtonsEnabled(true);
-  }
-}
-
-async function cancelOperation() {
-  if (!currentOpId) return;
-  try {
-    await fetch('/api/operations/' + currentOpId, await buildRequestOptions({ method: 'DELETE' }));
-    toast('Operation cancelled');
-  } catch (e) {
-    toast('Cancel failed: ' + e.message, 'error');
-  }
-}
-
-/* ── Pod Log Viewer ───────────────────────────────────── */
-async function showPodLogs(podName) {
-  document.getElementById('log-modal-pod').textContent = podName;
-  document.getElementById('log-modal-content').textContent = 'Loading...';
-  document.getElementById('log-modal').style.display = '';
-  try {
-    const r = await fetch('/api/pods/' + encodeURIComponent(podName) + '/logs');
-    const data = await r.json();
-    document.getElementById('log-modal-content').textContent = data.logs || data.error || 'No logs available';
-  } catch (e) {
-    document.getElementById('log-modal-content').textContent = 'Error: ' + e.message;
-  }
-}
-
-function closeLogModal() {
-  document.getElementById('log-modal').style.display = 'none';
-}
-
-/* ── Resource Group Auto-Sync ─────────────────────────── */
-document.getElementById('deploy-workload').addEventListener('input', syncRGFields);
-document.getElementById('deploy-location').addEventListener('change', syncRGFields);
-
-function syncRGFields() {
-  const wl = document.getElementById('deploy-workload').value || 'srelab';
-  const loc = document.getElementById('deploy-location').value;
-  const rg = 'rg-' + wl + '-' + loc;
-  document.getElementById('validate-rg').value = rg;
-  document.getElementById('destroy-rg').value = rg;
-}
-
-/* ── Copilot Chat ─────────────────────────────────────── */
-let chatOpen = false;
-let chatStreaming = false;
-
-function toggleChat() {
-  chatOpen = !chatOpen;
-  document.getElementById('chat-panel').classList.toggle('open', chatOpen);
-  document.getElementById('chat-toggle').classList.toggle('hidden', chatOpen);
-  if (chatOpen) document.getElementById('chat-input').focus();
-}
-
-function handleChatKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendChatMessage();
-  }
-  // Auto-resize textarea
-  const el = e.target;
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
-}
-
-function sendQuickPrompt(btn) {
-  document.getElementById('chat-input').value = btn.textContent;
-  sendChatMessage();
-}
-
-function appendChatMsg(role, html) {
-  const msgDiv = document.createElement('div');
-  msgDiv.className = 'chat-msg ' + role;
-  msgDiv.innerHTML = html;
-  const container = document.getElementById('chat-messages');
-  container.appendChild(msgDiv);
-  container.scrollTop = container.scrollHeight;
-  return msgDiv;
-}
-
-function showTyping() {
-  const el = document.createElement('div');
-  el.className = 'chat-typing';
-  el.id = 'chat-typing';
-  el.innerHTML = '<span></span><span></span><span></span>';
-  const container = document.getElementById('chat-messages');
-  container.appendChild(el);
-  container.scrollTop = container.scrollHeight;
-}
-
-function hideTyping() {
-  const el = document.getElementById('chat-typing');
-  if (el) el.remove();
-}
-
-function showIntent(text) {
-  let el = document.getElementById('chat-intent-current');
-  if (!el) {
-    el = document.createElement('div');
-    el.className = 'chat-intent';
-    el.id = 'chat-intent-current';
-    const container = document.getElementById('chat-messages');
-    container.appendChild(el);
-  }
-  el.textContent = '⏳ ' + text;
-  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
-}
-
-function hideIntent() {
-  const el = document.getElementById('chat-intent-current');
-  if (el) el.remove();
-}
-
-// Simple markdown-to-HTML converter
-function md(text) {
-  if (!text) return '';
-  let h = text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    // Code blocks
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Bold
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Italic
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Headers
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    // Unordered lists
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    // Horizontal rules
-    .replace(/^---$/gm, '<hr>')
-    // Line breaks
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>');
-  // Wrap loose li in ul
-  h = h.replace(/(<li>.*?<\/li>(?:<br>)?)+/g, m => '<ul>' + m.replace(/<br>/g, '') + '</ul>');
-  return '<p>' + h + '</p>';
-}
-
-function addToolCard(name, args) {
-  const card = document.createElement('div');
-  card.className = 'tool-card';
-  card.id = 'tool-card-' + name + '-' + Date.now();
-  const argsStr = args ? JSON.stringify(args, null, 0) : '';
-  card.innerHTML =
-    '<div class="tool-header"><span class="tool-icon">⚙️</span> ' + name + ' <span class="spinner" style="width:10px;height:10px;border-width:1.5px"></span></div>' +
-    (argsStr && argsStr !== '{}' ? '<div class="tool-args">' + argsStr + '</div>' : '');
-  const container = document.getElementById('chat-messages');
-  container.appendChild(card);
-  container.scrollTop = container.scrollHeight;
-  return card;
-}
-
-async function sendChatMessage() {
-  const input = document.getElementById('chat-input');
-  const message = input.value.trim();
-  if (!message || chatStreaming) return;
-
-  const welcome = document.getElementById('chat-welcome');
-  if (welcome) welcome.style.display = 'none';
-
-  appendChatMsg('user', message.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
-  input.value = '';
-  input.style.height = 'auto';
-
-  chatStreaming = true;
-  document.getElementById('chat-send').disabled = true;
-  showTyping();
-
-  try {
-    const resp = await fetch('/api/chat', await buildRequestOptions({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
-    }));
-
-    hideTyping();
-
-    if (!resp.ok) {
-      const err = await resp.json();
-      appendChatMsg('assistant', '<span style="color:var(--red)">Error: ' + (err.error || 'Request failed') + '</span>');
-    } else {
-      const data = await resp.json();
-      appendChatMsg('assistant', md(data.content || '(no response)'));
-    }
-  } catch (err) {
-    hideTyping();
-    appendChatMsg('assistant', '<span style="color:var(--red)">Connection error: ' + err.message + '</span>');
-  }
-
-  chatStreaming = false;
-  document.getElementById('chat-send').disabled = false;
-}
-
-async function resetChat() {
-  try {
-    await fetch('/api/chat/reset', await buildRequestOptions({ method: 'POST' }));
-    const container = document.getElementById('chat-messages');
-    container.innerHTML = '';
-    const welcome = document.getElementById('chat-welcome');
-    if (welcome) {
-      welcome.style.display = 'block';
-      container.appendChild(welcome);
-    } else {
-      container.innerHTML = '<div class="chat-welcome" id="chat-welcome">' +
-        '<h4>🔥 AmeriGas AI Operations Assistant</h4>' +
-        '<p>Powered by GitHub Copilot SDK — ask me anything about your propane platform.</p>' +
-        '<div class="quick-prompts">' +
-        '<button class="quick-prompt" onclick="sendQuickPrompt(this)">What\'s the health of my cluster?</button>' +
-        '<button class="quick-prompt" onclick="sendQuickPrompt(this)">Why is order-service restarting?</button>' +
-        '<button class="quick-prompt" onclick="sendQuickPrompt(this)">Fix all broken services</button>' +
-        '<button class="quick-prompt" onclick="sendQuickPrompt(this)">Show me recent warning events</button>' +
-        '<button class="quick-prompt" onclick="sendQuickPrompt(this)">Validate the deployment</button>' +
-        '</div></div>';
-    }
-    toast('Chat session reset', 'success');
-  } catch (err) {
-    toast('Failed to reset: ' + err.message, 'error');
-  }
-}
-
-// Check Copilot status periodically
-async function checkCopilotStatus() {
-  try {
-    const r = await fetch('/api/copilot/status');
-    const s = await r.json();
-    const badge = document.getElementById('chat-badge');
-    const status = document.getElementById('chat-conn-status');
-    const bannerStatus = document.getElementById('copilot-banner-status');
-    if (s.ready) {
-      badge.className = 'badge-dot connected';
-      status.className = 'chat-status ok';
-      status.textContent = 'connected';
-      bannerStatus.className = 'banner-status ok';
-      bannerStatus.textContent = '● Ready';
-    } else if (s.error) {
-      badge.className = 'badge-dot disconnected';
-      status.className = 'chat-status err';
-      status.textContent = 'error';
-      bannerStatus.className = 'banner-status err';
-      bannerStatus.textContent = '● ' + (s.error.length > 40 ? s.error.slice(0, 40) + '…' : s.error);
-    } else {
-      badge.className = 'badge-dot loading';
-      status.className = 'chat-status init';
-      status.textContent = 'connecting…';
-      bannerStatus.className = 'banner-status init';
-      bannerStatus.textContent = '● Connecting…';
-    }
-  } catch {
-    document.getElementById('chat-badge').className = 'badge-dot disconnected';
-    const bs = document.getElementById('copilot-banner-status');
-    bs.className = 'banner-status err';
-    bs.textContent = '● Server unreachable';
-  }
-}
-
-// Analyze a failed operation with Copilot
-function analyzeFailureWithCopilot() {
-  const failure = window._lastFailure;
-  if (!failure) return;
-
-  // Hide the failure banner
-  document.getElementById('copilot-failure-banner').style.display = 'none';
-
-  // Build a diagnostic prompt with log context
-  const logExcerpt = failure.logTail.slice(-1500);
-  const prompt = 'A deployment operation just failed with exit code ' + failure.exitCode + '. ' +
-    'Analyze this log excerpt and tell me what went wrong and how to fix it:\n\n```\n' +
-    logExcerpt + '\n```';
-
-  // Open chat and send the prompt
-  if (!chatOpen) toggleChat();
-
-  // Hide welcome
-  const welcome = document.getElementById('chat-welcome');
-  if (welcome) welcome.style.display = 'none';
-
-  document.getElementById('chat-input').value = prompt;
-  sendChatMessage();
-}
-
-checkCopilotStatus();
-setInterval(checkCopilotStatus, 15000);
-</script>
+<script src="/app.js"></script>
 </body>
 </html>

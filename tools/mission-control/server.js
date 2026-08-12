@@ -82,7 +82,7 @@ app.use((req, res, next) => {
   res.header('X-Content-Type-Options', 'nosniff');
   res.header('Referrer-Policy', 'no-referrer');
   res.header('X-Frame-Options', 'DENY');
-  res.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self';");
+  res.header('Content-Security-Policy', "default-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self';");
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -410,3 +410,5 @@ async function preflight() {
     console.log('');
   });
 })();
+
+module.exports = { app };
