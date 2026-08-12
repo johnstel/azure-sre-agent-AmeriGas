@@ -522,6 +522,7 @@ data:
       </div>
     </header>
     <main>
+      <div id="portal-banner" style="display:none;margin:0 0 1rem;padding:.8rem 1rem;border-radius:10px;border:1px solid rgba(34,197,94,0.3);background:rgba(34,197,94,0.12);color:var(--green);font-size:.85rem;line-height:1.4;"></div>
       <!-- Top Metrics -->
       <div class="metrics-grid">
         <div class="card">
@@ -587,47 +588,124 @@ data:
     function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
     function randF(a,b){return+(Math.random()*(b-a)+a).toFixed(2);}
     function fmt(n){return n.toLocaleString();}
+    var PortalHealthState = (typeof window !== 'undefined' && window.PortalHealthState) || (function () {
+      function normalizeServiceState(service) {
+        if (!service) return { ok: true, code: 'unknown', degraded: false, name: 'Service' };
+        if (typeof service.ok === 'boolean') {
+          return { ok: service.ok, code: service.code || service.status || (service.ok ? 200 : 500), degraded: !service.ok, name: service.name || 'Service' };
+        }
+        var numericStatus = Number(service.status || service.code || 0);
+        var ok = service.status === undefined && service.code === undefined ? true : numericStatus >= 200 && numericStatus < 500;
+        return { ok: ok, code: numericStatus || 'unknown', degraded: !ok, name: service.name || 'Service' };
+      }
+      function isStale(updatedAt, staleAfterMs) {
+        if (!updatedAt) return false;
+        var timestamp = new Date(updatedAt).getTime();
+        if (Number.isNaN(timestamp)) return false;
+        return Date.now() - timestamp > (staleAfterMs || 30000);
+      }
+      function derivePortalState(serviceResults, portalName, staleAfterMs) {
+        var serviceResultsSafe = serviceResults || {};
+        var results = {
+          inventory: normalizeServiceState(serviceResultsSafe.inventory),
+          tank: normalizeServiceState(serviceResultsSafe.tank),
+          orders: normalizeServiceState(serviceResultsSafe.orders),
+          mongodb: serviceResultsSafe.mongodb ? normalizeServiceState(serviceResultsSafe.mongodb) : { ok: true, code: 200, degraded: false, name: 'MongoDB' },
+          rabbitmq: serviceResultsSafe.rabbitmq ? normalizeServiceState(serviceResultsSafe.rabbitmq) : { ok: true, code: 200, degraded: false, name: 'RabbitMQ' }
+        };
+        var derivedMongoOk = results.inventory.ok && results.orders.ok && !results.mongodb.degraded;
+        var derivedRabbitOk = results.tank.ok && results.orders.ok && !results.rabbitmq.degraded;
+        results.mongodb = Object.assign({}, results.mongodb, { ok: derivedMongoOk, degraded: !derivedMongoOk, code: derivedMongoOk ? 200 : 503 });
+        results.rabbitmq = Object.assign({}, results.rabbitmq, { ok: derivedRabbitOk, degraded: !derivedRabbitOk, code: derivedRabbitOk ? 200 : 503 });
+        var relevantKeys = portalName === 'customer' ? ['inventory', 'tank', 'mongodb', 'rabbitmq'] : ['orders', 'mongodb', 'rabbitmq', 'tank'];
+        var lastUpdated = serviceResults && serviceResults.updatedAt ? serviceResults.updatedAt : new Date().toISOString();
+        var stale = isStale(lastUpdated, staleAfterMs);
+        var degraded = relevantKeys.some(function (key) { return results[key].degraded; }) || stale;
+        var status = degraded ? 'degraded' : 'healthy';
+        var state = { status: status, degraded: degraded, stale: stale, lastUpdated: lastUpdated, message: degraded ? 'Customer-facing data is temporarily delayed while the propane platform reconnects.' : 'Live operational data is current.', services: results };
+        if (portalName === 'dispatch') {
+          state.message = degraded ? 'Operations data is temporarily delayed while the dispatch pipeline recovers.' : 'Live dispatch telemetry is current.';
+        }
+        return state;
+      }
+      return { normalizeServiceState: normalizeServiceState, isStale: isStale, derivePortalState: derivePortalState };
+    }());
+    if (typeof window !== 'undefined') { window.PortalHealthState = PortalHealthState; }
+    var LAST_KNOWN_METRICS=null;
+    var LAST_KNOWN_LOCATIONS=null;
+    var LAST_KNOWN_USAGE=null;
+    var PORTAL_STATE={healthy:true,message:'Live operational data is current.',lastUpdated:new Date().toISOString()};
+    function setPortalBanner(status,message,timestamp){
+      var banner=document.getElementById('portal-banner');
+      if(!banner){return;}
+      banner.style.display='block';
+      banner.style.background=status==='healthy'?'rgba(34,197,94,0.12)':'rgba(245,158,11,0.14)';
+      banner.style.border=status==='healthy'?'1px solid rgba(34,197,94,0.3)':'1px solid rgba(245,158,11,0.35)';
+      banner.style.color=status==='healthy'?'var(--green)':'var(--amber)';
+      banner.innerHTML='<strong>' + (status==='healthy'?'All systems normal':'Customer visibility is temporarily degraded') + '.</strong> ' + message + (timestamp ? ' Last updated ' + new Date(timestamp).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) + '.' : '');
+    }
+    function makeMetricSnapshot(){
+      var pct=rand(30,85);
+      var gaugeColor=pct>50?'var(--green)':pct>25?'var(--amber)':'var(--red)';
+      var statusText=pct>50?'Good — no action needed':pct>25?'Monitor — consider ordering':'Low — delivery recommended';
+      var days=rand(5,45);
+      var daysOut=rand(1,14);
+      var dd=new Date();dd.setDate(dd.getDate()+daysOut);
+      var opts={weekday:'short',month:'short',day:'numeric'};
+      var hrs=rand(7,14);
+      var price=randF(2.15,2.89);
+      var mo=new Date().getMonth();
+      var season,cls;
+      if(mo>=10||mo<=2){season='Peak';cls='demand-peak';}
+      else if(mo>=3&&mo<=4||mo>=8&&mo<=9){season='Normal';cls='demand-normal';}
+      else{season='Low';cls='demand-low';}
+      var bal=rand(0,250);
+      return {
+        pct:pct,
+        gaugeColor:gaugeColor,
+        statusText:statusText,
+        days:days,
+        nextDelivery:dd.toLocaleDateString('en-US',opts),
+        deliveryWindow:hrs+':00 — '+(hrs+3)+':00 window',
+        price:price,
+        season:season,
+        cls:cls,
+        balance:bal,
+        balanceText:bal>0?'$'+fmt(bal)+' credit':'$0.00',
+        balanceColor:bal>0?'var(--green)':'var(--muted)'
+      };
+    }
 
     /* ---- clock ---- */
     function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString();}
 
     /* ---- top metrics ---- */
     function updateMetrics(){
-      var pct=rand(30,85);
-      var gaugeColor=pct>50?'var(--green)':pct>25?'var(--amber)':'var(--red)';
+      var snapshot=PORTAL_STATE.healthy ? makeMetricSnapshot() : (LAST_KNOWN_METRICS || makeMetricSnapshot());
+      LAST_KNOWN_METRICS=snapshot;
+      PORTAL_STATE.lastUpdated=new Date().toISOString();
+      var pct=snapshot.pct;
+      var gaugeColor=snapshot.gaugeColor;
       var g=document.getElementById('tank-gauge');
       g.style.background='conic-gradient('+gaugeColor+' 0% '+pct+'%, var(--border) '+pct+'% 100%)';
       document.getElementById('tank-pct').textContent=pct+'%';
-      var statusText=pct>50?'Good — no action needed':pct>25?'Monitor — consider ordering':'Low — delivery recommended';
-      document.getElementById('tank-status').textContent=statusText;
+      document.getElementById('tank-status').textContent=snapshot.statusText;
 
-      var days=rand(5,45);
       var de=document.getElementById('days-empty');
-      de.innerHTML=days+'<sub> days</sub>';
-      de.style.color=days>14?'var(--green)':days>7?'var(--amber)':'var(--red)';
+      de.innerHTML=snapshot.days+'<sub> days</sub>';
+      de.style.color=snapshot.days>14?'var(--green)':snapshot.days>7?'var(--amber)':'var(--red)';
 
-      var daysOut=rand(1,14);
-      var dd=new Date();dd.setDate(dd.getDate()+daysOut);
-      var opts={weekday:'short',month:'short',day:'numeric'};
-      document.getElementById('next-delivery').textContent=dd.toLocaleDateString('en-US',opts);
-      var hrs=rand(7,14);
-      document.getElementById('delivery-window').textContent=hrs+':00 — '+(hrs+3)+':00 window';
+      document.getElementById('next-delivery').textContent=snapshot.nextDelivery;
+      document.getElementById('delivery-window').textContent=snapshot.deliveryWindow;
 
-      var price=randF(2.15,2.89);
-      document.getElementById('current-price').innerHTML='$'+price.toFixed(2)+'<sub> /gal</sub>';
+      document.getElementById('current-price').innerHTML='$'+snapshot.price.toFixed(2)+'<sub> /gal</sub>';
 
-      var mo=new Date().getMonth();
-      var season,cls;
-      if(mo>=10||mo<=2){season='Peak';cls='demand-peak';}
-      else if(mo>=3&&mo<=4||mo>=8&&mo<=9){season='Normal';cls='demand-normal';}
-      else{season='Low';cls='demand-low';}
       var sd=document.getElementById('season-demand');
-      sd.textContent=season;sd.className=cls;
+      sd.textContent=snapshot.season;sd.className=snapshot.cls;
 
-      var bal=rand(0,250);
       var be=document.getElementById('acct-balance');
-      be.textContent=bal>0?'$'+fmt(bal)+' credit':'$0.00';
-      be.style.color=bal>0?'var(--green)':'var(--muted)';
+      be.textContent=snapshot.balanceText;
+      be.style.color=snapshot.balanceColor;
     }
 
     /* ---- exchange locations ---- */
@@ -642,51 +720,82 @@ data:
       {name:'Costco Plymouth Meeting',region:'NJ-North',cageSize:24,dist:'7.9 mi'}
     ];
 
-    function loadLocations(){
-      var tbody=document.getElementById('locations-body');
-      tbody.innerHTML='';
-      LOCATIONS.forEach(function(loc){
+    function computeLocationRows(){
+      return LOCATIONS.map(function(loc){
         var full=rand(0,loc.cageSize);
         var reserved=full>0?rand(0,Math.min(3,full)):0;
         full=full-reserved;
         var empty=loc.cageSize-full-reserved;
-        var dots='';
-        for(var i=0;i<full;i++) dots+='<span class="tank-dot full"></span>';
-        for(var i=0;i<empty;i++) dots+='<span class="tank-dot empty"></span>';
-        for(var i=0;i<reserved;i++) dots+='<span class="tank-dot reserved"></span>';
         var statusClass,statusLabel;
         if(full===0){statusClass='out-of-stock';statusLabel='Out of Stock';}
         else if(full<=3){statusClass='low-stock';statusLabel='Low Stock';}
         else{statusClass='in-stock';statusLabel='In Stock';}
+        return {
+          name:loc.name,
+          region:loc.region,
+          dist:loc.dist,
+          cageSize:loc.cageSize,
+          dots:{ full:full, empty:empty, reserved:reserved },
+          statusClass:statusClass,
+          statusLabel:statusLabel
+        };
+      });
+    }
+
+    function loadLocations(){
+      var rows=PORTAL_STATE.healthy ? computeLocationRows() : (LAST_KNOWN_LOCATIONS || computeLocationRows());
+      LAST_KNOWN_LOCATIONS=rows;
+      var tbody=document.getElementById('locations-body');
+      tbody.innerHTML='';
+      rows.forEach(function(loc){
+        var dots='';
+        for(var i=0;i<loc.dots.full;i++) dots+='<span class="tank-dot full"></span>';
+        for(var i=0;i<loc.dots.empty;i++) dots+='<span class="tank-dot empty"></span>';
+        for(var i=0;i<loc.dots.reserved;i++) dots+='<span class="tank-dot reserved"></span>';
         var tr=document.createElement('tr');
         tr.className='loc-row';
         tr.innerHTML='<td style="font-weight:600">'+loc.name+'</td>'+
           '<td>'+loc.region+'</td>'+
           '<td><div class="cage">'+dots+'</div></td>'+
-          '<td><div class="cage-counts">'+full+' Full / '+empty+' Empty / '+reserved+' Reserved</div></td>'+
-          '<td><span class="badge '+statusClass+'">'+statusLabel+'</span></td>'+
+          '<td><div class="cage-counts">'+loc.dots.full+' Full / '+loc.dots.empty+' Empty / '+loc.dots.reserved+' Reserved</div></td>'+
+          '<td><span class="badge '+loc.statusClass+'">'+loc.statusLabel+'</span></td>'+
           '<td>'+loc.dist+'</td>';
         tbody.appendChild(tr);
       });
     }
 
     /* ---- usage history ---- */
-    function loadUsage(){
-      var tbody=document.getElementById('usage-body');
-      tbody.innerHTML='';
+    function computeUsageRows(){
       var level=rand(55,85);
+      var rows=[];
       for(var i=0;i<8;i++){
         var d=new Date();d.setDate(d.getDate()-i*7);
         var used=randF(8,32);
         var avg=randF(1.2,4.5);
-        var tr=document.createElement('tr');
-        tr.innerHTML='<td>'+d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+'</td>'+
-          '<td>'+used.toFixed(1)+' gal</td>'+
-          '<td>'+level+'%</td>'+
-          '<td>'+avg.toFixed(1)+' gal/day</td>';
-        tbody.appendChild(tr);
+        rows.push({
+          date:d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),
+          used:used.toFixed(1)+' gal',
+          level:level+'%',
+          avg:avg.toFixed(1)+' gal/day'
+        });
         level=Math.max(10,level-rand(4,10));
       }
+      return rows;
+    }
+
+    function loadUsage(){
+      var rows=PORTAL_STATE.healthy ? computeUsageRows() : (LAST_KNOWN_USAGE || computeUsageRows());
+      LAST_KNOWN_USAGE=rows;
+      var tbody=document.getElementById('usage-body');
+      tbody.innerHTML='';
+      rows.forEach(function(row){
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td>'+row.date+'</td>'+
+          '<td>'+row.used+'</td>'+
+          '<td>'+row.level+'</td>'+
+          '<td>'+row.avg+'</td>';
+        tbody.appendChild(tr);
+      });
     }
 
     /* ---- service health ---- */
@@ -698,24 +807,92 @@ data:
       {name:'RabbitMQ',url:null}
     ];
 
+    function fetchHealth(url){
+      return fetch(url,{signal:AbortSignal.timeout(3000)})
+        .then(function(response){
+          if(!response.ok){
+            return Promise.reject(new Error('HTTP '+response.status));
+          }
+          return {ok:true,status:response.status};
+        })
+        .catch(function(err){
+          return {ok:false,status:err && err.message ? err.message : 'unreachable'};
+        });
+    }
+
+    function applyOperationalState(details){
+      PORTAL_STATE=Object.assign({}, PORTAL_STATE, details);
+      if(details.healthy){
+        setPortalBanner('healthy', details.message || 'Live operational data is current.', details.lastUpdated);
+      }else{
+        setPortalBanner('degraded', details.message || 'Customer-facing data may be temporarily delayed while the propane platform reconnects.', details.lastUpdated);
+      }
+    }
+
     function loadHealth(){
-      var c=document.getElementById('health-cards');c.innerHTML='';
-      SERVICES.forEach(function(svc){
-        var card=document.createElement('div');card.className='card';
-        if(svc.url){
-          card.innerHTML='<h3>'+svc.name+'</h3><div class="loading">Checking&hellip;</div>';
-          fetch(svc.url,{signal:AbortSignal.timeout(3000)})
-            .then(function(){card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;font-weight:600;color:var(--green)"><span class="dot green"></span> Healthy</div>';})
-            .catch(function(){card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;font-weight:600;color:var(--red)"><span class="dot red"></span> Unreachable</div>';});
-        }else{
-          card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
-        }
-        c.appendChild(card);
+      var c=document.getElementById('health-cards');
+      c.innerHTML='';
+      Promise.all([
+        fetchHealth('/api/inventory/health'),
+        fetchHealth('/api/tanks/health'),
+        fetchHealth('/api/orders/health')
+      ]).then(function(results){
+        var inventory=results[0];
+        var tank=results[1];
+        var orders=results[2];
+        var state = PortalHealthState.derivePortalState({
+          inventory: inventory,
+          tank: tank,
+          orders: orders,
+          updatedAt: new Date().toISOString()
+        }, 'customer', 30000);
+        var healthy = !state.degraded;
+        var detail = state.message;
+        applyOperationalState({ healthy: healthy, message: detail, lastUpdated: state.lastUpdated });
+        var serviceRows=[
+          {name:'Inventory Service',ok:inventory.ok,status:'Healthy',detail:inventory.ok ? 'Inventory service responding normally.' : 'HTTP ' + inventory.status},
+          {name:'Tank Monitor',ok:tank.ok,status:'Healthy',detail:tank.ok ? 'Tank telemetry stream is online.' : 'HTTP ' + tank.status},
+          {name:'Order Service',ok:orders.ok,status:'Healthy',detail:orders.ok ? 'Order flow is matching demand.' : 'HTTP ' + orders.status},
+          {name:'MongoDB',ok:!state.services.mongodb.degraded,status:'Healthy',detail:state.services.mongodb.degraded ? 'Dependency issue detected; data refresh is delayed.' : 'MongoDB dependency is healthy.'},
+          {name:'RabbitMQ',ok:!state.services.rabbitmq.degraded,status:'Healthy',detail:state.services.rabbitmq.degraded ? 'Dependency issue detected; event flow is degraded.' : 'RabbitMQ dependency is healthy.'}
+        ];
+        serviceRows.forEach(function(svc){
+          var card=document.createElement('div');
+          card.className='card';
+          var color=svc.ok?'var(--green)':'var(--amber)';
+          var icon=svc.ok?'green':'amber';
+          if(!svc.ok && (svc.name==='MongoDB' || svc.name==='RabbitMQ')){
+            color='var(--red)';
+            icon='red';
+          }
+          card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;font-weight:600;color:'+color+'"><span class="dot '+icon+'"></span> '+(svc.ok?'Healthy':'Degraded')+'</div>' +
+            '<div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">'+svc.detail+'</div>';
+          c.appendChild(card);
+        });
+      }).catch(function(){
+        applyOperationalState({ healthy: false, message: 'Customer-safe status: some operational data is temporarily delayed while the propane platform reconnects.', lastUpdated: new Date().toISOString() });
+        var serviceRows=[
+          {name:'Inventory Service',ok:false,status:'Degraded',detail:'Service check failed'},
+          {name:'Tank Monitor',ok:false,status:'Degraded',detail:'Service check failed'},
+          {name:'Order Service',ok:false,status:'Degraded',detail:'Service check failed'},
+          {name:'MongoDB',ok:false,status:'Degraded',detail:'Dependency status uncertain; data view is stale'},
+          {name:'RabbitMQ',ok:false,status:'Degraded',detail:'Dependency status uncertain; event queue is disrupted'}
+        ];
+        serviceRows.forEach(function(svc){
+          var card=document.createElement('div');card.className='card';
+          card.innerHTML='<h3>'+svc.name+'</h3><div style="font-size:1.1rem;font-weight:600;color:var(--red)"><span class="dot red"></span> Degraded</div><div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">'+svc.detail+'</div>';
+          c.appendChild(card);
+        });
       });
     }
 
     /* ---- init ---- */
-    updateClock();updateMetrics();loadLocations();loadUsage();loadHealth();
+    updateClock();
+    setPortalBanner('healthy','Live operational data is current.', new Date().toISOString());
+    updateMetrics();
+    loadLocations();
+    loadUsage();
+    loadHealth();
     setInterval(updateClock,1000);
     setInterval(updateMetrics,5000);
     setInterval(loadLocations,10000);
@@ -951,6 +1128,7 @@ data:
       </div>
     </header>
     <main>
+      <div id="dispatch-banner" style="display:none;margin:0 0 1rem;padding:.8rem 1rem;border-radius:10px;border:1px solid rgba(34,197,94,0.3);background:rgba(34,197,94,0.12);color:var(--green);font-size:.85rem;line-height:1.4;"></div>
       <div class="metrics-row">
         <div class="card"><h3>Total Retail Locations</h3><div class="metric" style="color:var(--accent)" id="m-locations">--</div></div>
         <div class="card"><h3>Tanks in Field</h3><div class="metric" style="color:var(--cyan)" id="m-tanks">--</div></div>
@@ -1018,14 +1196,69 @@ data:
     ];
 
     let locationData = [];
+    let LAST_KNOWN_LOCATION_DATA = [];
+    let DISPATCH_STATE = { healthy: true, message: 'Live dispatch telemetry is current.', lastUpdated: new Date().toISOString() };
+    const PortalHealthState = (typeof window !== 'undefined' && window.PortalHealthState) || (function () {
+      function normalizeServiceState(service) {
+        if (!service) return { ok: true, code: 'unknown', degraded: false, name: 'Service' };
+        if (typeof service.ok === 'boolean') {
+          return { ok: service.ok, code: service.code || service.status || (service.ok ? 200 : 500), degraded: !service.ok, name: service.name || 'Service' };
+        }
+        var numericStatus = Number(service.status || service.code || 0);
+        var ok = service.status === undefined && service.code === undefined ? true : numericStatus >= 200 && numericStatus < 500;
+        return { ok: ok, code: numericStatus || 'unknown', degraded: !ok, name: service.name || 'Service' };
+      }
+      function isStale(updatedAt, staleAfterMs) {
+        if (!updatedAt) return false;
+        var timestamp = new Date(updatedAt).getTime();
+        if (Number.isNaN(timestamp)) return false;
+        return Date.now() - timestamp > (staleAfterMs || 30000);
+      }
+      function derivePortalState(serviceResults, portalName, staleAfterMs) {
+        var serviceResultsSafe = serviceResults || {};
+        var results = {
+          inventory: normalizeServiceState(serviceResultsSafe.inventory),
+          tank: normalizeServiceState(serviceResultsSafe.tank),
+          orders: normalizeServiceState(serviceResultsSafe.orders),
+          mongodb: serviceResultsSafe.mongodb ? normalizeServiceState(serviceResultsSafe.mongodb) : { ok: true, code: 200, degraded: false, name: 'MongoDB' },
+          rabbitmq: serviceResultsSafe.rabbitmq ? normalizeServiceState(serviceResultsSafe.rabbitmq) : { ok: true, code: 200, degraded: false, name: 'RabbitMQ' }
+        };
+        var derivedMongoOk = results.inventory.ok && results.orders.ok && !results.mongodb.degraded;
+        var derivedRabbitOk = results.tank.ok && results.orders.ok && !results.rabbitmq.degraded;
+        results.mongodb = Object.assign({}, results.mongodb, { ok: derivedMongoOk, degraded: !derivedMongoOk, code: derivedMongoOk ? 200 : 503 });
+        results.rabbitmq = Object.assign({}, results.rabbitmq, { ok: derivedRabbitOk, degraded: !derivedRabbitOk, code: derivedRabbitOk ? 200 : 503 });
+        var relevantKeys = portalName === 'customer' ? ['inventory', 'tank', 'mongodb', 'rabbitmq'] : ['orders', 'mongodb', 'rabbitmq', 'tank'];
+        var lastUpdated = serviceResults && serviceResults.updatedAt ? serviceResults.updatedAt : new Date().toISOString();
+        var stale = isStale(lastUpdated, staleAfterMs);
+        var degraded = relevantKeys.some(function (key) { return results[key].degraded; }) || stale;
+        var status = degraded ? 'degraded' : 'healthy';
+        var state = { status: status, degraded: degraded, stale: stale, lastUpdated: lastUpdated, message: degraded ? 'Customer-facing data is temporarily delayed while the propane platform reconnects.' : 'Live operational data is current.', services: results };
+        if (portalName === 'dispatch') {
+          state.message = degraded ? 'Operations data is temporarily delayed while the dispatch pipeline recovers.' : 'Live dispatch telemetry is current.';
+        }
+        return state;
+      }
+      return { normalizeServiceState: normalizeServiceState, isStale: isStale, derivePortalState: derivePortalState };
+    }());
+    if (typeof window !== 'undefined') { window.PortalHealthState = PortalHealthState; }
 
     function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
     function randF(min, max) { return +(min + Math.random() * (max - min)).toFixed(1); }
 
+    function setDispatchBanner(status, message, timestamp) {
+      const banner = document.getElementById('dispatch-banner');
+      if (!banner) return;
+      banner.style.display = 'block';
+      banner.style.background = status === 'healthy' ? 'rgba(34,197,94,0.12)' : 'rgba(245,158,11,0.14)';
+      banner.style.border = status === 'healthy' ? '1px solid rgba(34,197,94,0.3)' : '1px solid rgba(245,158,11,0.35)';
+      banner.style.color = status === 'healthy' ? 'var(--green)' : 'var(--amber)';
+      banner.innerHTML = '<strong>' + (status === 'healthy' ? 'All dispatch systems normal' : 'Platform visibility is temporarily degraded') + '.</strong> ' + message + (timestamp ? ' Last updated ' + new Date(timestamp).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) + '.' : '');
+    }
+
     function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
 
     function generateLocationData() {
-      locationData = LOCATIONS.map(loc => {
+      const next = LOCATIONS.map(loc => {
         const full = rand(2, 18);
         const transit = rand(0, 3);
         const empty = 20 - full - transit;
@@ -1035,13 +1268,17 @@ data:
                               full <= 10 ? DELIVERY_TIMES[rand(0, 6)] : DELIVERY_TIMES[rand(5, 7)];
         return { ...loc, full, empty, transit, turnover, stockoutHrs, nextDelivery };
       });
+      LAST_KNOWN_LOCATION_DATA = next;
+      locationData = next;
+      return next;
     }
 
     function updateMetrics() {
-      const totalLocs = rand(42, 48);
-      const totalTanks = rand(680, 720);
-      const critCount = locationData.filter(l => l.full <= 3).length || rand(2, 6);
-      const avgFill = locationData.length ? (locationData.reduce((s, l) => s + l.full, 0) / (locationData.length * 20) * 100).toFixed(1) : randF(65, 85);
+      const source = DISPATCH_STATE.healthy ? locationData : (LAST_KNOWN_LOCATION_DATA.length ? LAST_KNOWN_LOCATION_DATA : locationData);
+      const totalLocs = source.length ? source.length : rand(42, 48);
+      const totalTanks = source.reduce((sum, loc) => sum + loc.full + loc.transit, 0) || rand(680, 720);
+      const critCount = source.filter(l => l.full <= 3).length || rand(2, 6);
+      const avgFill = source.length ? (source.reduce((s, l) => s + l.full, 0) / (source.length * 20) * 100).toFixed(1) : randF(65, 85);
       const deliveries = rand(8, 18);
       const temps = [28, 35, 42, 55, 62, 70, 78];
       const tomorrowTemp = temps[rand(0, temps.length - 1)];
@@ -1059,7 +1296,8 @@ data:
     function renderCageGrid() {
       const container = document.getElementById('cage-grid');
       container.innerHTML = '';
-      locationData.forEach(loc => {
+      const data = DISPATCH_STATE.healthy ? locationData : (LAST_KNOWN_LOCATION_DATA.length ? LAST_KNOWN_LOCATION_DATA : locationData);
+      data.forEach(loc => {
         const card = document.createElement('div');
         const isCritical = loc.full <= 3;
         card.className = 'cage-card' + (isCritical ? ' critical-loc' : '');
@@ -1096,7 +1334,8 @@ data:
     function renderDeliveryQueue() {
       const tbody = document.getElementById('delivery-body');
       tbody.innerHTML = '';
-      const sorted = [...locationData].sort((a, b) => a.stockoutHrs - b.stockoutHrs).slice(0, 10);
+      const data = DISPATCH_STATE.healthy ? locationData : (LAST_KNOWN_LOCATION_DATA.length ? LAST_KNOWN_LOCATION_DATA : locationData);
+      const sorted = [...data].sort((a, b) => a.stockoutHrs - b.stockoutHrs).slice(0, 10);
       sorted.forEach(loc => {
         let prioLabel, prioClass;
         if (loc.stockoutHrs < 12) { prioLabel = 'URGENT'; prioClass = 'offline'; }
@@ -1166,34 +1405,81 @@ data:
       if (box.children.length > 50) box.removeChild(box.lastChild);
     }
 
+    function fetchHealth(url){
+      return fetch(url, { signal: AbortSignal.timeout(3000) })
+        .then(function(response){
+          if (!response.ok) return Promise.reject(new Error('HTTP ' + response.status));
+          return { ok: true, status: response.status };
+        })
+        .catch(function(err){
+          return { ok: false, status: err && err.message ? err.message : 'unreachable' };
+        });
+    }
+
+    function applyDispatchState(healthy, message, timestamp){
+      DISPATCH_STATE = { healthy: healthy, message: message, lastUpdated: timestamp || new Date().toISOString() };
+      if (healthy) {
+        setDispatchBanner('healthy', message || 'Live dispatch telemetry is current.', DISPATCH_STATE.lastUpdated);
+      } else {
+        setDispatchBanner('degraded', message || 'Operations data is temporarily delayed while the dispatch pipeline recovers.', DISPATCH_STATE.lastUpdated);
+      }
+    }
+
     function loadHealth() {
       const grid = document.getElementById('health-grid');
       grid.innerHTML = '';
-      const svcs = [
-        { name: 'Inventory Service', url: '/api/inventory/health' },
-        { name: 'Tank Monitor', url: '/api/tanks/health' },
-        { name: 'Order Service', url: '/api/orders/health' },
-        { name: 'MongoDB', url: null },
-        { name: 'RabbitMQ', url: null },
-      ];
-      svcs.forEach(svc => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        if (svc.url) {
-          card.innerHTML = '<h3>' + svc.name + '</h3><div class="loading">Checking...</div>';
-          fetch(svc.url, { signal: AbortSignal.timeout(3000) })
-            .then(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--green)"><span class="dot green"></span> Healthy</div>'; })
-            .catch(() => { card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--red)"><span class="dot red"></span> Unreachable</div>'; });
-        } else {
-          card.innerHTML = '<h3>' + svc.name + '</h3><div style="color:var(--muted)"><span class="dot green"></span> In-Cluster</div>';
-        }
-        grid.appendChild(card);
+      Promise.all([
+        fetchHealth('/api/inventory/health'),
+        fetchHealth('/api/tanks/health'),
+        fetchHealth('/api/orders/health')
+      ]).then(function(results){
+        const inventory = results[0];
+        const tank = results[1];
+        const orders = results[2];
+        const state = PortalHealthState.derivePortalState({
+          inventory: inventory,
+          tank: tank,
+          orders: orders,
+          updatedAt: new Date().toISOString()
+        }, 'dispatch', 30000);
+        applyDispatchState(!state.degraded, state.message, state.lastUpdated);
+        const svcs = [
+          { name: 'Inventory Service', ok: inventory.ok, detail: inventory.ok ? 'Inventory stream responding normally.' : 'HTTP ' + inventory.status },
+          { name: 'Tank Monitor', ok: tank.ok, detail: tank.ok ? 'Tank telemetry is flowing.' : 'HTTP ' + tank.status },
+          { name: 'Order Service', ok: orders.ok, detail: orders.ok ? 'Orders flow is normal.' : 'HTTP ' + orders.status },
+          { name: 'MongoDB', ok: !state.services.mongodb.degraded, detail: state.services.mongodb.degraded ? 'Dependency issue detected; stale dashboard values are being shown.' : 'MongoDB dependency is healthy.' },
+          { name: 'RabbitMQ', ok: !state.services.rabbitmq.degraded, detail: state.services.rabbitmq.degraded ? 'Dependency issue detected; queue-driven updates are delayed.' : 'RabbitMQ dependency is healthy.' },
+        ];
+        svcs.forEach(svc => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          const color = svc.ok ? 'var(--green)' : 'var(--red)';
+          const dotName = svc.ok ? 'green' : 'red';
+          card.innerHTML = '<h3>' + svc.name + '</h3><div style="font-size:1.1rem;font-weight:600;color:' + color + '"><span class="dot ' + dotName + '"></span> ' + (svc.ok ? 'Healthy' : 'Degraded') + '</div><div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">' + svc.detail + '</div>';
+          grid.appendChild(card);
+        });
+      }).catch(function(){
+        applyDispatchState(false, 'Operations data is temporarily delayed while the platform reconnects.', new Date().toISOString());
+        const svcs = [
+          { name: 'Inventory Service', ok: false, detail: 'Service check failed' },
+          { name: 'Tank Monitor', ok: false, detail: 'Service check failed' },
+          { name: 'Order Service', ok: false, detail: 'Service check failed' },
+          { name: 'MongoDB', ok: false, detail: 'Dependency status uncertain; stale operational values are being shown.' },
+          { name: 'RabbitMQ', ok: false, detail: 'Dependency status uncertain; queue-driven automation is delayed.' },
+        ];
+        svcs.forEach(svc => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = '<h3>' + svc.name + '</h3><div style="font-size:1.1rem;font-weight:600;color:var(--red)"><span class="dot red"></span> Degraded</div><div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">' + svc.detail + '</div>';
+          grid.appendChild(card);
+        });
       });
     }
 
     function refreshCages() { generateLocationData(); renderCageGrid(); renderDeliveryQueue(); }
 
     generateLocationData();
+    setDispatchBanner('healthy', 'Live dispatch telemetry is current.', new Date().toISOString());
     updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); loadHealth();
     for (let i = 0; i < 10; i++) addLogEntry();
     setInterval(updateClock, 1000);
