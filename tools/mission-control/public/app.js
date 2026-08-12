@@ -498,6 +498,7 @@ document.getElementById('incident-recent-select').addEventListener('change', (e)
 /* ── Infrastructure Operations ────────────────────────── */
 let currentOpId = null;
 let currentEventSource = null;
+let currentOperationPoller = null;
 
 function autoDetectRG() {
   const rgEl = document.getElementById('rg-name');
@@ -522,6 +523,7 @@ function showTerminal() {
 function closeTerminal() {
   document.getElementById('terminal-panel').style.display = 'none';
   if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+  if (currentOperationPoller) { currentOperationPoller.stop(); currentOperationPoller = null; }
 }
 
 function setTerminalStatus(status) {
@@ -532,6 +534,84 @@ function setTerminalStatus(status) {
   cancelBtn.style.display = status === 'running' ? '' : 'none';
 }
 
+/** Appends already-parsed log entries to the terminal output. Shared by both the EventSource path and the polling fallback so neither can render a log line the other already showed. */
+function appendLogEntries(entries) {
+  const out = document.getElementById('terminal-output');
+  for (const entry of entries) {
+    const span = document.createElement('span');
+    if (entry.stream === 'stderr') span.style.color = '#f85149';
+    else if (entry.stream === 'system') span.style.color = '#58a6ff';
+    span.textContent = entry.text;
+    out.appendChild(span);
+  }
+  if (entries.length > 0) out.scrollTop = out.scrollHeight;
+}
+
+/**
+ * Handles a genuine, server-reported terminal status (from either the
+ * EventSource `done` event or the polling fallback's onTerminal). This is
+ * the ONLY place that may mark an operation's terminal state — a
+ * transport-level failure (EventSource onerror, a poll-level network
+ * error) must never reach this function on its own.
+ */
+function handleTerminalOperation(info) {
+  setTerminalStatus(info.status);
+
+  if (info.status === 'failed') {
+    const termOutput = document.getElementById('terminal-output').textContent || '';
+    window._lastFailure = {
+      opId: currentOpId,
+      status: info.status,
+      exitCode: info.exitCode,
+      logTail: termOutput.slice(-3000),
+    };
+    const fb = document.getElementById('copilot-failure-banner');
+    document.getElementById('failure-banner-title').textContent = 'Operation Failed (exit ' + info.exitCode + ')';
+    document.getElementById('failure-banner-desc').textContent = 'The operation failed. Let Copilot analyze the logs and suggest a fix.';
+    fb.style.display = 'flex';
+  }
+
+  currentOpId = null;
+  setInfraButtonsEnabled(true);
+  refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
+}
+
+/**
+ * Authenticated same-origin polling fallback for when EventSource
+ * streaming is unavailable. EventSource cannot carry the
+ * X-Mission-Control-Token header, so in remote mode
+ * /api/operations/:id/stream always fails with a generic transport
+ * error — that says nothing about whether the operation itself
+ * succeeded, failed, or is still running server-side. We fall back to
+ * polling the plain JSON endpoint through the shared, authenticated
+ * `api()` helper (never a query-string token) until the server reports a
+ * genuine terminal status.
+ */
+function startOperationPolling(opId) {
+  if (currentOperationPoller) { currentOperationPoller.stop(); currentOperationPoller = null; }
+  currentOperationPoller = window.MissionControlOperationPoller.createOperationPoller({
+    api,
+    operationId: opId,
+    onLogEntries: appendLogEntries,
+    onTerminal: (info) => {
+      currentOperationPoller = null;
+      handleTerminalOperation(info);
+    },
+    onError: () => {
+      // Transient poll failure: keep the UI truthfully "running" and let the poller retry.
+    },
+    onGiveUp: () => {
+      // We genuinely don't know the outcome — never fabricate success or
+      // failure. Leave the terminal status as "running" (truthfully
+      // "last known status"), but re-enable controls so the operator is
+      // not stuck, and let them refresh/poll the operations list manually.
+      currentOperationPoller = null;
+      setInfraButtonsEnabled(true);
+    },
+  });
+  currentOperationPoller.start();
+}
+
 function streamOperation(opId) {
   currentOpId = opId;
   const out = document.getElementById('terminal-output');
@@ -540,52 +620,31 @@ function streamOperation(opId) {
   showTerminal();
 
   if (currentEventSource) currentEventSource.close();
+  if (currentOperationPoller) { currentOperationPoller.stop(); currentOperationPoller = null; }
   const es = new EventSource('/api/operations/' + opId + '/stream');
   currentEventSource = es;
 
   es.onmessage = (e) => {
-    const entry = JSON.parse(e.data);
-    const span = document.createElement('span');
-    if (entry.stream === 'stderr') span.style.color = '#f85149';
-    else if (entry.stream === 'system') span.style.color = '#58a6ff';
-    span.textContent = entry.text;
-    out.appendChild(span);
-    out.scrollTop = out.scrollHeight;
+    appendLogEntries([JSON.parse(e.data)]);
   };
 
   es.addEventListener('done', (e) => {
     const info = JSON.parse(e.data);
-    setTerminalStatus(info.status);
     es.close();
     currentEventSource = null;
-
-    // On failure, show the Copilot failure diagnosis banner
-    if (info.status === 'failed') {
-      const termOutput = document.getElementById('terminal-output').textContent || '';
-      // Store failure context for Copilot
-      window._lastFailure = {
-        opId: currentOpId,
-        status: info.status,
-        exitCode: info.exitCode,
-        logTail: termOutput.slice(-3000),
-      };
-      const fb = document.getElementById('copilot-failure-banner');
-      document.getElementById('failure-banner-title').textContent = 'Operation Failed (exit ' + info.exitCode + ')';
-      document.getElementById('failure-banner-desc').textContent = 'The operation failed. Let Copilot analyze the logs and suggest a fix.';
-      fb.style.display = 'flex';
-    }
-
-    currentOpId = null;
-    setInfraButtonsEnabled(true);
-    refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
+    handleTerminalOperation(info);
   });
 
   es.onerror = () => {
-    setTerminalStatus('failed');
+    // EventSource transport failure (expected in remote mode, since it
+    // cannot attach the auth token header). This is NOT a report that the
+    // operation failed — the deploy/destroy/validate script is very
+    // likely still running server-side. Preserve currentOpId, do not
+    // touch the terminal status, and fall back to authenticated polling
+    // for status/log deltas until a genuine terminal state is reported.
     es.close();
     currentEventSource = null;
-    currentOpId = null;
-    setInfraButtonsEnabled(true);
+    startOperationPolling(opId);
   };
 }
 

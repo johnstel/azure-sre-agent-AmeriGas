@@ -430,6 +430,34 @@ app.get('/api/operations', (req, res) => {
   res.json(list.reverse());
 });
 
+/**
+ * Plain JSON status+log endpoint for a single operation, used as an
+ * authenticated polling fallback when EventSource streaming is
+ * unavailable (EventSource cannot attach the X-Mission-Control-Token
+ * header required for remote access, so it always fails once
+ * MISSION_CONTROL_AUTH_TOKEN is configured — see public/operation-poller.js).
+ * `?since=N` returns only log entries from index N onward (never the
+ * whole log every poll), plus `logLength` so the caller knows the next
+ * cursor to request — this is what keeps repeated polling from
+ * duplicating already-rendered log lines.
+ */
+app.get('/api/operations/:id', (req, res) => {
+  const op = operations.get(req.params.id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+  const since = Math.max(0, Math.trunc(Number(req.query.since)) || 0);
+  res.json({
+    id: op.id,
+    type: op.type,
+    label: op.label,
+    status: op.status,
+    startedAt: op.startedAt,
+    endedAt: op.endedAt,
+    exitCode: op.exitCode,
+    log: op.log.slice(since),
+    logLength: op.log.length,
+  });
+});
+
 app.get('/api/operations/:id/stream', (req, res) => {
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
