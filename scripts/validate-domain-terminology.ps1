@@ -53,6 +53,7 @@ param(
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/high-cpu.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/pending-pods.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/probe-failure.yaml"),
+        (Join-Path $PSScriptRoot ".." "k8s/scenarios/refill-order-backlog.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/network-block.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/missing-config.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/mongodb-down.yaml"),

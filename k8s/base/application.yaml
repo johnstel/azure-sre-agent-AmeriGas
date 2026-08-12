@@ -1207,6 +1207,11 @@ data:
       .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .8rem; }
       .metric { font-size: 2rem; font-weight: 700; }
       .metric sub { font-size: .7rem; font-weight: 400; color: var(--muted); }
+      .metric-card { background: rgba(15,23,42,0.85); border: 1px solid rgba(148,163,184,0.2); border-radius: 8px; padding: .8rem .85rem; }
+      .metric-label { font-size: .7rem; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; margin-bottom: .35rem; }
+      .metric-value { font-size: 1.35rem; font-weight: 700; }
+      .queue-detail-row { margin-top: .75rem; color: var(--muted); font-size: .82rem; line-height: 1.6; }
+      .dlq-list { margin-top: .35rem; padding-left: 1.25rem; }
       .section-title { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .8rem; color: var(--accent); border-bottom: 1px solid #334155; padding-bottom: .4rem; }
       .legend { display: flex; gap: 1.5rem; font-size: .8rem; color: var(--muted); margin-bottom: 1rem; }
       .legend span { display: flex; align-items: center; gap: .3rem; }
@@ -1289,6 +1294,9 @@ data:
         <div class="card"><h3>Deliveries Today</h3><div class="metric" style="color:var(--amber)" id="m-deliveries">--</div></div>
         <div class="card"><h3>Tomorrow Forecast</h3><div class="metric" style="font-size:1.3rem" id="m-forecast">--</div></div>
       </div>
+
+      <h2 class="section-title">&#128269; Bulk Tank Refill Order Backlog</h2>
+      <div class="card" id="refill-order-backlog" style="overflow-x:auto"></div>
 
       <h2 class="section-title">&#127978; Retail Cage Inventory Monitor</h2>
       <div class="legend">
@@ -1542,6 +1550,146 @@ data:
       });
     }
 
+    // Domain: Shared
+    const REFILL_ORDER_BACKLOG = {
+      queueName: 'refill-orders',
+      deadLetterQueueName: 'refill-orders-dlq',
+      producerHealthy: true,
+      consumerPaused: true,
+      queueDepth: 14,
+      oldestMessageAgeSeconds: 420,
+      activeConsumerCount: 0,
+      affectedOrderIds: ['RO-1041', 'RO-1042', 'RO-1043', 'RO-1044'],
+      affectedEventIds: ['EV-REFILL-1041', 'EV-REFILL-1042', 'EV-REFILL-1043', 'EV-REFILL-1044', 'EV-REFILL-2047'],
+      malformedEventId: 'EV-REFILL-2047',
+      malformedOrderId: 'RO-2047',
+      maxRetryCount: 3,
+      retryCount: 3,
+      deadLetterQueue: [
+        {
+          eventId: 'EV-REFILL-2047',
+          orderId: 'RO-2047',
+          reason: 'Malformed refill-order payload',
+          retries: 3
+        }
+      ],
+      validOrdersDrained: 0,
+      recoveredOrderIds: [],
+      recoveryComplete: false,
+      status: 'paused',
+      lastUpdatedAt: '2025-02-11T07:02:42Z'
+    };
+
+    const REFILL_ORDER_BACKLOG_STATE = REFILL_ORDER_BACKLOG;
+
+    function appendRefillOrderLog(level, message) {
+      const box = document.getElementById('ops-log');
+      if (!box) return;
+      const ts = new Date().toLocaleTimeString();
+      const line = document.createElement('div');
+      line.innerHTML = '<span class="ts">[' + ts + ']</span> <span class="' + level + '">[' + level.toUpperCase() + ']</span> ' + message;
+      box.prepend(line);
+      if (box.children.length > 50) box.removeChild(box.lastChild);
+    }
+
+    function renderRefillOrderBacklog() {
+      const panel = document.getElementById('refill-order-backlog');
+      if (!panel) return;
+
+      const backlog = REFILL_ORDER_BACKLOG;
+      const queueAgeMinutes = Math.max(0, Math.floor(backlog.oldestMessageAgeSeconds / 60));
+      const dlqHtml = backlog.deadLetterQueue.length
+        ? backlog.deadLetterQueue.map((entry) => '<li>' + entry.eventId + ' → ' + entry.orderId + ' (' + entry.reason + '; retries=' + entry.retries + ')</li>').join('')
+        : '<li>None</li>';
+
+      panel.innerHTML =
+        '<div class="metric-grid">' +
+        '  <div class="metric-card"><div class="metric-label">Queue depth</div><div class="metric-value">' + backlog.queueDepth + '</div></div>' +
+        '  <div class="metric-card"><div class="metric-label">Oldest message</div><div class="metric-value">' + queueAgeMinutes + ' min</div></div>' +
+        '  <div class="metric-card"><div class="metric-label">Active consumers</div><div class="metric-value">' + backlog.activeConsumerCount + '</div></div>' +
+        '  <div class="metric-card"><div class="metric-label">Retry limit</div><div class="metric-value">' + backlog.retryCount + '/' + backlog.maxRetryCount + '</div></div>' +
+        '</div>' +
+        '<div class="queue-detail-row"><strong>Queue:</strong> ' + backlog.queueName + ' <strong>DLQ:</strong> ' + backlog.deadLetterQueueName + ' <strong>Status:</strong> ' + (backlog.consumerPaused ? 'Paused consumer' : 'Recovered') + '</div>' +
+        '<div class="queue-detail-row"><strong>Affected refill orders:</strong> ' + backlog.affectedOrderIds.join(', ') + '</div>' +
+        '<div class="queue-detail-row"><strong>DLQ contents:</strong><ul class="dlq-list">' + dlqHtml + '</ul></div>';
+    }
+
+    function pauseRefillOrderConsumer() {
+      REFILL_ORDER_BACKLOG.consumerPaused = true;
+      REFILL_ORDER_BACKLOG.producerHealthy = true;
+      REFILL_ORDER_BACKLOG.activeConsumerCount = 0;
+      REFILL_ORDER_BACKLOG.status = 'paused';
+      REFILL_ORDER_BACKLOG.lastUpdatedAt = new Date().toISOString();
+      appendRefillOrderLog('warn', 'RabbitMQ refill-orders queue is growing while the consumer remains paused. Producer health remains healthy.');
+      renderRefillOrderBacklog();
+      return REFILL_ORDER_BACKLOG;
+    }
+
+    function advanceRefillOrderBacklog() {
+      if (!REFILL_ORDER_BACKLOG.consumerPaused) {
+        return REFILL_ORDER_BACKLOG;
+      }
+
+      REFILL_ORDER_BACKLOG.queueDepth += 2;
+      REFILL_ORDER_BACKLOG.oldestMessageAgeSeconds += 30;
+      REFILL_ORDER_BACKLOG.lastUpdatedAt = new Date().toISOString();
+      REFILL_ORDER_BACKLOG.status = 'queue-growing';
+      renderRefillOrderBacklog();
+      return REFILL_ORDER_BACKLOG;
+    }
+
+    function processPoisonRefillOrder() {
+      const retryLimit = REFILL_ORDER_BACKLOG.maxRetryCount;
+      REFILL_ORDER_BACKLOG.retryCount = Math.min((REFILL_ORDER_BACKLOG.retryCount || 0) + 1, retryLimit);
+      REFILL_ORDER_BACKLOG.status = REFILL_ORDER_BACKLOG.retryCount >= retryLimit ? 'dead-lettered' : 'retrying';
+      REFILL_ORDER_BACKLOG.lastUpdatedAt = new Date().toISOString();
+
+      if (REFILL_ORDER_BACKLOG.retryCount >= retryLimit) {
+        const record = {
+          eventId: REFILL_ORDER_BACKLOG.malformedEventId,
+          orderId: REFILL_ORDER_BACKLOG.malformedOrderId,
+          reason: 'Malformed refill-order payload',
+          retries: retryLimit
+        };
+
+        if (!REFILL_ORDER_BACKLOG.deadLetterQueue.some((entry) => entry.eventId === record.eventId)) {
+          REFILL_ORDER_BACKLOG.deadLetterQueue.push(record);
+        }
+
+        appendRefillOrderLog('err', 'Malformed refill event ' + record.eventId + ' exceeded retry limit ' + retryLimit + ' and moved to ' + REFILL_ORDER_BACKLOG.deadLetterQueueName + '.');
+      } else {
+        appendRefillOrderLog('warn', 'Malformed refill event ' + REFILL_ORDER_BACKLOG.malformedEventId + ' retry ' + REFILL_ORDER_BACKLOG.retryCount + '/' + retryLimit + '.');
+      }
+
+      renderRefillOrderBacklog();
+      return REFILL_ORDER_BACKLOG.status;
+    }
+
+    function recoverRefillOrderBacklog() {
+      const recovered = [];
+      const alreadyRecovered = new Set(REFILL_ORDER_BACKLOG.recoveredOrderIds);
+
+      for (const orderId of REFILL_ORDER_BACKLOG.affectedOrderIds) {
+        if (alreadyRecovered.has(orderId)) continue;
+        recovered.push(orderId);
+        REFILL_ORDER_BACKLOG.recoveredOrderIds.push(orderId);
+      }
+
+      if (recovered.length > 0) {
+        REFILL_ORDER_BACKLOG.validOrdersDrained += recovered.length;
+        REFILL_ORDER_BACKLOG.queueDepth = Math.max(0, REFILL_ORDER_BACKLOG.queueDepth - recovered.length);
+      }
+
+      REFILL_ORDER_BACKLOG.consumerPaused = false;
+      REFILL_ORDER_BACKLOG.activeConsumerCount = 2;
+      REFILL_ORDER_BACKLOG.recoveryComplete = true;
+      REFILL_ORDER_BACKLOG.status = 'recovered';
+      REFILL_ORDER_BACKLOG.lastUpdatedAt = new Date().toISOString();
+      appendRefillOrderLog('info', 'Recovery drained valid refill orders exactly once: ' + recovered.join(', ') + '. DLQ evidence retained for forensic review.');
+      renderRefillOrderBacklog();
+      return recovered;
+    }
+
     // Domain: Bulk Tank
     const BULK_TANK_SAFETY_ALARM = {
       alarmId: 'BT-SAFETY-ALM-00042',
@@ -1735,7 +1883,7 @@ data:
     // Domain: Shared
     generateLocationData();
     setDispatchBanner('healthy', 'Live dispatch telemetry is current.', new Date().toISOString());
-    updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); renderBulkTankSafetyAlarm(); appendSafetyLog('warn', 'SIMULATED bulk tank alarm ' + BULK_TANK_SAFETY_ALARM.alarmId + ' remains pending in safety-compliance-monitor while workload pods stay healthy.');
+    updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); renderRefillOrderBacklog(); renderBulkTankSafetyAlarm(); appendSafetyLog('warn', 'SIMULATED bulk tank alarm ' + BULK_TANK_SAFETY_ALARM.alarmId + ' remains pending in safety-compliance-monitor while workload pods stay healthy.');
     loadHealth();
     for (let i = 0; i < 10; i++) addLogEntry();
     setInterval(updateClock, 1000);

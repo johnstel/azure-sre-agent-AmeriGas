@@ -43,6 +43,7 @@ function break-image { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\image-pu
 function break-cpu { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\high-cpu.yaml" }
 function break-pending { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\pending-pods.yaml" }
 function break-probe { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\probe-failure.yaml" }
+function break-backlog { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\refill-order-backlog.yaml" }
 function break-network { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\network-block.yaml" }
 function break-config { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\missing-config.yaml" }
 function break-mongodb { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\mongodb-down.yaml" }
@@ -83,8 +84,8 @@ function fix-all {
     # Ensure the propane namespace exists so the Secret can be created before pods start
     kubectl create namespace propane --dry-run=client -o yaml | kubectl apply -f - 2>$null
     # Clean up the simulated Bulk Tank safety scenario and any stale config that breaks the healthy baseline
-    kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+    kubectl delete deployment safety-compliance-monitor refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
     # Ensure credentials secret exists (preserves any generated credentials from deploy.ps1)
     ensure-credentials
     # Apply the full application manifest
@@ -92,8 +93,8 @@ function fix-all {
 }
 function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
 function fix-extras {
-    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
 }
 
 # Site URL
@@ -153,6 +154,7 @@ function menu {
 ║    break-cpu                   - High CPU (demand forecast overload)         ║
 ║    break-pending               - Pending pods (fleet telemetry monitor)      ║
 ║    break-probe                 - Bulk Tank safety alarm                     ║
+║    break-backlog               - RabbitMQ refill backlog + DLQ             ║
 ║    break-network               - Network policy blocking                     ║
 ║    break-config                - Missing ConfigMap                           ║
 ║    break-mongodb               - MongoDB down (cascading failure)            ║
