@@ -20,6 +20,10 @@ function parsePodStatus(pod) {
   let phase = status.phase || 'Unknown';
   let reason = '';
   let restarts = 0;
+  // A pod is "ready" only when it reports at least one container status and
+  // every container in it is ready. A pod with no containerStatuses at all
+  // (e.g. still being scheduled) is never considered ready.
+  const ready = containerStatuses.length > 0 && containerStatuses.every((c) => c.ready === true);
 
   for (const container of containerStatuses) {
     restarts += Number(container.restartCount || 0);
@@ -47,12 +51,16 @@ function parsePodStatus(pod) {
     status: phase,
     reason,
     restarts,
+    ready,
   };
 }
 
 // Mirrors public/app.js SCENARIO_INDICATORS for scenarios that are detectable
-// purely from pod status. `network` and `service` are evaluated separately
-// below because they depend on NetworkPolicy / Endpoints objects.
+// purely from pod status. `network`, `service`, and `mongodb` are evaluated
+// separately below: `network`/`service` depend on NetworkPolicy/Endpoints
+// objects, and `mongodb` needs special zero-pod handling (see
+// evaluateScenarioHealth) because the mongodb-down scenario scales the
+// Deployment to 0 replicas rather than leaving an unhealthy pod behind.
 const POD_INDICATORS = {
   oom: (p) => p.name.startsWith('tank-monitor') && (p.reason === 'OOMKilled' || p.status === 'CrashLoopBackOff' || p.restarts > 2),
   crash: (p) => p.name.startsWith('inventory-service') && (p.status === 'CrashLoopBackOff' || p.status === 'Error'),
@@ -61,8 +69,12 @@ const POD_INDICATORS = {
   pending: (p) => p.name.startsWith('fleet-telemetry'),
   probe: (p) => p.name.startsWith('safety-compliance'),
   config: (p) => p.name.startsWith('delivery-zone'),
-  mongodb: (p) => p.name.startsWith('mongodb') && p.status !== 'Running',
 };
+
+/** True only when a pod is both Running and fully Ready (all containers ready). A pod that exists but never reaches Ready must not be treated as recovered. */
+function isPodReadyAndRunning(pod) {
+  return pod.status === 'Running' && pod.ready === true;
+}
 
 /**
  * Evaluate whether a scenario's failure signature is currently observable.
@@ -100,6 +112,28 @@ function evaluateScenarioHealth(scenarioId, cluster = {}) {
     };
   }
 
+  if (scenarioId === 'mongodb') {
+    // mongodb-down.yaml scales the mongodb Deployment to 0 replicas, so a
+    // "some pod matches an unhealthy status" check (the generic
+    // POD_INDICATORS pattern used below) would see zero mongodb pods at
+    // all and incorrectly report the scenario as healthy. The scenario is
+    // active both when mongodb pods exist but aren't Running/Ready, AND
+    // when there are no mongodb pods whatsoever. Recovery requires an
+    // actual Running AND Ready mongodb pod — not merely the absence of an
+    // unhealthy one.
+    const mongoPods = pods.filter((p) => p.name.startsWith('mongodb'));
+    const readyPods = mongoPods.filter(isPodReadyAndRunning);
+    const active = readyPods.length === 0;
+    return {
+      active,
+      reason: active
+        ? (mongoPods.length === 0
+            ? 'no mongodb pods found (Deployment likely scaled to 0 replicas)'
+            : `${mongoPods.length} mongodb pod(s) found but none are Running and Ready`)
+        : `${readyPods.length} mongodb pod(s) Running and Ready`,
+    };
+  }
+
   const indicator = POD_INDICATORS[scenarioId];
   if (!indicator) {
     return { active: null, reason: `No server-side health indicator is implemented for scenario "${scenarioId}"` };
@@ -114,4 +148,4 @@ function evaluateScenarioHealth(scenarioId, cluster = {}) {
   };
 }
 
-module.exports = { parsePodStatus, evaluateScenarioHealth, POD_INDICATORS };
+module.exports = { parsePodStatus, evaluateScenarioHealth, POD_INDICATORS, isPodReadyAndRunning };

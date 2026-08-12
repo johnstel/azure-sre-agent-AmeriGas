@@ -7,8 +7,19 @@ const {
   recordActionResultIfActive,
   recordEvidenceIfActive,
 } = require('../copilot-tools');
-const { createSecurityState, createApprovalSignature } = require('../security-policy');
+const { createSecurityState, createApprovalSignature, approvePendingApproval } = require('../security-policy');
+const { withApprovalContext } = require('../auth');
 const { createIncidentTimelineEngine } = require('../incident-timeline');
+
+/** Drive an approval-required tool through its full propose -> approve -> execute cycle for tests, returning the final handler response. */
+async function runApprovedTool(tool, securityState, params, sessionId = 'test-session') {
+  const firstResponse = await withApprovalContext({ sessionId }, () => tool.handler(params));
+  const pending = securityState.pendingApproval;
+  if (!pending) throw new Error(`Expected ${tool.name} to require approval, but no pending approval was recorded. First response: ${firstResponse}`);
+  const approval = approvePendingApproval(securityState, pending.id, { sessionId, actionKey: pending.actionKey });
+  if (!approval.success) throw new Error(`Failed to approve ${tool.name} in test harness: ${approval.reason}`);
+  return withApprovalContext({ sessionId }, () => tool.handler(params));
+}
 
 test('createTools still returns the full tool catalog when passed an incidentStore', () => {
   const engine = createIncidentTimelineEngine();
@@ -130,3 +141,66 @@ test('the record_incident_root_cause tool is a graceful no-op when there is no a
   const response = await tool.handler({ statement: 'some finding' });
   assert.match(response, /no active incident/i);
 });
+
+test('deploy_infrastructure records a FAILED action result when the script fails, even though the handler catches the error internally', async () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  const securityState = createSecurityState();
+  const failure = Object.assign(new Error('script exited non-zero'), { code: 1, stdout: 'partial output', stderr: 'boom: pwsh script failed' });
+  const failingRunner = async () => { throw failure; };
+  const tools = createTools(securityState, engine, { runCommand: failingRunner });
+  const tool = tools.find((t) => t.name === 'deploy_infrastructure');
+  assert.ok(tool, 'deploy_infrastructure must be registered');
+
+  const finalResponse = await runApprovedTool(tool, securityState, { location: 'eastus2' });
+
+  // The tool must still return a descriptive error string to the caller...
+  assert.match(finalResponse, /Error:.*Deployment failed/s);
+
+  // ...but critically, the incident evidence timeline must record this as
+  // an actual failure, never a false success inferred merely because the
+  // inner handler didn't let the exception propagate on its own.
+  const stored = engine.getIncident(incident.correlationId);
+  const resultMilestone = stored.milestones.find((m) => m.type === 'action_executed');
+  assert.ok(resultMilestone, 'an action_executed milestone must be recorded');
+  assert.equal(resultMilestone.data.success, false, 'a caught deploy_infrastructure failure must never be recorded as success:true');
+  assert.match(resultMilestone.data.summary, /Deployment failed/);
+});
+
+test('destroy_infrastructure records a FAILED action result when the script fails, even though the handler catches the error internally', async () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'mongodb' });
+  const securityState = createSecurityState();
+  const failure = Object.assign(new Error('script exited non-zero'), { code: 1, stdout: '', stderr: 'boom: destroy script failed' });
+  const failingRunner = async () => { throw failure; };
+  const tools = createTools(securityState, engine, { runCommand: failingRunner });
+  const tool = tools.find((t) => t.name === 'destroy_infrastructure');
+  assert.ok(tool, 'destroy_infrastructure must be registered');
+
+  const finalResponse = await runApprovedTool(tool, securityState, { resource_group: 'rg-srelab-eastus2' });
+
+  assert.match(finalResponse, /Error:.*Destroy operation failed/s);
+
+  const stored = engine.getIncident(incident.correlationId);
+  const resultMilestone = stored.milestones.find((m) => m.type === 'action_executed');
+  assert.ok(resultMilestone);
+  assert.equal(resultMilestone.data.success, false, 'a caught destroy_infrastructure failure must never be recorded as success:true');
+  assert.match(resultMilestone.data.summary, /Destroy operation failed/);
+});
+
+test('deploy_infrastructure records a successful action result when the underlying script actually succeeds', async () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  const securityState = createSecurityState();
+  const succeedingRunner = async () => ({ stdout: 'deployment ok', stderr: '' });
+  const tools = createTools(securityState, engine, { runCommand: succeedingRunner });
+  const tool = tools.find((t) => t.name === 'deploy_infrastructure');
+
+  const finalResponse = await runApprovedTool(tool, securityState, { location: 'eastus2' });
+  assert.match(finalResponse, /Deployment completed successfully/);
+
+  const stored = engine.getIncident(incident.correlationId);
+  const resultMilestone = stored.milestones.find((m) => m.type === 'action_executed');
+  assert.equal(resultMilestone.data.success, true);
+});
+

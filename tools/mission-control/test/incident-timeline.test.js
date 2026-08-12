@@ -324,3 +324,120 @@ test('toRedactedMarkdown and toRedactedSnapshot never contain secret-looking val
   const json = engine.toRedactedSnapshot(incident.correlationId);
   assert.equal(JSON.stringify(json).includes('aVerySecretToken1234567890'), false);
 });
+
+test('a terminal incident rejects every kind of late lifecycle mutation, including a duplicate/late poll callback', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  engine.recordImpact(incident.correlationId, {});
+  engine.finalize(incident.correlationId, FINAL_STATE.RECOVERED, { reason: 'test' });
+
+  const before = engine.getIncident(incident.correlationId);
+  const milestoneCountBefore = before.milestones.length;
+
+  // Simulate every kind of "late callback" arriving after the run already
+  // closed: a duplicate/late health-poll impact or recovery signal, fresh
+  // evidence, a root-cause update, and a brand-new action lifecycle.
+  assert.equal(engine.recordImpact(incident.correlationId, { reason: 'late poll tick' }), null);
+  assert.equal(engine.recordRecovery(incident.correlationId, { reason: 'late poll tick' }), null);
+  assert.equal(engine.recordEvidence(incident.correlationId, { toolName: 'get_pods', category: 'kubernetes', callId: 'late-1' }), null);
+  assert.equal(engine.recordRootCause(incident.correlationId, { statement: 'late root cause' }), null);
+  assert.equal(engine.proposeAction(incident.correlationId, { actionKey: 'late::{}', toolName: 'fix_all' }), null);
+  assert.equal(engine.approveAction(incident.correlationId, { actionKey: 'late::{}', approver: 'x' }), null);
+  assert.equal(engine.denyAction(incident.correlationId, { actionKey: 'late::{}', approver: 'x' }), null);
+  assert.equal(engine.expireAction(incident.correlationId, { actionKey: 'late::{}' }), null);
+  assert.equal(engine.recordActionResult(incident.correlationId, { actionKey: 'late::{}', toolName: 'fix_all', success: true }), null);
+  assert.equal(engine.recordPostActionAssertion(incident.correlationId, { actionKey: 'late::{}', passed: true }), null);
+
+  const after = engine.getIncident(incident.correlationId);
+  assert.equal(after.milestones.length, milestoneCountBefore, 'no late callback may mutate a terminal incident\'s timeline');
+  assert.equal(after.finalState, FINAL_STATE.RECOVERED, 'the original final state must be preserved, never overwritten by a late callback');
+});
+
+test('recovered is never finalized while a successful action still has a pending (unresolved) post-action assertion', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'mongodb' });
+  engine.recordImpact(incident.correlationId, {});
+  engine.proposeAction(incident.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all' });
+  engine.approveAction(incident.correlationId, { actionKey: 'fix_all::{}', approver: 'operator' });
+  engine.recordActionResult(incident.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all', success: true });
+
+  // At this point, a naive health-poll-based recovery check (as server.js
+  // used to do unconditionally) would see the scenario indicator cleared
+  // and might try to finalize 'recovered' immediately. The engine exposes
+  // hasPendingAssertion precisely so callers can detect and defer to the
+  // still-unresolved assertion instead of racing it.
+  assert.equal(engine.hasPendingAssertion(incident.correlationId), true);
+
+  const stored = engine.getIncident(incident.correlationId);
+  assert.equal(stored.finalState, null, 'the incident must remain open while the assertion for the executed action is still pending');
+});
+
+test('a failed post-action assertion can never coexist with a recovered final state — partial_recovery wins', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'mongodb' });
+  engine.recordImpact(incident.correlationId, {});
+  engine.proposeAction(incident.correlationId, { actionKey: 'fix_network::{}', toolName: 'fix_network' });
+  engine.approveAction(incident.correlationId, { actionKey: 'fix_network::{}', approver: 'operator' });
+  engine.recordActionResult(incident.correlationId, { actionKey: 'fix_network::{}', toolName: 'fix_network', success: true });
+
+  assert.equal(engine.hasPendingAssertion(incident.correlationId), true);
+
+  // The scheduled assertion later comes back negative (the wrong fix was
+  // applied for a mongodb scenario) — this must be the authoritative
+  // outcome, and must never be shadowed by an earlier/simultaneous
+  // 'recovered' state.
+  engine.recordPostActionAssertion(incident.correlationId, { actionKey: 'fix_network::{}', passed: false, details: 'mongodb pod still has 0 replicas' });
+
+  const stored = engine.getIncident(incident.correlationId);
+  assert.equal(stored.finalState, FINAL_STATE.PARTIAL_RECOVERY);
+  assert.notEqual(stored.finalState, FINAL_STATE.RECOVERED);
+  assert.equal(engine.hasPendingAssertion(incident.correlationId), false, 'the assertion has now resolved for that action');
+
+  // And once partial_recovery has been finalized, a hypothetical
+  // late/duplicate "recovered" attempt (e.g. from a straggling poll tick)
+  // must never overwrite it.
+  assert.equal(engine.finalize(incident.correlationId, FINAL_STATE.RECOVERED, {}), engine.getIncident(incident.correlationId).milestones.find((m) => m.type === MILESTONE.FINAL_STATE));
+  assert.equal(engine.getIncident(incident.correlationId).finalState, FINAL_STATE.PARTIAL_RECOVERY);
+});
+
+test('a passing post-action assertion is the authoritative confirmation of recovery: it records the recovery milestone and finalizes recovered', () => {
+  const clock = makeClock();
+  const engine = createIncidentTimelineEngine({ clock: clock.now });
+  const incident = engine.activate({ scenarioId: 'oom' });
+  clock.tick(2000);
+  engine.recordImpact(incident.correlationId, {});
+  clock.tick(3000);
+  engine.proposeAction(incident.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all' });
+  engine.approveAction(incident.correlationId, { actionKey: 'fix_all::{}', approver: 'operator' });
+  engine.recordActionResult(incident.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all', success: true });
+
+  const stored = engine.getIncident(incident.correlationId);
+  assert.equal(stored.finalState, null, 'must not be recovered yet — the assertion has not run');
+
+  clock.tick(8000);
+  engine.recordPostActionAssertion(incident.correlationId, { actionKey: 'fix_all::{}', passed: true, details: 'no pods match the unhealthy indicator' });
+
+  const after = engine.getIncident(incident.correlationId);
+  assert.equal(after.finalState, FINAL_STATE.RECOVERED);
+  assert.ok(after.milestones.some((m) => m.type === MILESTONE.RECOVERY), 'a RECOVERY milestone must be recorded so time-to-recover can be computed');
+  const metrics = engine.computeMetrics(incident.correlationId);
+  assert.equal(metrics.timeToRecoverMs, 13000);
+});
+
+test('an organic health-poll recovery (no action ever proposed) still finalizes recovered normally', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  engine.recordImpact(incident.correlationId, {});
+
+  // No action was ever proposed for this incident (e.g. an operator fixed
+  // it outside Mission Control) — hasPendingAssertion must be false so the
+  // organic poll-based recovery path is free to finalize.
+  assert.equal(engine.hasPendingAssertion(incident.correlationId), false);
+
+  engine.recordRecovery(incident.correlationId, { reason: 'poll observed healthy pods', source: 'mission-control-health-poll' });
+  engine.finalize(incident.correlationId, FINAL_STATE.RECOVERED, { reason: 'automated health poll confirmed the scenario indicator cleared' });
+
+  const stored = engine.getIncident(incident.correlationId);
+  assert.equal(stored.finalState, FINAL_STATE.RECOVERED);
+});
+

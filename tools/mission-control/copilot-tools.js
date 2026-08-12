@@ -116,7 +116,11 @@ function recordEvidenceIfActive(incidentStore, context, toolName, params, result
   });
 }
 
-function createTools(securityState = createSecurityState(), incidentStore = null) {
+function createTools(securityState = createSecurityState(), incidentStore = null, deps = {}) {
+  // Allow tests to inject a fake process runner so deploy/destroy failure
+  // handling can be exercised deterministically without spawning a real
+  // pwsh process. Defaults to the real runCommand in production.
+  const exec = typeof deps.runCommand === 'function' ? deps.runCommand : runCommand;
   const runTool = async (toolName, params, handler, options = {}) => {
     const context = getApprovalContext();
     const gate = evaluateToolAccess(securityState, toolName, params || {}, context);
@@ -449,10 +453,15 @@ function createTools(securityState = createSecurityState(), incidentStore = null
         if (skip_rbac) args.push('-SkipRbac');
         if (skip_sre_agent) args.push('-SkipSreAgent');
         try {
-          const { stdout, stderr } = await runCommand('pwsh', args, { timeout: 600000 });
+          const { stdout, stderr } = await exec('pwsh', args, { timeout: 600000 });
           return `Deployment completed successfully.\n\n${stdout}${stderr ? '\nSTDERR:\n' + stderr : ''}`;
         } catch (err) {
-          return `Deployment failed (exit code ${err.code || 'unknown'}):\n${err.stdout || ''}\n${err.stderr || err.message}`;
+          // Rethrow (rather than returning an "error" string) so runTool's
+          // own catch records this as a failed action result. Returning a
+          // string here would let runTool infer success merely because
+          // this async function didn't throw -- exactly the false-success
+          // bug this rethrow avoids.
+          throw new Error(`Deployment failed (exit code ${err.code || 'unknown'}):\n${err.stdout || ''}\n${err.stderr || err.message}`);
         }
       }),
     }),
@@ -470,10 +479,12 @@ function createTools(securityState = createSecurityState(), incidentStore = null
         const scriptPath = path.resolve(REPO_ROOT, 'scripts', 'destroy.ps1');
         const args = ['-NoLogo', '-NoProfile', '-File', scriptPath, '-ResourceGroupName', resource_group, '-Force'];
         try {
-          const { stdout, stderr } = await runCommand('pwsh', args, { timeout: 600000 });
+          const { stdout, stderr } = await exec('pwsh', args, { timeout: 600000 });
           return `Infrastructure destroyed successfully.\n\n${stdout}${stderr ? '\nSTDERR:\n' + stderr : ''}`;
         } catch (err) {
-          return `Destroy operation failed:\n${err.stdout || ''}\n${err.stderr || err.message}`;
+          // Rethrow for the same reason as deploy_infrastructure above:
+          // never let a caught script failure be reported as a success.
+          throw new Error(`Destroy operation failed:\n${err.stdout || ''}\n${err.stderr || err.message}`);
         }
       }),
     }),

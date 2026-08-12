@@ -20,6 +20,7 @@ const { SCENARIO_MAP, SCENARIO_METADATA } = require('./scenario-catalog');
 const { evaluateScenarioHealth } = require('./scenario-health');
 const { createIncidentStore } = require('./incident-store');
 const { getSreAgentLinks } = require('./sre-agent-links');
+const { createPoller } = require('./poll-scheduler');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -140,6 +141,15 @@ async function fetchClusterHealthSnapshot() {
 function schedulePostActionAssertion(correlationId, scenarioId, actionKey, delayMs = 8000) {
   setTimeout(async () => {
     try {
+      // Re-fetch the incident and re-validate it is still the same,
+      // non-terminal run before mutating it — a lot can happen during the
+      // delay (the operator could have started a fresh run, or another
+      // signal could have already finalized this one). The engine itself
+      // also rejects mutations against a terminal incident, but checking
+      // here avoids doing unnecessary cluster calls for a run that's
+      // already closed.
+      const incident = incidentStore.getIncident(correlationId);
+      if (!incident || incident.finalState) return;
       const snapshot = await fetchClusterHealthSnapshot();
       if (!snapshot) return; // cluster unreachable this tick; skip rather than fabricate a result
       const health = evaluateScenarioHealth(scenarioId, snapshot);
@@ -171,9 +181,19 @@ function recordOperatorDirectAction(toolName, params, outcome) {
   }
 }
 
-/** Periodic poll: detect first impact, organic recovery, and approval expiry for the active incident. Runs only while there is an active incident. */
-const INCIDENT_POLL_INTERVAL_MS = Number(process.env.MISSION_CONTROL_INCIDENT_POLL_MS || 5000);
-async function pollActiveIncident() {
+/**
+ * Single poll tick: detect first impact, organic recovery, and approval
+ * expiry for the currently active incident (if any). Recovery is only
+ * finalized here when there is NO outstanding post-action assertion for
+ * this incident — if an approved/direct action has executed successfully
+ * but its scheduled assertion (see schedulePostActionAssertion) hasn't run
+ * yet, this poll defers entirely and lets that assertion be the
+ * authoritative source of truth for whether the fix actually worked. This
+ * closes the race where an organic health-poll "recovered" could beat a
+ * later-arriving failed assertion and leave a false "recovered" outcome
+ * that a truthful partial_recovery could never overwrite.
+ */
+async function pollActiveIncidentOnce() {
   const pending = securityState.pendingApproval;
   if (pending && pending.status === 'pending' && pending.expiresAt <= Date.now()) {
     incidentStore.sweepExpiredApprovals(Date.now(), [{ actionKey: pending.actionKey, toolName: pending.toolName, expiresAt: pending.expiresAt }]);
@@ -185,6 +205,15 @@ async function pollActiveIncident() {
   try {
     const snapshot = await fetchClusterHealthSnapshot();
     if (!snapshot) return;
+
+    // Re-fetch the active incident after the (possibly slow) cluster call
+    // and re-validate it is still the same, non-terminal run before
+    // mutating it — the run could have been finalized (e.g. by a
+    // concurrently-resolving post-action assertion, or denial/expiry)
+    // while this tick's kubectl calls were in flight.
+    const current = incidentStore.getActive();
+    if (!current || current.correlationId !== active.correlationId) return;
+
     const health = evaluateScenarioHealth(active.scenarioId, snapshot);
     if (health.active === null) return;
     if (health.active) {
@@ -192,15 +221,23 @@ async function pollActiveIncident() {
       return;
     }
     const stored = incidentStore.getIncident(active.correlationId);
+    if (!stored || stored.finalState) return;
     const hadImpact = stored.milestones.some((m) => m.type === 'impact_detected');
-    if (hadImpact) {
-      incidentStore.recordRecovery(active.correlationId, { reason: health.reason, source: 'mission-control-health-poll' });
-      incidentStore.finalize(active.correlationId, 'recovered', { reason: 'automated health poll confirmed the scenario indicator cleared' });
-    }
+    if (!hadImpact) return;
+    if (incidentStore.hasPendingAssertion(active.correlationId)) return; // defer to the scheduled assertion; never race it
+    incidentStore.recordRecovery(active.correlationId, { reason: health.reason, source: 'mission-control-health-poll' });
+    incidentStore.finalize(active.correlationId, 'recovered', { reason: 'automated health poll confirmed the scenario indicator cleared' });
   } catch { /* best effort; the next tick will retry */ }
 }
-const incidentPollTimer = setInterval(pollActiveIncident, INCIDENT_POLL_INTERVAL_MS);
-if (typeof incidentPollTimer.unref === 'function') incidentPollTimer.unref();
+
+/**
+ * Poll the active incident on an interval, using a recursive-setTimeout
+ * scheduler with an in-flight guard (see poll-scheduler.js) so a slow tick
+ * (e.g. a hung kubectl call) can never overlap with — and race — the next
+ * one against the same incident state.
+ */
+const INCIDENT_POLL_INTERVAL_MS = Number(process.env.MISSION_CONTROL_INCIDENT_POLL_MS || 5000);
+const incidentPoller = createPoller(pollActiveIncidentOnce, INCIDENT_POLL_INTERVAL_MS);
 
 /** Best-effort approver identity for the incident timeline. Only meaningful when operator auth is configured; falls back to a generic, honest label otherwise. */
 function resolveApproverIdentity(req) {

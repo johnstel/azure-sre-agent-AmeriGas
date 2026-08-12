@@ -219,13 +219,27 @@ function createIncidentTimelineEngine(options = {}) {
     return incident;
   }
 
+  /**
+   * A terminal (finalized) incident must never accept further lifecycle
+   * mutations — once a run has reached recovered/partial_recovery/
+   * failed/denied/expired, that correlation id is closed. A late or
+   * out-of-order callback arriving for a terminal incident is dropped
+   * (returns null) rather than silently mutating a closed record. Callers
+   * that need to keep working start a fresh incident via `activate`.
+   */
+  function isTerminal(incident) {
+    return Boolean(incident.finalState);
+  }
+
   function recordImpact(correlationId, data = {}, opts = {}) {
     const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
     return record(incident, MILESTONE.IMPACT_DETECTED, data, { dedupeKey: 'impact', occurredAt: opts.occurredAt });
   }
 
   function recordEvidence(correlationId, data = {}, opts = {}) {
     const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
     // First piece of evidence gathered marks investigation start.
     if (!findMilestone(incident, MILESTONE.INVESTIGATION_STARTED)) {
       record(incident, MILESTONE.INVESTIGATION_STARTED, {
@@ -239,11 +253,13 @@ function createIncidentTimelineEngine(options = {}) {
 
   function recordRootCause(correlationId, data = {}, opts = {}) {
     const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
     return record(incident, MILESTONE.ROOT_CAUSE_IDENTIFIED, data, { dedupeKey: 'root-cause', occurredAt: opts.occurredAt });
   }
 
   function proposeAction(correlationId, data = {}) {
     const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
     const actionKey = data.actionKey || createApprovalSignatureFallback(data.toolName, data.params);
     return record(incident, MILESTONE.ACTION_PROPOSED, { ...data, actionKey }, { dedupeKey: actionKey });
   }
@@ -252,6 +268,7 @@ function createIncidentTimelineEngine(options = {}) {
     const incident = getIncidentOrThrow(correlationId);
     const actionKey = data.actionKey;
     if (!actionKey) throw new Error('approveAction requires actionKey');
+    if (isTerminal(incident)) return null;
     // Only approve an action that was actually proposed against *this*
     // incident. This guards against a stale actionKey (e.g. from an action
     // proposed against a previous, already-finalized incident) being
@@ -264,6 +281,7 @@ function createIncidentTimelineEngine(options = {}) {
     const incident = getIncidentOrThrow(correlationId);
     const actionKey = data.actionKey;
     if (!actionKey) throw new Error('denyAction requires actionKey');
+    if (isTerminal(incident)) return null;
     if (!findMilestone(incident, MILESTONE.ACTION_PROPOSED, actionKey)) return null;
     const entry = record(incident, MILESTONE.ACTION_DENIED, data, { dedupeKey: `denied:${actionKey}` });
     finalize(correlationId, FINAL_STATE.DENIED, { reason: 'proposed action was denied by the operator' });
@@ -274,6 +292,7 @@ function createIncidentTimelineEngine(options = {}) {
     const incident = getIncidentOrThrow(correlationId);
     const actionKey = data.actionKey;
     if (!actionKey) throw new Error('expireAction requires actionKey');
+    if (isTerminal(incident)) return null;
     if (!findMilestone(incident, MILESTONE.ACTION_PROPOSED, actionKey)) return null;
     // Don't mark an action expired if it was already resolved (approved/denied).
     if (findMilestone(incident, MILESTONE.ACTION_APPROVED, `approved:${actionKey}`)) return null;
@@ -287,6 +306,7 @@ function createIncidentTimelineEngine(options = {}) {
     const incident = getIncidentOrThrow(correlationId);
     const actionKey = data.actionKey;
     if (!actionKey) throw new Error('recordActionResult requires actionKey');
+    if (isTerminal(incident)) return null;
     if (!findMilestone(incident, MILESTONE.ACTION_PROPOSED, actionKey)) return null;
     const entry = record(incident, MILESTONE.ACTION_EXECUTED, data, { dedupeKey: `result:${actionKey}` });
     if (data.success === false) {
@@ -295,18 +315,45 @@ function createIncidentTimelineEngine(options = {}) {
     return entry;
   }
 
+  /**
+   * True when the incident has at least one successfully-executed action
+   * whose post-action assertion has not yet been recorded. While this is
+   * true, an organic health-poll-based recovery must NOT finalize the
+   * incident as recovered — the scheduled assertion is the authoritative
+   * source of truth for that action and must be allowed to run first
+   * (see server.js pollActiveIncident). This closes the race where a poll
+   * could mark a run "recovered" moments before its own fix's assertion
+   * comes back negative.
+   */
+  function hasPendingAssertion(correlationIdOrIncident) {
+    const incident = typeof correlationIdOrIncident === 'string' ? getIncidentOrThrow(correlationIdOrIncident) : correlationIdOrIncident;
+    const successfulActions = incident.milestones.filter((m) => m.type === MILESTONE.ACTION_EXECUTED && m.data.success === true);
+    return successfulActions.some((exec) => !findMilestone(incident, MILESTONE.POST_ACTION_ASSERTION, `assertion:${exec.data.actionKey}`));
+  }
+
   function recordPostActionAssertion(correlationId, data = {}) {
     const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
     const actionKey = data.actionKey || 'unspecified';
     const entry = record(incident, MILESTONE.POST_ACTION_ASSERTION, data, { dedupeKey: `assertion:${actionKey}` });
-    if (data.passed === false && !incident.finalState) {
+    if (data.passed === false) {
       finalize(correlationId, FINAL_STATE.PARTIAL_RECOVERY, { reason: 'post-action assertion did not confirm recovery' });
+    } else if (data.passed === true) {
+      // The assertion is the authoritative confirmation that the approved
+      // fix actually resolved the scenario. Record the recovery milestone
+      // (if one hasn't already been recorded by an earlier organic health
+      // check) and only now finalize as recovered.
+      if (!findMilestone(incident, MILESTONE.RECOVERY)) {
+        record(incident, MILESTONE.RECOVERY, { reason: data.details || 'confirmed by post-action assertion', source: 'post-action-assertion' }, { dedupeKey: 'recovery' });
+      }
+      finalize(correlationId, FINAL_STATE.RECOVERED, { reason: 'post-action assertion confirmed recovery' });
     }
     return entry;
   }
 
   function recordRecovery(correlationId, data = {}) {
     const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
     return record(incident, MILESTONE.RECOVERY, data, { dedupeKey: 'recovery' });
   }
 
@@ -461,6 +508,7 @@ function createIncidentTimelineEngine(options = {}) {
     recordActionResult,
     recordPostActionAssertion,
     recordRecovery,
+    hasPendingAssertion,
     finalize,
     sweepExpiredApprovals,
     getIncident,

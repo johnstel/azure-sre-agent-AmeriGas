@@ -22,10 +22,26 @@ const SCENARIO_INDICATORS = {
   pending: p => p.name.startsWith('fleet-telemetry'),
   probe:   p => p.name.startsWith('safety-compliance'),
   config:  p => p.name.startsWith('delivery-zone'),
-  mongodb: p => p.name.startsWith('mongodb') && (p.ready === '0/1' || p.status !== 'Running'),
+  mongodb: null, // detected via a dedicated check below: mongodb-down scales the Deployment to 0, so "any matching pod" is not a safe indicator (see isMongoPodReady)
   network: null, // detected via networkpolicies API
   service: null, // detected via endpoints API
 };
+
+/** True only when a pod is both Running and fully Ready (all containers ready). Mirrors the server-side check in scenario-health.js so client/server health semantics stay aligned. */
+function isMongoPodReady(p) {
+  if (!p || p.status !== 'Running' || !p.ready) return false;
+  const parts = String(p.ready).split('/');
+  if (parts.length !== 2) return false;
+  const readyCount = Number(parts[0]);
+  const total = Number(parts[1]);
+  return Number.isFinite(readyCount) && Number.isFinite(total) && total > 0 && readyCount === total;
+}
+
+/** The mongodb-down scenario scales the Deployment to 0 replicas, so the scenario is active both when mongodb pods are unhealthy AND when there are no mongodb pods at all — recovery requires an actual Running/Ready pod, not just "no unhealthy pod found". */
+function isMongodbScenarioActive(pods) {
+  const mongoPods = pods.filter(p => p.name.startsWith('mongodb'));
+  return !mongoPods.some(isMongoPodReady);
+}
 
 let currentPods = [];
 let networkPolicyActive = false;
@@ -261,6 +277,8 @@ function updateScenarioIndicators() {
       isActive = networkPolicyActive;
     } else if (sc.id === 'service') {
       isActive = serviceMismatchActive;
+    } else if (sc.id === 'mongodb') {
+      isActive = isMongodbScenarioActive(currentPods);
     } else {
       const fn = SCENARIO_INDICATORS[sc.id];
       if (!fn) { indicator.textContent = '–'; indicator.className = 'sc-status'; continue; }
