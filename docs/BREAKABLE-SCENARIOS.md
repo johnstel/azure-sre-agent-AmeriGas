@@ -25,6 +25,10 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 
 **File:** `k8s/scenarios/oom-killed.yaml`
 
+**Portal behavior:**
+- The Customer Portal and Dispatch Console present a degraded banner with the last known values and timestamp instead of a falsely healthy dashboard.
+- Service cards surface the dependency state for MongoDB and RabbitMQ so the outage reads as operationally real without exposing raw platform details to customers.
+
 **What happens:**
 - Deploys tank-monitor with extremely low memory limits (16Mi)
 - IoT tank level data spike during winter peak overwhelms the service

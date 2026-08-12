@@ -31,6 +31,8 @@
 
 ### Show: Customer Portal
 
+> The portal now surfaces degraded conditions with a banner, the last-known values stamped with a timestamp, and customer-safe messaging instead of blank failures. The same applies to the Dispatch Console when MongoDB, RabbitMQ, or the underlying service chain is disrupted.
+
 1. Open the **Customer Portal** via Mission Control or its external IP
 2. Walk through the propane-specific UI:
    - **Tank fill gauge** — the CSS conic-gradient gauge shows the customer's current tank level with color-coded fill (green → yellow → red)
