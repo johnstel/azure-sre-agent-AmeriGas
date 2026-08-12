@@ -1,4 +1,5 @@
 (function (root) {
+  // Simulated operational defaults for the demo only — AmeriGas operations SMEs must validate before describing these thresholds as policy.
   const DEFAULT_POLICY = Object.freeze({
     profileId: 'bulk-tank-fixture-01',
     customerId: 'CUST-1842',
@@ -48,6 +49,15 @@
     if (!Number.isFinite(merged.leadTimeDays) || merged.leadTimeDays < 0) {
       throw new Error('Bulk Tank leadTimeDays must be zero or greater.');
     }
+    if (!Number.isFinite(merged.baseDemandGalPerDay) || merged.baseDemandGalPerDay <= 0) {
+      throw new Error('Bulk Tank baseDemandGalPerDay must be a finite number greater than 0.');
+    }
+    if (!Number.isFinite(merged.weatherSensitivity) || merged.weatherSensitivity < 0) {
+      throw new Error('Bulk Tank weatherSensitivity must be a finite number greater than or equal to 0.');
+    }
+    if (!Number.isFinite(merged.temperatureF)) {
+      throw new Error('Bulk Tank temperatureF must be a finite number.');
+    }
 
     const normalized = {
       ...merged,
@@ -70,8 +80,19 @@
   }
 
   function computeDemandFactor(temperatureF, weatherSensitivity = DEFAULT_POLICY.weatherSensitivity, baselineTemperatureF = 60) {
-    const delta = Math.max(0, baselineTemperatureF - Number(temperatureF));
-    return toFixedNumber(1 + (delta / 35) * Number(weatherSensitivity), 3);
+    const tempValue = Number(temperatureF);
+    const sensitivityValue = Number(weatherSensitivity);
+    if (!Number.isFinite(tempValue) || !Number.isFinite(sensitivityValue) || sensitivityValue < 0) {
+      throw new Error('Bulk Tank demand inputs must remain finite and weatherSensitivity cannot be negative.');
+    }
+    const delta = Math.max(0, Number(baselineTemperatureF) - tempValue);
+    return toFixedNumber(1 + (delta / 35) * sensitivityValue, 3);
+  }
+
+  function getDemandDays(currentGallons, demandGallonsPerDay) {
+    if (!Number.isFinite(currentGallons) || currentGallons <= 0) return 0;
+    if (!Number.isFinite(demandGallonsPerDay) || demandGallonsPerDay <= 0) return Number.POSITIVE_INFINITY;
+    return currentGallons / demandGallonsPerDay;
   }
 
   function computeBulkTankState(policy = DEFAULT_POLICY) {
@@ -106,17 +127,17 @@
     const normalized = normalizeBulkTankPolicy(policy);
     const capacityState = computeBulkTankState(normalized);
     const demand = forecastDemandGalPerDay(normalized);
-    const daysUntilReserveBreach = capacityState.usableGallons > 0 ? (capacityState.usableGallons / demand.gallonsPerDay) : 0;
+    const reserveBreachDays = getDemandDays(capacityState.usableGallons, demand.gallonsPerDay);
     const thresholdGallons = normalized.capacityGallons * (normalized.refillThresholdPct / 100);
     const thresholdCrossed = capacityState.currentGallons <= thresholdGallons;
-    const recommendedDaysOut = Math.max(0, daysUntilReserveBreach - normalized.leadTimeDays);
-    const recommendedDeliveryDate = addDays(new Date(), Math.max(0, Math.floor(recommendedDaysOut))).toISOString();
-    const shouldRecommend = thresholdCrossed || daysUntilReserveBreach <= normalized.leadTimeDays;
+    const recommendedDaysOut = Number.isFinite(reserveBreachDays) ? Math.max(0, reserveBreachDays - normalized.leadTimeDays) : 0;
+    const recommendedDeliveryDate = Number.isFinite(recommendedDaysOut) ? addDays(new Date(), Math.max(0, Math.floor(recommendedDaysOut))).toISOString() : new Date().toISOString();
+    const shouldRecommend = thresholdCrossed || (Number.isFinite(reserveBreachDays) && reserveBreachDays <= normalized.leadTimeDays);
 
     return {
       thresholdGallons: toFixedNumber(thresholdGallons, 1),
       thresholdCrossed,
-      daysUntilReserveBreach: toFixedNumber(daysUntilReserveBreach, 1),
+      daysUntilReserveBreach: toFixedNumber(reserveBreachDays, 1),
       recommendedDaysOut: toFixedNumber(recommendedDaysOut, 1),
       recommendedDeliveryDate,
       shouldRecommend,
@@ -131,7 +152,9 @@
     const capacityState = computeBulkTankState(normalized);
     const demand = forecastDemandGalPerDay(normalized);
     const recommendation = buildDeliveryRecommendation(normalized);
-    const daysToEmpty = capacityState.usableGallons > 0 ? (capacityState.usableGallons / demand.gallonsPerDay) : 0;
+    const demandPerDay = Number(demand.gallonsPerDay);
+    const daysToEmpty = getDemandDays(capacityState.currentGallons, demandPerDay);
+    const reserveBreachDays = getDemandDays(capacityState.usableGallons, demandPerDay);
     const seasonDemand = normalized.temperatureF <= 35 ? 'Peak' : (normalized.temperatureF <= 55 ? 'Normal' : 'Low');
     const seasonClass = seasonDemand === 'Peak' ? 'demand-peak' : seasonDemand === 'Normal' ? 'demand-normal' : 'demand-low';
 
@@ -156,7 +179,7 @@
       seasonDemand,
       seasonClass,
       daysToEmpty: toFixedNumber(daysToEmpty, 1),
-      reserveBreachDays: recommendation.daysUntilReserveBreach,
+      reserveBreachDays: toFixedNumber(reserveBreachDays, 1),
       shouldRecommendDelivery: recommendation.shouldRecommend,
       recommendedDeliveryDaysOut: recommendation.recommendedDaysOut,
       recommendedDeliveryDate: recommendation.recommendedDeliveryDate,

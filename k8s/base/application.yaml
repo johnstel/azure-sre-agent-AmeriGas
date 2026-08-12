@@ -707,6 +707,9 @@ data:
       if(!Number.isFinite(merged.refillThresholdPct) || merged.refillThresholdPct <= 0 || merged.refillThresholdPct >= 100){ throw new Error('Bulk Tank refillThresholdPct must be between 0 and 100.'); }
       if(!Number.isFinite(merged.criticalThresholdPct) || merged.criticalThresholdPct <= 0 || merged.criticalThresholdPct >= merged.refillThresholdPct){ throw new Error('Bulk Tank criticalThresholdPct must be below refillThresholdPct.'); }
       if(!Number.isFinite(merged.leadTimeDays) || merged.leadTimeDays < 0){ throw new Error('Bulk Tank leadTimeDays must be zero or greater.'); }
+      if(!Number.isFinite(merged.baseDemandGalPerDay) || merged.baseDemandGalPerDay <= 0){ throw new Error('Bulk Tank baseDemandGalPerDay must be a finite number greater than 0.'); }
+      if(!Number.isFinite(merged.weatherSensitivity) || merged.weatherSensitivity < 0){ throw new Error('Bulk Tank weatherSensitivity must be a finite number greater than or equal to 0.'); }
+      if(!Number.isFinite(merged.temperatureF)){ throw new Error('Bulk Tank temperatureF must be a finite number.'); }
       return {
         profileId: String(merged.profileId || BULK_TANK_POLICY.profileId),
         customerId: String(merged.customerId || BULK_TANK_POLICY.customerId),
@@ -724,8 +727,16 @@ data:
       };
     }
     function calculateDemandFactor(tempF, sensitivity, baselineTempF){
-      var delta = Math.max(0, Number(baselineTempF) - Number(tempF));
-      return +(1 + (delta / 35) * Number(sensitivity)).toFixed(3);
+      var tempValue = Number(tempF);
+      var sensitivityValue = Number(sensitivity);
+      if(!Number.isFinite(tempValue) || !Number.isFinite(sensitivityValue) || sensitivityValue < 0){ throw new Error('Bulk Tank demand inputs must remain finite and weatherSensitivity cannot be negative.'); }
+      var delta = Math.max(0, Number(baselineTempF) - tempValue);
+      return +(1 + (delta / 35) * sensitivityValue).toFixed(3);
+    }
+    function getDemandDays(currentGallons, demandGallonsPerDay){
+      if(!Number.isFinite(currentGallons) || currentGallons <= 0){ return 0; }
+      if(!Number.isFinite(demandGallonsPerDay) || demandGallonsPerDay <= 0){ return Number.POSITIVE_INFINITY; }
+      return currentGallons / demandGallonsPerDay;
     }
     function computeBulkTankProjection(policy, portalName){
       var normalized = normalizeBulkTankPolicy(policy);
@@ -734,14 +745,14 @@ data:
       var tankLevelPct = (currentGallons / Number(normalized.capacityGallons)) * 100;
       var demandFactor = calculateDemandFactor(normalized.temperatureF, normalized.weatherSensitivity, 60);
       var projectedDemand = normalized.baseDemandGalPerDay * demandFactor;
-      var daysToEmpty = usableGallons > 0 ? usableGallons / projectedDemand : 0;
+      var daysToEmpty = getDemandDays(currentGallons, projectedDemand);
       var thresholdGallons = normalized.capacityGallons * (normalized.refillThresholdPct / 100);
       var thresholdCrossed = currentGallons <= thresholdGallons;
-      var reserveBreachDays = usableGallons > 0 ? usableGallons / projectedDemand : 0;
-      var recommendedDaysOut = Math.max(0, reserveBreachDays - normalized.leadTimeDays);
+      var reserveBreachDays = getDemandDays(usableGallons, projectedDemand);
+      var recommendedDaysOut = Number.isFinite(reserveBreachDays) ? Math.max(0, reserveBreachDays - normalized.leadTimeDays) : 0;
       var recommendedDeliveryDate = new Date();
       recommendedDeliveryDate.setDate(recommendedDeliveryDate.getDate() + Math.max(0, Math.floor(recommendedDaysOut)));
-      var shouldRecommend = thresholdCrossed || reserveBreachDays <= normalized.leadTimeDays;
+      var shouldRecommend = thresholdCrossed || (Number.isFinite(reserveBreachDays) && reserveBreachDays <= normalized.leadTimeDays);
       var seasonDemand = normalized.temperatureF <= 35 ? 'Peak' : (normalized.temperatureF <= 55 ? 'Normal' : 'Low');
       var seasonClass = seasonDemand === 'Peak' ? 'demand-peak' : seasonDemand === 'Normal' ? 'demand-normal' : 'demand-low';
       return {

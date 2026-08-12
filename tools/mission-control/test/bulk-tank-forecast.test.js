@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const {
   buildBulkTankProjection,
   forecastDemandGalPerDay,
@@ -21,6 +24,38 @@ const fixturePolicy = {
   temperatureF: 32,
   pricePerGallon: 2.42,
 };
+
+function loadInlineBulkTankProjection() {
+  const manifestText = fs.readFileSync(path.resolve(__dirname, '../../../k8s/base/application.yaml'), 'utf8');
+  const startIndex = manifestText.indexOf('var BULK_TANK_POLICY = {');
+  const endIndex = manifestText.indexOf('function makeMetricSnapshot', startIndex);
+
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error('Missing Bulk Tank forecast source in the deployed inline portal script.');
+  }
+
+  const inlineSource = manifestText.slice(startIndex, endIndex);
+  const context = {
+    console,
+    Date,
+    Math,
+    Number,
+    String,
+    Object,
+    Array,
+    Boolean,
+    isNaN,
+    parseFloat,
+    parseInt,
+    window: {},
+    document: { getElementById: () => null },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(`${inlineSource}; this.__inlineBulkTankForecast = { normalizeBulkTankPolicy, calculateDemandFactor, computeBulkTankProjection };`, context);
+  return context.__inlineBulkTankForecast;
+}
 
 test('capacity and usable gallons are calculated from the tank configuration', () => {
   const projection = buildBulkTankProjection(fixturePolicy, 'customer');
@@ -49,6 +84,17 @@ test('crossing the refill threshold creates a delivery recommendation', () => {
   assert.match(projection.recommendationReason, /recommended/i);
 });
 
+test('days to empty and reserve breach values differ correctly for the same demand profile', () => {
+  const projection = buildBulkTankProjection(fixturePolicy, 'customer');
+  const demand = forecastDemandGalPerDay(fixturePolicy).gallonsPerDay;
+  const expectedDaysToEmpty = fixturePolicy.currentGallons / demand;
+  const expectedReserveBreachDays = (fixturePolicy.currentGallons - fixturePolicy.reserveGallons) / demand;
+
+  assert.ok(projection.daysToEmpty > projection.reserveBreachDays);
+  assert.ok(Math.abs(expectedDaysToEmpty - projection.daysToEmpty) < 0.1);
+  assert.ok(Math.abs(expectedReserveBreachDays - projection.reserveBreachDays) < 0.1);
+});
+
 test('recommendations schedule delivery before reserve breach when lead time is considered', () => {
   const projection = buildBulkTankProjection(fixturePolicy, 'customer');
   const breachDate = new Date(Date.now() + (projection.reserveBreachDays * 24 * 60 * 60 * 1000));
@@ -71,9 +117,28 @@ test('customer and dispatch portals generate the same bulk tank projection for t
   assert.deepEqual(customerComparable, dispatchComparable);
 });
 
+test('deployed inline bulk tank logic matches the shared source of truth', () => {
+  const inline = loadInlineBulkTankProjection();
+  const sharedProjection = buildBulkTankProjection(fixturePolicy, 'dispatch');
+  const inlineProjection = inline.computeBulkTankProjection(fixturePolicy, 'dispatch');
+  const sharedComparable = { ...sharedProjection };
+  const inlineComparable = { ...inlineProjection };
+
+  delete sharedComparable.recommendedDeliveryDate;
+  delete inlineComparable.recommendedDeliveryDate;
+
+  assert.deepEqual(inlineComparable, sharedComparable);
+  assert.equal(new Date(inlineProjection.recommendedDeliveryDate).toISOString().slice(0, 10), new Date(sharedProjection.recommendedDeliveryDate).toISOString().slice(0, 10));
+});
+
 test('invalid tank configuration is rejected', () => {
   assert.throws(() => normalizeBulkTankPolicy({ ...fixturePolicy, reserveGallons: 400, capacityGallons: 500 }), /reserveGallons/i);
   assert.throws(() => normalizeBulkTankPolicy({ ...fixturePolicy, refillThresholdPct: 120 }), /refillThresholdPct/i);
+  assert.throws(() => normalizeBulkTankPolicy({ ...fixturePolicy, baseDemandGalPerDay: 0 }), /baseDemandGalPerDay/i);
+  assert.throws(() => normalizeBulkTankPolicy({ ...fixturePolicy, baseDemandGalPerDay: Number.NaN }), /baseDemandGalPerDay/i);
+  assert.throws(() => normalizeBulkTankPolicy({ ...fixturePolicy, weatherSensitivity: -0.1 }), /weatherSensitivity/i);
+  assert.throws(() => normalizeBulkTankPolicy({ ...fixturePolicy, weatherSensitivity: Number.POSITIVE_INFINITY }), /weatherSensitivity/i);
+  assert.doesNotThrow(() => normalizeBulkTankPolicy({ ...fixturePolicy, weatherSensitivity: 0 }));
 });
 
 test('bulk tank projections stay in the Bulk Tank domain and avoid mixed cylinder terminology', () => {
