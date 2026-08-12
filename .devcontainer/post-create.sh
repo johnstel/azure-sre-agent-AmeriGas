@@ -89,9 +89,9 @@ alias break-mongodb='kubectl apply -f k8s/scenarios/mongodb-down.yaml'
 alias break-service='kubectl apply -f k8s/scenarios/service-mismatch.yaml'
 
 # Fix commands
-alias fix-all='kubectl apply -f k8s/base/application.yaml'
+alias fix-all='kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>/dev/null || true; kubectl apply -f k8s/base/application.yaml'
 alias fix-network='kubectl delete networkpolicy deny-tank-monitor -n propane 2>/dev/null'
-alias fix-extras='kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane 2>/dev/null'
+alias fix-extras='kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>/dev/null || true'
 
 # Site URL command
 alias site='echo "Customer Portal: http://$(kubectl get svc customer-portal -n propane -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || echo "pending...")"'
@@ -146,9 +146,16 @@ function break-network { kubectl apply -f k8s/scenarios/network-block.yaml }
 function break-config { kubectl apply -f k8s/scenarios/missing-config.yaml }
 function break-mongodb { kubectl apply -f k8s/scenarios/mongodb-down.yaml }
 function break-service { kubectl apply -f k8s/scenarios/service-mismatch.yaml }
-function fix-all { kubectl apply -f k8s/base/application.yaml }
+function fix-all {
+    kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+    kubectl apply -f k8s/base/application.yaml
+}
 function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
-function fix-extras { kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane 2>$null }
+function fix-extras {
+    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+}
 
 # Site URL command  
 function site { 

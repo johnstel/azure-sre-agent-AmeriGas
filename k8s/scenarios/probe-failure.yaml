@@ -15,7 +15,8 @@
 # kubectl apply -f k8s/scenarios/probe-failure.yaml
 #
 # HOW TO FIX:
-# kubectl delete deployment safety-compliance-monitor -n propane
+# kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found
+# kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found
 # =============================================================================
 ---
 apiVersion: v1

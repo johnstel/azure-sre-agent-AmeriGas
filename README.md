@@ -125,7 +125,7 @@ See [docs/COSTS.md](docs/COSTS.md) for detailed breakdown and optimization tips.
 | ImagePullBackOff | Order service fails after botched image release | Registry/image troubleshooting |
 | HighCPU | Demand forecast overload during peak heating season | Performance analysis |
 | PendingPods | Fleet telemetry monitor pods can't schedule | Scheduling analysis |
-| ProbeFailure | Safety compliance monitor misconfigured after maintenance | Probe configuration |
+| ProbeFailure | Simulated tank-level drop with suppressed alarm processing | Healthy workload + delayed safety alarm |
 | NetworkBlock | Tank monitor isolated after security policy update | Connectivity analysis |
 | MissingConfig | Delivery zone configuration missing after promotion | Configuration troubleshooting |
 | MongoDBDown | Tank database offline — cascading order failure | Dependency tracing, root cause |

@@ -70,7 +70,7 @@ function loadSafetyAlarmRuntime() {
   context.globalThis = context;
 
   vm.createContext(context);
-  vm.runInContext(`${runtimeSource}; this.__bulkTankSafetyAlarm = { alarm: BULK_TANK_SAFETY_ALARM, acknowledgeBulkTankSafetyAlarm, processBulkTankSafetyAlarm, renderBulkTankSafetyAlarm };`, context);
+  vm.runInContext(`${runtimeSource}; this.__bulkTankSafetyAlarm = { alarm: BULK_TANK_SAFETY_ALARM, acknowledgeBulkTankSafetyAlarm, processBulkTankSafetyAlarm, renderBulkTankSafetyAlarm, document: document };`, context);
 
   return context.__bulkTankSafetyAlarm;
 }
@@ -105,6 +105,7 @@ test('the alarm encodes a healthy workload that is suppressed by delayed process
 
 test('acknowledgement updates the alarm and suppresses duplicate acknowledgements', () => {
   const runtime = loadSafetyAlarmRuntime();
+  const opsLog = runtime.document.getElementById('ops-log');
   assert.equal(runtime.alarm.ackState, 'Pending');
 
   runtime.acknowledgeBulkTankSafetyAlarm();
@@ -112,9 +113,17 @@ test('acknowledgement updates the alarm and suppresses duplicate acknowledgement
   assert.equal(runtime.alarm.acknowledgedBy, 'dispatch-console');
   assert.ok(runtime.alarm.acknowledgedAt);
 
+  const firstAckAt = runtime.alarm.acknowledgedAt;
+  const firstUpdatedAt = runtime.alarm.lastUpdatedAt;
+  const logCountAfterFirstAck = opsLog.children.length;
+
   runtime.acknowledgeBulkTankSafetyAlarm();
+
   assert.equal(runtime.alarm.ackState, 'Acknowledged');
   assert.equal(runtime.alarm.acknowledgedBy, 'dispatch-console');
+  assert.equal(runtime.alarm.acknowledgedAt, firstAckAt);
+  assert.equal(runtime.alarm.lastUpdatedAt, firstUpdatedAt);
+  assert.equal(opsLog.children.length, logCountAfterFirstAck);
 });
 
 test('recovery processes the pending alarm exactly once without duplicate incidents', () => {

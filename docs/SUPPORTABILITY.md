@@ -477,7 +477,7 @@ This platform includes pre-built breakable scenarios for training and testing. I
 | **Image Pull** | `ImagePullBackOff` | order-service | Events show image not found | `kubectl apply -f k8s/base/application.yaml` |
 | **High CPU** | Cluster-wide slowness | demand-forecast-overload | `kubectl top pods` shows extreme CPU | `kubectl delete deploy demand-forecast-overload -n propane` |
 | **Pending Pods** | Pods stuck `Pending` | fleet-telemetry-monitor | Events show insufficient resources | `kubectl delete deploy fleet-telemetry-monitor -n propane` |
-| **Probe Failure** | Pod restarts repeatedly | safety-compliance-monitor | Events show probe failures | `kubectl delete deploy safety-compliance-monitor -n propane` |
+| **Probe Failure** | Healthy workload, delayed safety alarm | safety-compliance-monitor | Simulated alarm remains pending while workload stays healthy | `kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found; kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found` |
 | **Network Block** | Tank data timeouts | tank-monitor (NetworkPolicy) | `kubectl get networkpolicies -n propane` | `kubectl delete networkpolicy deny-tank-monitor -n propane` |
 | **Missing Config** | `ContainerCreateError` | delivery-zone-config | Events show missing ConfigMap | `kubectl delete deploy delivery-zone-config -n propane` |
 | **MongoDB Down** | Order service restarts, data loss | mongodb (scaled to 0) | `kubectl get deploy mongodb -n propane` shows 0/0 | `kubectl apply -f k8s/base/application.yaml` |
@@ -491,10 +491,11 @@ To restore **all** services to a known-good state:
 kubectl apply -f k8s/base/application.yaml
 ```
 
-To also clean up rogue deployments and network policies from scenarios:
+To also clean up rogue deployments, scenario config, and network policies from scenarios:
 
 ```bash
-kubectl delete deploy demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found
+kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found
+kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found
 kubectl delete networkpolicy deny-tank-monitor -n propane --ignore-not-found
 kubectl apply -f k8s/base/application.yaml
 ```

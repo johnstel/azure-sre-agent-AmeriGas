@@ -1606,9 +1606,7 @@ data:
     }
 
     function acknowledgeBulkTankSafetyAlarm() {
-      if (BULK_TANK_SAFETY_ALARM.processingState === 'recovered') {
-        appendSafetyLog('info', 'Alarm ' + BULK_TANK_SAFETY_ALARM.alarmId + ' was already processed exactly once; duplicate acknowledgement suppressed.');
-        renderBulkTankSafetyAlarm();
+      if (BULK_TANK_SAFETY_ALARM.ackState === 'Acknowledged' || BULK_TANK_SAFETY_ALARM.processingState === 'recovered') {
         return;
       }
       BULK_TANK_SAFETY_ALARM.ackState = 'Acknowledged';

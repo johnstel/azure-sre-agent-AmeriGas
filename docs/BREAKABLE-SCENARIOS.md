@@ -11,7 +11,7 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | ImagePullBackOff | `image-pull-backoff.yaml` | Shared | Order service fails after botched image release | Registry/image troubleshooting |
 | High CPU | `high-cpu.yaml` | Cylinder Exchange | Demand forecast overload during peak heating season | Performance analysis |
 | Pending Pods | `pending-pods.yaml` | Shared | Fleet telemetry monitor pods can't schedule | Scheduling analysis |
-| Probe Failure | `probe-failure.yaml` | Shared | Safety compliance monitor misconfigured after maintenance | Probe configuration analysis |
+| Probe Failure | `probe-failure.yaml` | Bulk Tank | Simulated rapid tank-level drop with suppressed alarm processing | Healthy workload + delayed safety alarm |
 | Network Block | `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policy analysis |
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
 | MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause |
@@ -245,7 +245,8 @@ kubectl get pods -n propane | grep -E 'tank-monitor|dispatch-console'
 
 **How to fix:**
 ```bash
-kubectl delete configmap bulk-tank-safety-alarm -n propane
+kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found
+kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found
 kubectl apply -f k8s/base/application.yaml
 ```
 

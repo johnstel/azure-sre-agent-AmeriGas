@@ -363,7 +363,7 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 | ImagePullBackOff | order-service wrong image | Botched image release |
 | High CPU | CPU stress pod added | Peak season cylinder-exchange demand forecasting overload |
 | Pending Pods | Unschedulable pods | Fleet telemetry over-provisioned |
-| Probe Failure | Bad health check endpoints | Post-maintenance misconfiguration |
+| Probe Failure | Simulated tank-level drop with delayed safety alarm processing | Healthy workload + suppressed safety event |
 | Network Block | NetworkPolicy blocks traffic | Overly restrictive security policy — silent data pipeline failure |
 | Missing Config | Missing ConfigMaps | Delivery zone config not deployed |
 | MongoDB Down | Database scaled to 0 | Database outage — cascading failure across bulk tank readings and order processing |

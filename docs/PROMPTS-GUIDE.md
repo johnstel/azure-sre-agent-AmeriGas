@@ -68,14 +68,14 @@ Start here when the cluster is healthy to show SRE Agent's baseline capabilities
 | **Specific** | "Analyze cluster capacity vs. what the fleet telemetry monitor is requesting" |
 | **Remediation** | "Should I scale the node pool or reduce resource requests for the monitor?" |
 
-### Probe Failure (`break-probe`)
+### Bulk Tank Safety Alarm (`break-probe`)
 
 | Stage | Prompt |
 |-------|--------|
-| **Open-ended** | "Safety compliance monitor pods keep restarting but the app looks fine" |
-| **Direct** | "Diagnose the health check failures in the propane namespace" |
-| **Specific** | "What's wrong with the liveness probe on safety-compliance-monitor?" |
-| **Remediation** | "How should I fix the probe configuration?" |
+| **Open-ended** | "A bulk tank safety alarm is pending but the workload still looks healthy. What's wrong?" |
+| **Direct** | "Diagnose the delayed safety-processing issue in the propane namespace" |
+| **Specific** | "Why is the simulated tank-level alarm still suppressed even though tank-monitor is healthy?" |
+| **Remediation** | "What component is delaying the alarm, and how do I clear the pending safety event?" |
 
 ### Network Policy Block (`break-network`)
 

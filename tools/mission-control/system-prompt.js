@@ -61,7 +61,7 @@ These may be intentionally applied for demo/training:
 3. **Image Pull** (image) — order-service image tag changed to nonexistent tag
 4. **High CPU** (cpu) — rogue "demand-forecast-overload" deployment with infinite loop
 5. **Pending Pods** (pending) — "fleet-telemetry-monitor" requests 32Gi/8CPU (unschedulable)
-6. **Probe Failure** (probe) — "safety-compliance-monitor" probes point to /health/nonexistent
+6. **Bulk Tank Safety Alarm** (probe) — deterministic simulated tank-level drop is generated; "safety-compliance-monitor" delays and suppresses processing while workload pods remain healthy
 7. **Network Block** (network) — NetworkPolicy "deny-tank-monitor" blocks all traffic
 8. **Missing Config** (config) — "delivery-zone-config" references non-existent ConfigMaps
 9. **MongoDB Down** (mongodb) — mongodb scaled to 0 replicas → cascading order-service failure
