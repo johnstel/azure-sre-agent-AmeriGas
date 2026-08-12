@@ -16,6 +16,7 @@ AmeriGas operates **two distinct propane business domains** in this platform. Ev
 Residential and commercial customers who own or lease a bulk propane tank on their property, refilled by delivery truck.
 
 - **Vocabulary:** gallons, tank fill percentage, consumption rate (gal/day), estimated days until empty, refill recommendation, delivery scheduling, price per gallon, leak detection.
+- **Forecasting model:** deterministic tank profile calculations use capacity, reserve gallons, refill threshold, lead time, and weather-sensitive demand; the default values are simulated operational defaults that require AmeriGas SME validation before they are treated as production policy. Demand inputs are validated: baseDemandGalPerDay must be greater than zero, weatherSensitivity may be zero but cannot be negative or non-finite, and all values must stay finite to avoid invalid demand or date calculations.
 - **Owning UI:** Customer Portal → **"My Bulk Tank"** section (tank gauge, days until empty, next delivery, price/gal, usage history in gallons).
 - **Owning service:** `tank-monitor` — IoT ingestion from smart sensors on customer bulk tanks (tank level %, leak detection, usage patterns). Publishes to the `tank-events` RabbitMQ queue and persists to the MongoDB `tank_readings` collection.
 - **Simulator:** `usage-simulator` — generates simulated residential/commercial bulk-tank consumption against `tank-monitor` only.
