@@ -22,6 +22,7 @@ const { createIncidentStore } = require('./incident-store');
 const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
+const operationLifecycle = require('./operation-lifecycle');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -40,30 +41,24 @@ const incidentStore = createIncidentStore({
 });
 
 
+// Operation records are created/finalized/cancelled through
+// operation-lifecycle.js, whose terminal-state guard makes 'cancelled',
+// 'completed', and 'failed' sticky — see that module for why this
+// matters (a killed child's late 'close' event must never overwrite a
+// truthful 'cancelled' outcome, and vice versa for a legitimate
+// completion that narrowly beats a concurrent cancel request).
 function createOperation(type, label) {
-  const id = crypto.randomBytes(4).toString('hex');
-  const op = { id, type, label, status: 'running', startedAt: new Date().toISOString(), endedAt: null, exitCode: null, log: [], subscribers: new Set(), process: null };
-  operations.set(id, op);
+  const op = operationLifecycle.createOperation(type, label);
+  operations.set(op.id, op);
   return op;
 }
 
 function appendLog(op, stream, text) {
-  const entry = { ts: new Date().toISOString(), stream, text };
-  op.log.push(entry);
-  for (const res of op.subscribers) res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  return operationLifecycle.appendLog(op, stream, text);
 }
 
 function finishOperation(op, exitCode) {
-  op.status = exitCode === 0 ? 'completed' : 'failed';
-  op.exitCode = exitCode;
-  op.endedAt = new Date().toISOString();
-  op.process = null;
-  for (const res of op.subscribers) {
-    res.write(`data: ${JSON.stringify({ ts: op.endedAt, stream: 'system', text: `\n── Operation ${op.status} (exit ${exitCode}) ──` })}\n\n`);
-    res.write(`event: done\ndata: ${JSON.stringify({ status: op.status, exitCode })}\n\n`);
-    res.end();
-  }
-  op.subscribers.clear();
+  return operationLifecycle.finishOperation(op, exitCode);
 }
 
 // Middleware
@@ -473,9 +468,12 @@ app.delete('/api/operations/:id', (req, res) => {
   if (!op) return res.status(404).json({ error: 'Operation not found' });
   if (op.status !== 'running') return res.json({ message: 'Already finished' });
   if (op.process) { op.process.kill('SIGTERM'); appendLog(op, 'system', '\n── Cancelled by user ──'); }
-  op.status = 'cancelled'; op.endedAt = new Date().toISOString();
-  for (const r of op.subscribers) { r.write(`event: done\ndata: ${JSON.stringify({ status: 'cancelled', exitCode: null })}\n\n`); r.end(); }
-  op.subscribers.clear();
+  // Guarded: if the operation reached a terminal state on its own between
+  // the check above and here (e.g. the process legitimately completed a
+  // moment before this request was processed), this is a truthful no-op
+  // rather than overwriting a real completed/failed outcome with
+  // 'cancelled'.
+  if (!operationLifecycle.cancelOperation(op)) return res.json({ message: 'Already finished' });
   res.json({ message: 'Cancelled' });
 });
 

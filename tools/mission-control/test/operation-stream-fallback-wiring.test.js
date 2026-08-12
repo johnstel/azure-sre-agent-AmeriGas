@@ -64,6 +64,24 @@ test('startOperationPolling wires the shared, authenticated api() helper into cr
   assert.doesNotMatch(fnBody, /new EventSource/, 'the polling fallback must not itself construct another EventSource');
 });
 
+test('startOperationPolling hands off the exact rendered-log cursor to the poller — never starts a fresh poller at since=0 after an EventSource has already rendered lines', () => {
+  const js = readPublic('app.js');
+  const fnBody = extractFunctionBody(js, /function startOperationPolling\(opId\)\s*\{/);
+  assert.match(fnBody, /since:\s*renderedLogCount/, 'the poller must be created with the current renderedLogCount as its starting cursor');
+});
+
+test('appendLogEntries advances renderedLogCount so the cursor always reflects exactly how many log entries have been rendered so far, regardless of transport', () => {
+  const js = readPublic('app.js');
+  const fnBody = extractFunctionBody(js, /function appendLogEntries\(entries\)\s*\{/);
+  assert.match(fnBody, /renderedLogCount\s*\+=\s*entries\.length/);
+});
+
+test('streamOperation resets renderedLogCount to 0 for each new operation, so a stale cursor from a previous operation can never leak into a new one', () => {
+  const js = readPublic('app.js');
+  const fnBody = extractFunctionBody(js, /function streamOperation\(opId\)\s*\{/);
+  assert.match(fnBody, /renderedLogCount\s*=\s*0/);
+});
+
 test('only handleTerminalOperation may report a failed operation (via the Copilot failure banner) — both EventSource "done" and the poller\'s onTerminal route through it exclusively', () => {
   const js = readPublic('app.js');
   const failedBannerMatches = js.match(/copilot-failure-banner/g) || [];
@@ -104,6 +122,16 @@ test('cancelOperation() is unchanged: still cancels via the authenticated apiCli
   const js = readPublic('app.js');
   const cancelBody = extractFunctionBody(js, /async function cancelOperation\(\)\s*\{/);
   assert.match(cancelBody, /apiClient\.request\(\s*['"]operations\/['"]\s*\+\s*currentOpId\s*,\s*\{\s*method:\s*['"]DELETE['"]/);
+});
+
+test('server.js routes operation finalization/cancellation through the guarded operation-lifecycle module, never mutating op.status inline — this is what makes a truthful "cancelled" outcome sticky against a late child-process close/error event', () => {
+  const serverJs = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
+  assert.match(serverJs, /require\(['"]\.\/operation-lifecycle['"]\)/);
+  assert.match(serverJs, /operationLifecycle\.finishOperation/);
+  assert.match(serverJs, /operationLifecycle\.cancelOperation/);
+  // Guard against regressing back to an inline, unguarded assignment.
+  assert.doesNotMatch(serverJs, /op\.status\s*=\s*['"]cancelled['"]/, 'cancellation must go through the guarded cancelOperation(), never an inline assignment');
+  assert.doesNotMatch(serverJs, /op\.status\s*=\s*exitCode/, 'finalization must go through the guarded finishOperation(), never an inline assignment');
 });
 
 test('no code path builds an /api/operations URL containing a token, remote-token header name, or query-string credential', () => {

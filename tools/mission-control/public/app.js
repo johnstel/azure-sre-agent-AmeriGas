@@ -499,6 +499,7 @@ document.getElementById('incident-recent-select').addEventListener('change', (e)
 let currentOpId = null;
 let currentEventSource = null;
 let currentOperationPoller = null;
+let renderedLogCount = 0; // count of log entries already rendered for the current operation, so an EventSource-to-poller handoff can resume from the exact same cursor instead of re-fetching (and duplicating) from the start
 
 function autoDetectRG() {
   const rgEl = document.getElementById('rg-name');
@@ -534,7 +535,7 @@ function setTerminalStatus(status) {
   cancelBtn.style.display = status === 'running' ? '' : 'none';
 }
 
-/** Appends already-parsed log entries to the terminal output. Shared by both the EventSource path and the polling fallback so neither can render a log line the other already showed. */
+/** Appends already-parsed log entries to the terminal output. Shared by both the EventSource path and the polling fallback so neither can render a log line the other already showed. Also advances renderedLogCount, the cursor used to hand off from EventSource to the polling fallback without re-fetching (and duplicating) already-rendered lines. */
 function appendLogEntries(entries) {
   const out = document.getElementById('terminal-output');
   for (const entry of entries) {
@@ -544,7 +545,10 @@ function appendLogEntries(entries) {
     span.textContent = entry.text;
     out.appendChild(span);
   }
-  if (entries.length > 0) out.scrollTop = out.scrollHeight;
+  if (entries.length > 0) {
+    out.scrollTop = out.scrollHeight;
+    renderedLogCount += entries.length;
+  }
 }
 
 /**
@@ -592,6 +596,7 @@ function startOperationPolling(opId) {
   currentOperationPoller = window.MissionControlOperationPoller.createOperationPoller({
     api,
     operationId: opId,
+    since: renderedLogCount, // resume exactly where EventSource left off — never re-fetch (and duplicate) already-rendered lines, never skip lines added between disconnect and the first poll
     onLogEntries: appendLogEntries,
     onTerminal: (info) => {
       currentOperationPoller = null;
@@ -614,6 +619,7 @@ function startOperationPolling(opId) {
 
 function streamOperation(opId) {
   currentOpId = opId;
+  renderedLogCount = 0;
   const out = document.getElementById('terminal-output');
   out.textContent = '';
   setTerminalStatus('running');
