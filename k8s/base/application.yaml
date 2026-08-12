@@ -746,17 +746,41 @@ data:
             return 200 '{"status":"ok"}';
             add_header Content-Type application/json;
         }
-        location /api/inventory/ {
-            set $asset_backend http://inventory-service.propane.svc.cluster.local:3002;
-            proxy_pass $asset_backend/;
+        location = /api/inventory/health {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://inventory-service.propane.svc.cluster.local:3002/health;
         }
-        location /api/tanks/ {
-            set $meter_backend http://tank-monitor.propane.svc.cluster.local:3000;
-            proxy_pass $meter_backend/;
+        location = /api/tanks/health {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://tank-monitor.propane.svc.cluster.local:3000/health;
         }
-        location /api/orders/ {
-            set $dispatch_backend http://order-service.propane.svc.cluster.local:3001;
-            proxy_pass $dispatch_backend/;
+        location = /api/orders/health {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://order-service.propane.svc.cluster.local:3001/health;
+        }
+        location /api/ {
+            return 404;
         }
         location / {
             try_files $uri $uri/ /index.html;
@@ -1203,17 +1227,41 @@ data:
             return 200 '{"status":"ok"}';
             add_header Content-Type application/json;
         }
-        location /api/inventory/ {
-            set $asset_backend http://inventory-service.propane.svc.cluster.local:3002;
-            proxy_pass $asset_backend/;
+        location = /api/inventory/health {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://inventory-service.propane.svc.cluster.local:3002/health;
         }
-        location /api/tanks/ {
-            set $meter_backend http://tank-monitor.propane.svc.cluster.local:3000;
-            proxy_pass $meter_backend/;
+        location = /api/tanks/health {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://tank-monitor.propane.svc.cluster.local:3000/health;
         }
-        location /api/orders/ {
-            set $dispatch_backend http://order-service.propane.svc.cluster.local:3001;
-            proxy_pass $dispatch_backend/;
+        location = /api/orders/health {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://order-service.propane.svc.cluster.local:3001/health;
+        }
+        location /api/ {
+            return 404;
         }
         location / {
             try_files $uri $uri/ /index.html;
