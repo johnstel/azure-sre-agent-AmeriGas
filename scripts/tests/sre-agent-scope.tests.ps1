@@ -260,4 +260,3 @@ Describe "infra/terraform/modules/sre-agent/main.tf — mirrors the corrected Bi
         $script:TerraformContent | Should -Not -Match 'managedResources\s*=\s*\[\]'
     }
 }
-
