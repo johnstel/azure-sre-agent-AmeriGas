@@ -62,7 +62,9 @@ function ensure-credentials {
         Write-Host "     ⚠️  Using default DEMO credentials. Run deploy.ps1 for randomized credentials." -ForegroundColor Gray
         $demoUser = 'amerigas-rmq'
         $demoPass = 'Amg!P3#rMQ@xDm09'
-        $demoUri  = "amqp://${demoUser}:${demoPass}@rabbitmq:5672/"
+        $demoUserEscaped = [System.Uri]::EscapeDataString($demoUser)
+        $demoPassEscaped = [System.Uri]::EscapeDataString($demoPass)
+        $demoUri  = "amqp://${demoUserEscaped}:${demoPassEscaped}@rabbitmq:5672/"
         kubectl create secret generic rabbitmq-credentials `
             --namespace propane `
             --from-literal="username=${demoUser}" `

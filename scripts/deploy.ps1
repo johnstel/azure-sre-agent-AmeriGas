@@ -69,6 +69,10 @@ function New-RandomPassword {
     param(
         [int]$Length = 24
     )
+    if ($Length -lt 4) {
+        throw 'Password length must be at least 4 characters.'
+    }
+
     $lower   = 'abcdefghijklmnopqrstuvwxyz'
     $upper   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     $digits  = '0123456789'
@@ -76,17 +80,24 @@ function New-RandomPassword {
     $all     = $lower + $upper + $digits + $special
 
     # Guarantee at least one character from each class
-    $chars = @(
-        $lower[(Get-Random -Maximum $lower.Length)]
-        $upper[(Get-Random -Maximum $upper.Length)]
-        $digits[(Get-Random -Maximum $digits.Length)]
-        $special[(Get-Random -Maximum $special.Length)]
-    )
+    $chars = New-Object char[] $Length
+    $chars[0] = $lower[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($lower.Length)]
+    $chars[1] = $upper[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($upper.Length)]
+    $chars[2] = $digits[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($digits.Length)]
+    $chars[3] = $special[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($special.Length)]
+
     for ($i = 4; $i -lt $Length; $i++) {
-        $chars += $all[(Get-Random -Maximum $all.Length)]
+        $chars[$i] = $all[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($all.Length)]
     }
-    # Shuffle and return as string
-    return -join ($chars | Get-Random -Count $chars.Count)
+
+    for ($i = $chars.Length - 1; $i -gt 0; $i--) {
+        $j = [System.Security.Cryptography.RandomNumberGenerator]::GetInt32($i + 1)
+        $tmp = $chars[$i]
+        $chars[$i] = $chars[$j]
+        $chars[$j] = $tmp
+    }
+
+    return -join $chars
 }
 
 function Invoke-AzCliJson {
@@ -649,7 +660,7 @@ try {
     Write-Host "  • Key Vault URI:    $($outputs.keyVaultUri.value)" -ForegroundColor White
     Write-Host "  • Log Analytics ID: $($outputs.logAnalyticsWorkspaceId.value)" -ForegroundColor White
     Write-Host "  • App Insights ID:  $($outputs.appInsightsId.value)" -ForegroundColor White
-    Write-Host "  • App Insights CS:  $($outputs.appInsightsConnectionString.value.Substring(0, [Math]::Min(60, $outputs.appInsightsConnectionString.value.Length)))..." -ForegroundColor White
+    Write-Host "  • App Insights CS:  retrieved securely for telemetry injection" -ForegroundColor White
 
     if ($outputs.grafanaDashboardUrl.value) {
         Write-Host "  • Grafana:          $($outputs.grafanaDashboardUrl.value)" -ForegroundColor White
@@ -667,6 +678,11 @@ try {
     if ($outputs.defaultActionGroupId.value) {
         Write-Host "  • Action Group:     $($outputs.defaultActionGroupId.value)" -ForegroundColor White
         Write-Host "  • Incident Webhook: $($outputs.defaultActionGroupHasWebhook.value)" -ForegroundColor White
+    }
+
+    $appInsightsConnStr = $null
+    if ($outputs.appInsightsId.value) {
+        $appInsightsConnStr = az resource show --ids $outputs.appInsightsId.value --api-version 2020-02-02 --query properties.ConnectionString --output tsv 2>$null
     }
 
     if ($outputs.sreAgentId.value) {
@@ -750,7 +766,9 @@ if (Test-Path $k8sPath) {
     Write-Host "`n🔐 Generating RabbitMQ credentials..." -ForegroundColor Yellow
     $rabbitMqUser     = 'amerigas-rmq'
     $rabbitMqPassword = New-RandomPassword -Length 24
-    $rabbitMqUri      = "amqp://${rabbitMqUser}:${rabbitMqPassword}@rabbitmq:5672/"
+    $rabbitMqUserEscaped = [System.Uri]::EscapeDataString($rabbitMqUser)
+    $rabbitMqPasswordEscaped = [System.Uri]::EscapeDataString($rabbitMqPassword)
+    $rabbitMqUri      = "amqp://${rabbitMqUserEscaped}:${rabbitMqPasswordEscaped}@rabbitmq:5672/"
 
     kubectl create secret generic rabbitmq-credentials `
         --namespace propane `
@@ -770,7 +788,6 @@ if (Test-Path $k8sPath) {
 
     # Inject App Insights connection string into telemetry ConfigMap
     Write-Host "`n🔗 Configuring Application Insights telemetry..." -ForegroundColor Yellow
-    $appInsightsConnStr = $outputs.appInsightsConnectionString.value
     if ($appInsightsConnStr) {
         kubectl create configmap propane-telemetry-config `
             --namespace propane `
@@ -878,4 +895,3 @@ Write-Host @"
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 "@ -ForegroundColor Cyan
-
