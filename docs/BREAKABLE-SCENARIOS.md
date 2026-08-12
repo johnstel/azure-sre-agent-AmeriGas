@@ -12,6 +12,7 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | High CPU | `high-cpu.yaml` | Cylinder Exchange | Demand forecast overload during peak heating season | Performance analysis |
 | Pending Pods | `pending-pods.yaml` | Shared | Fleet telemetry monitor pods can't schedule | Scheduling analysis |
 | Probe Failure | `probe-failure.yaml` | Bulk Tank | Simulated rapid tank-level drop with suppressed alarm processing | Healthy workload + delayed safety alarm |
+| Refill Order Backlog | `refill-order-backlog.yaml` | Shared | RabbitMQ refill backlog grows while producers stay healthy and a poisoned refill event is retried before landing in the DLQ | Queue age, DLQ evidence, paused consumer correlation |
 | Network Block | `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policy analysis |
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
 | MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause |
@@ -252,7 +253,47 @@ kubectl apply -f k8s/base/application.yaml
 
 ---
 
-### 7. Network Policy Blocking — Tank Monitor Isolated
+### 7. Refill Order Backlog — Paused Consumer + Poison Message
+
+**Domain:** Shared
+
+**File:** `k8s/scenarios/refill-order-backlog.yaml`
+
+**What happens:**
+- RabbitMQ keeps accepting refill-order messages from healthy producers while the consumer remains paused.
+- The queue depth rises and the oldest queued refill message ages upward without any producer outage.
+- A deterministic malformed refill event (`EV-REFILL-2047`) is retried a bounded number of times before it is written to the `refill-orders-dlq` dead-letter queue.
+- Recovery processes the valid refill orders exactly once while the poison message remains visible in the DLQ for forensics.
+
+**How to break:**
+```bash
+kubectl apply -f k8s/scenarios/refill-order-backlog.yaml
+```
+
+**What to observe:**
+```bash
+# Queue state and backlog telemetry
+kubectl logs -n propane deploy/refill-order-backlog-simulator --tail 20
+
+# Check broker-backed backlog values in the Dispatch Console or app state
+kubectl get configmap refill-order-backlog-config -n propane -o yaml
+```
+
+**SRE Agent prompts:**
+- "Why is the RabbitMQ refill-orders queue growing even though producers are healthy?"
+- "Trace the paused consumer and malformed refill event that are driving queue age and retry backoff."
+- "Which refill order IDs were affected, and which event landed in the DLQ?"
+
+**How to fix:**
+```bash
+kubectl delete deployment refill-order-backlog-simulator -n propane --ignore-not-found
+kubectl delete configmap refill-order-backlog-config -n propane --ignore-not-found
+kubectl apply -f k8s/base/application.yaml
+```
+
+---
+
+### 8. Network Policy Blocking — Tank Monitor Isolated
 
 **Domain:** Bulk Tank
 

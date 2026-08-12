@@ -83,15 +83,16 @@ alias break-image='kubectl apply -f k8s/scenarios/image-pull-backoff.yaml'
 alias break-cpu='kubectl apply -f k8s/scenarios/high-cpu.yaml'
 alias break-pending='kubectl apply -f k8s/scenarios/pending-pods.yaml'
 alias break-probe='kubectl apply -f k8s/scenarios/probe-failure.yaml'
+alias break-backlog='kubectl apply -f k8s/scenarios/refill-order-backlog.yaml'
 alias break-network='kubectl apply -f k8s/scenarios/network-block.yaml'
 alias break-config='kubectl apply -f k8s/scenarios/missing-config.yaml'
 alias break-mongodb='kubectl apply -f k8s/scenarios/mongodb-down.yaml'
 alias break-service='kubectl apply -f k8s/scenarios/service-mismatch.yaml'
 
 # Fix commands
-alias fix-all='kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>/dev/null || true; kubectl apply -f k8s/base/application.yaml'
+alias fix-all='kubectl delete deployment safety-compliance-monitor refill-order-backlog-simulator -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>/dev/null || true; kubectl apply -f k8s/base/application.yaml'
 alias fix-network='kubectl delete networkpolicy deny-tank-monitor -n propane 2>/dev/null'
-alias fix-extras='kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>/dev/null || true'
+alias fix-extras='kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config refill-order-backlog-simulator -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>/dev/null || true'
 
 # Site URL command
 alias site='echo "Customer Portal: http://$(kubectl get svc customer-portal -n propane -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || echo "pending...")"'
@@ -142,19 +143,20 @@ function break-image { kubectl apply -f k8s/scenarios/image-pull-backoff.yaml }
 function break-cpu { kubectl apply -f k8s/scenarios/high-cpu.yaml }
 function break-pending { kubectl apply -f k8s/scenarios/pending-pods.yaml }
 function break-probe { kubectl apply -f k8s/scenarios/probe-failure.yaml }
+function break-backlog { kubectl apply -f k8s/scenarios/refill-order-backlog.yaml }
 function break-network { kubectl apply -f k8s/scenarios/network-block.yaml }
 function break-config { kubectl apply -f k8s/scenarios/missing-config.yaml }
 function break-mongodb { kubectl apply -f k8s/scenarios/mongodb-down.yaml }
 function break-service { kubectl apply -f k8s/scenarios/service-mismatch.yaml }
 function fix-all {
-    kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+    kubectl delete deployment safety-compliance-monitor refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
     kubectl apply -f k8s/base/application.yaml
 }
 function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
 function fix-extras {
-    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config -n propane --ignore-not-found 2>$null
+    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
+    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
 }
 
 # Site URL command  
@@ -194,6 +196,7 @@ function menu {
 ║    break-cpu                   - High CPU (demand forecast overload)         ║
 ║    break-pending               - Pending pods (fleet telemetry monitor)      ║
 ║    break-probe                 - Bulk Tank safety alarm                     ║
+║    break-backlog               - RabbitMQ refill backlog + DLQ             ║
 ║    break-network               - Network policy blocking                     ║
 ║    break-config                - Missing ConfigMap                           ║
 ║    break-mongodb               - MongoDB down (cascading failure)            ║

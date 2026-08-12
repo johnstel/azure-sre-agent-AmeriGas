@@ -1,0 +1,62 @@
+# Domain: Shared
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: refill-order-backlog-config
+  namespace: propane
+data:
+  queue_name: "refill-orders"
+  dead_letter_queue_name: "refill-orders-dlq"
+  producer_healthy: "true"
+  consumer_paused: "true"
+  queue_depth: "14"
+  oldest_message_age_seconds: "420"
+  active_consumer_count: "0"
+  affected_order_ids: "RO-1041,RO-1042,RO-1043,RO-1044"
+  affected_event_ids: "EV-REFILL-1041,EV-REFILL-1042,EV-REFILL-1043,EV-REFILL-1044,EV-REFILL-2047"
+  malformed_event_id: "EV-REFILL-2047"
+  malformed_order_id: "RO-2047"
+  retry_count: "0"
+  max_retries: "3"
+  dead_letter_contents: "EV-REFILL-2047|RO-2047|Malformed refill-order payload|retries=3"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refill-order-backlog-simulator
+  namespace: propane
+  labels:
+    app: refill-order-backlog-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: refill-order-backlog-simulator
+  template:
+    metadata:
+      labels:
+        app: refill-order-backlog-simulator
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: refill-order-backlog-simulator
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              echo '{"event":"producer.healthy","producer_healthy":true,"queue_name":"refill-orders","queue_depth":14,"oldest_message_age_seconds":420,"active_consumer_count":0,"consumer_paused":true,"status":"paused"}'
+              while true; do
+                echo '{"event":"refill_order_backlog","queue_name":"refill-orders","queue_depth":14,"oldest_message_age_seconds":420,"active_consumer_count":0,"affected_order_ids":["RO-1041","RO-1042","RO-1043","RO-1044"],"malformed_event_id":"EV-REFILL-2047","retry_count":3,"dlq_contents":[{"event_id":"EV-REFILL-2047","order_id":"RO-2047","reason":"Malformed refill-order payload","retries":3}],"status":"paused"}'
+                sleep 30
+              done
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
