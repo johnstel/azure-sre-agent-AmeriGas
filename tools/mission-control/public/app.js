@@ -33,6 +33,7 @@ let serviceMismatchActive = false;
 let csrfToken = null;
 let csrfTokenPromise = null;
 const render = window.MissionControlRender;
+const incidentUI = window.IncidentTimelineUI;
 
 async function getCsrfToken() {
   if (csrfToken) return csrfToken;
@@ -371,6 +372,84 @@ async function refreshEndpoints() {
   } catch { serviceMismatchActive = false; }
 }
 
+/* ── Incident Evidence Timeline & Value Scorecard ─────── */
+let currentIncidentCorrelationId = null;
+let viewingHistoricalIncident = false;
+
+function renderIncidentSnapshot(payload) {
+  const empty = document.getElementById('incident-panel-empty');
+  const content = document.getElementById('incident-panel-content');
+  if (!payload || !payload.incident) {
+    empty.style.display = '';
+    content.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  content.style.display = '';
+
+  const { incident, links } = payload;
+  currentIncidentCorrelationId = incident.correlationId;
+
+  document.getElementById('incident-scorecard-mount').replaceChildren(incidentUI.buildScorecard(incident, document));
+  document.getElementById('incident-evidence-mount').replaceChildren(incidentUI.buildEvidenceSummary(incident.evidence, document));
+  document.getElementById('incident-timeline-mount').replaceChildren(incidentUI.buildTimeline(incident.milestones, document));
+  document.getElementById('incident-links-mount').replaceChildren(incidentUI.buildLinks(links, document, render.toSafeHttpUrl));
+}
+
+async function refreshActiveIncident() {
+  if (viewingHistoricalIncident) return; // don't clobber an operator's historical selection
+  try {
+    const payload = await api('incidents/active');
+    renderIncidentSnapshot(payload);
+  } catch { /* keep last-known rendering on transient fetch errors */ }
+}
+
+async function refreshRecentIncidents() {
+  try {
+    const recent = await api('incidents?limit=10');
+    const select = document.getElementById('incident-recent-select');
+    if (!Array.isArray(recent) || recent.length === 0) {
+      select.style.display = 'none';
+      return;
+    }
+    select.style.display = '';
+    const fragment = document.createDocumentFragment();
+    const liveOption = document.createElement('option');
+    liveOption.value = '';
+    liveOption.textContent = 'Live (current run)';
+    fragment.appendChild(liveOption);
+    recent.forEach((entry) => {
+      const option = document.createElement('option');
+      option.value = entry.correlationId;
+      const stateLabel = incidentUI.finalStateLabel(entry.finalState);
+      option.textContent = `${entry.scenarioName || entry.scenarioId || entry.correlationId} — ${stateLabel}`;
+      fragment.appendChild(option);
+    });
+    select.replaceChildren(fragment);
+  } catch { /* recent-run history is best-effort */ }
+}
+
+async function onSelectRecentIncident(correlationId) {
+  if (!correlationId) {
+    viewingHistoricalIncident = false;
+    refreshActiveIncident();
+    return;
+  }
+  viewingHistoricalIncident = true;
+  try {
+    const payload = await api('incidents/' + encodeURIComponent(correlationId));
+    renderIncidentSnapshot(payload);
+  } catch (e) {
+    toast('Failed to load incident: ' + e.message, 'error');
+  }
+}
+
+function exportIncident(format) {
+  if (!currentIncidentCorrelationId) return;
+  const url = '/api/incidents/' + encodeURIComponent(currentIncidentCorrelationId) + '/export.' + format;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 buildScenarioGrid();
 refreshPods();
@@ -381,6 +460,8 @@ refreshDeployments();
 refreshClusterInfo();
 refreshNetworkPolicies();
 refreshEndpoints();
+refreshActiveIncident();
+refreshRecentIncidents();
 
 setInterval(refreshPods, 5000);
 setInterval(refreshEvents, 10000);
@@ -389,6 +470,10 @@ setInterval(refreshDeployments, 10000);
 setInterval(refreshNodes, 30000);
 setInterval(refreshNetworkPolicies, 5000);
 setInterval(refreshEndpoints, 5000);
+setInterval(refreshActiveIncident, 5000);
+setInterval(refreshRecentIncidents, 20000);
+
+document.getElementById('incident-recent-select').addEventListener('change', (e) => onSelectRecentIncident(e.target.value));
 
 /* ── Infrastructure Operations ────────────────────────── */
 let currentOpId = null;
@@ -667,6 +752,12 @@ function handleGlobalClick(event) {
       break;
     case 'send-chat':
       sendChatMessage();
+      break;
+    case 'export-incident-md':
+      exportIncident('md');
+      break;
+    case 'export-incident-json':
+      exportIncident('json');
       break;
   }
 }

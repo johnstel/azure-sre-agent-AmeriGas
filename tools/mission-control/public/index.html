@@ -170,6 +170,40 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 .pod-link{color:var(--cyan);cursor:pointer;text-decoration:none}
 .pod-link:hover{text-decoration:underline}
 
+/* ── Incident Evidence Timeline ───────────────────────── */
+#incident-panel-empty{color:var(--text-dim);font-size:.85rem}
+.incident-scorecard{display:flex;flex-direction:column;gap:.65rem;margin-bottom:1rem;padding-bottom:1rem;border-bottom:1px solid var(--card-border)}
+.incident-header{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
+.incident-title{font-weight:700;font-size:.95rem}
+.incident-state-badge{font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:12px;text-transform:uppercase;letter-spacing:.4px}
+.incident-state-active{background:rgba(210,153,34,.18);color:var(--yellow)}
+.incident-state-recovered{background:rgba(63,185,80,.18);color:var(--green)}
+.incident-state-partial{background:rgba(210,153,34,.18);color:var(--yellow)}
+.incident-state-failed{background:rgba(248,81,73,.18);color:var(--red)}
+.incident-state-unknown{background:rgba(139,148,158,.15);color:var(--text-dim)}
+.incident-metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.6rem}
+.incident-metric{display:flex;flex-direction:column;gap:2px}
+.incident-metric-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim)}
+.incident-metric-value{font-size:.85rem;font-weight:600;word-break:break-word}
+.incident-related-ids{font-size:.75rem;color:var(--text-dim)}
+.incident-disclaimer{font-size:.72rem;color:var(--text-dim);font-style:italic}
+.incident-evidence-summary{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.85rem}
+.evidence-chip{font-size:.72rem;padding:3px 10px;border-radius:10px;font-weight:600}
+.evidence-chip.evidence-used{background:rgba(63,185,80,.15);color:var(--green)}
+.evidence-chip.evidence-unused{background:rgba(139,148,158,.15);color:var(--text-dim)}
+.evidence-chip.evidence-unavailable{background:rgba(139,148,158,.08);color:var(--text-dim);opacity:.7}
+.incident-timeline-list{display:flex;flex-direction:column;gap:0;max-height:320px;overflow-y:auto}
+.incident-timeline-row{display:flex;gap:.6rem;padding:6px 0;border-bottom:1px solid var(--card-border);font-size:.8rem;align-items:baseline}
+.incident-timeline-row:last-child{border-bottom:none}
+.incident-timeline-time{color:var(--text-dim);min-width:170px;font-family:monospace;font-size:.72rem}
+.incident-timeline-label{min-width:170px;font-weight:600;color:var(--orange)}
+.incident-timeline-desc{flex:1;color:var(--text-dim)}
+.incident-links{display:flex;gap:.75rem;margin-top:.75rem}
+.incident-link{color:var(--cyan);font-size:.8rem;text-decoration:none}
+.incident-link:hover{text-decoration:underline}
+.incident-export-bar{display:flex;gap:.6rem;margin-top:.85rem}
+.incident-recent-select{background:var(--card);border:1px solid var(--card-border);color:var(--text);padding:5px 10px;border-radius:5px;font-size:.8rem}
+
 /* ── AI Chat Panel ────────────────────────────────────── */
 #copilot-banner{background:linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#4c1d95 100%);border:1px solid rgba(167,139,250,.3);border-radius:10px;padding:1rem 1.2rem;margin-bottom:1rem;display:flex;align-items:center;gap:1rem;cursor:pointer;transition:border-color .2s,transform .15s}
 #copilot-banner:hover{border-color:rgba(167,139,250,.6);transform:translateY(-1px)}
@@ -261,6 +295,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 #chat-send:hover:not(:disabled){opacity:.85}
 </style>
 <script src="/render-utils.js"></script>
+<script src="/incident-timeline-ui.js"></script>
 </head>
 <body>
 
@@ -328,6 +363,25 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
   <div class="panel">
     <h2>📦 Deployments</h2>
     <div id="deployments-list"></div>
+  </div>
+
+  <!-- Incident Evidence Timeline & Value Scorecard -->
+  <div class="panel" id="incident-panel">
+    <h2>
+      <span>🎯 Incident Evidence Timeline</span>
+      <select id="incident-recent-select" class="incident-recent-select" style="margin-left:auto;display:none"></select>
+    </h2>
+    <div id="incident-panel-empty">No demo scenario has been activated yet in this session. Break a scenario below to start an incident run.</div>
+    <div id="incident-panel-content" style="display:none">
+      <div id="incident-scorecard-mount"></div>
+      <div id="incident-evidence-mount"></div>
+      <div id="incident-timeline-mount"></div>
+      <div id="incident-links-mount"></div>
+      <div class="incident-export-bar">
+        <button class="fix-btn secondary" id="incident-export-md" data-action="export-incident-md">📄 Export Markdown</button>
+        <button class="fix-btn secondary" id="incident-export-json" data-action="export-incident-json">🧾 Export JSON</button>
+      </div>
+    </div>
   </div>
 
   <!-- Break Scenarios -->

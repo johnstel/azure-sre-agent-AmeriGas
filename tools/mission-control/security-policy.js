@@ -322,4 +322,5 @@ module.exports = {
   markTelemetry,
   wrapUntrustedTelemetry,
   validateKubectlArgs,
+  createApprovalSignature,
 };

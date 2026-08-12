@@ -84,7 +84,7 @@
 1. Click the **Copilot button** (or the status banner) in Mission Control to open the chat panel
 2. Point out the **"Ready"** status badge — "This is our local AI assistant powered by the GitHub Copilot SDK. Unlike SRE Agent which runs in the cloud, this one runs right here on the operator's machine and has direct kubectl access to the cluster."
 3. Show the **quick prompts** at the bottom of the chat for one-click operations
-4. Explain: "This assistant has 19 custom tools — it can inspect pods, read logs, apply break scenarios, fix issues, and even deploy or destroy infrastructure, all through natural conversation."
+4. Explain: "This assistant has 20 custom tools — it can inspect pods, read logs, apply break scenarios, fix issues, and even deploy or destroy infrastructure, all through natural conversation."
 
 ### Baseline Health Check
 
@@ -108,6 +108,8 @@ Let the agent show that everything is healthy and telemetry is flowing. This est
 
 Pick **2–3 scenarios** from the options below. Recommended flow for maximum impact:
 
+Every scenario you break here is captured live in Mission Control's **🎯 Incident Evidence Timeline** panel — activation, first observed impact, evidence gathered, the proposed fix, and recovery, each with a server timestamp and a single correlation id for the run. Point this out to the audience: it's the measured record Act 4 draws its closing numbers from, not narration.
+
 ---
 
 ### Scenario A: MongoDB Outage — Cascading Failure ⭐ (Recommended first)
@@ -130,6 +132,7 @@ kubectl apply -f k8s/scenarios/mongodb-down.yaml
 - On the **Dispatch Console** — the operations log shows MongoDB connection errors cascading across services
 - On the **Customer Portal** — cage inventory dots stop updating, stock status badges go stale
 - Unhealthy pod count goes red in Mission Control
+- The **Incident Evidence Timeline** panel records activation immediately, then a server-detected "first impact" milestone once the poll observes the unhealthy pod state
 
 **4. Ask SRE Agent** (start vague, like a real operator would):
 
@@ -151,7 +154,7 @@ Let the agent investigate. It should trace the dependency chain:
 kubectl apply -f k8s/base/application.yaml
 ```
 
-**7. Show recovery** — pods come back to green within 30–60 seconds. Cage inventory resumes updating.
+**7. Show recovery** — pods come back to green within 30–60 seconds. Cage inventory resumes updating. The Incident Evidence Timeline panel records the proposed/executed fix, a post-action assertion re-checking the scenario's health signal, and the recovery milestone — and only then reports a measured time-to-recover. If the assertion doesn't confirm recovery, the panel truthfully shows "partial recovery," never a fabricated success.
 
 ---
 
@@ -307,21 +310,32 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 
 ## Act 4 — The Value Proposition (5 min)
 
+### Show: This Run's Measured Outcome
+
+> "Let's not take my word for it — here's exactly what Mission Control observed during the scenario we just ran."
+
+1. Open the **🎯 Incident Evidence Timeline** panel in Mission Control and point at the scorecard for the scenario you just broke and fixed in Act 2.
+2. Read the actual displayed values aloud — correlation id, impacted service, root cause (if the agent identified one during the session), the approved action and its run mode, and the **measured** time-to-detect / time-to-root-cause / time-to-recover for *this specific run*. If a value shows "not observed in this run" (for example, no root cause was asked for), say so plainly — don't round it up or guess.
+3. Walk through the chronological timeline underneath the scorecard: activation → first impact → evidence gathered → proposed action → approval → result → post-action assertion → recovery. Point out that every entry has a server timestamp, and that a failed post-action assertion would show "partial recovery" rather than a fabricated success.
+4. Click **Export Markdown** (or **Export JSON**) to show the redacted evidence pack that could be attached to a real postmortem — same numbers, no secrets, reproducible.
+
+> No two runs are identical — timings vary with cluster warm-up, network conditions, and how long the audience discussion took before the fix was applied. That's the point: these are this run's numbers, not a script.
+
 ### Key Messages
 
-1. **Mean Time to Diagnosis** — "What took a 3-person war room 45 minutes, SRE Agent diagnosed in under 30 seconds. It correlated logs, metrics, events, and configuration automatically."
+1. **A truthful, per-run record** — "Every scenario run gets a single correlation id and a server-timestamped timeline, from activation through recovery. We just showed you the real numbers for the run we did together — not an industry benchmark, not a guess."
 
-2. **Full Observability Pipeline** — "We have full distributed tracing via OpenTelemetry, Application Insights integration, and Azure Data Explorer for deep analytics — SRE Agent leverages ALL of this data. It doesn't just look at pod status; it queries traces, logs, and metrics across the entire stack."
+2. **Full Observability Pipeline** — "We have full distributed tracing via OpenTelemetry, Application Insights integration, and Azure Data Explorer for deep analytics — SRE Agent leverages ALL of this data. It doesn't just look at pod status; it queries traces, logs, and metrics across the entire stack. Mission Control's local evidence timeline is honest about what it *can't* see yet too — traces and knowledge-base evidence are marked as not natively wired in, with a link out to the native SRE Agent thread when one is configured."
 
 3. **24/7 Coverage** — "SRE Agent doesn't sleep, doesn't go on vacation, and doesn't need to be paged at 3am. It can run scheduled health checks and alert when something deviates."
 
-4. **Safe Remediation** — "SRE Agent can suggest AND execute fixes — with configurable access levels. Set it to 'Review' mode to require approval, or 'High' access for trusted automation."
+4. **Safe Remediation, verified** — "SRE Agent can suggest AND execute fixes — with configurable access levels — and Mission Control's timeline records approval, denial, or expiry with the approver's identity when available, plus a post-action assertion so a fix is never marked successful without checking."
 
 5. **Azure-Native with OTel + ADX** — "The OpenTelemetry Collector feeds into Application Insights and Azure Data Explorer, giving SRE Agent comprehensive visibility. Combined with Log Analytics and Azure Monitor, there are no blind spots — and no new third-party tools to deploy."
 
 ### Cost Context
 
-> "The full demo environment including SRE Agent runs at about $32–38/day. In production, the SRE Agent cost is a fraction of a single on-call engineer's time."
+> "The full demo environment including SRE Agent runs at about $32–38/day. In production, teams can compare that against their own measured incident response time using the same Incident Evidence Timeline exports — we're not asserting an ROI figure here, only showing you how to measure your own."
 
 ---
 

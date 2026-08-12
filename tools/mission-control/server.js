@@ -16,6 +16,10 @@ const {
 } = require('./security');
 const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
 const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
+const { SCENARIO_MAP, SCENARIO_METADATA } = require('./scenario-catalog');
+const { evaluateScenarioHealth } = require('./scenario-health');
+const { createIncidentStore } = require('./incident-store');
+const { getSreAgentLinks } = require('./sre-agent-links');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -25,23 +29,14 @@ const HOST = process.env.MISSION_CONTROL_HOST || (process.env.MISSION_CONTROL_AL
 const AUTH_TOKEN = process.env.MISSION_CONTROL_AUTH_TOKEN || '';
 const csrfTokenStore = createCsrfTokenStore();
 
-// Scenario file mapping
-const SCENARIO_MAP = {
-  oom: 'oom-killed.yaml',
-  crash: 'crash-loop.yaml',
-  image: 'image-pull-backoff.yaml',
-  cpu: 'high-cpu.yaml',
-  pending: 'pending-pods.yaml',
-  probe: 'probe-failure.yaml',
-  network: 'network-block.yaml',
-  config: 'missing-config.yaml',
-  mongodb: 'mongodb-down.yaml',
-  service: 'service-mismatch.yaml',
-};
-
 // --- Operation Tracking (deploy / destroy / validate) ---
 const operations = new Map();
 const securityState = createSecurityState();
+const incidentStore = createIncidentStore({
+  filePath: path.resolve(__dirname, '.data', 'incidents.json'),
+  onPersistError: (err) => console.error('  ⚠️  Incident timeline persistence error:', err.message),
+});
+
 
 function createOperation(type, label) {
   const id = crypto.randomBytes(4).toString('hex');
@@ -124,6 +119,102 @@ async function az(...args) {
   catch (err) { throw new Error(err.stderr || err.message); }
 }
 
+// --- Incident Timeline: server-authoritative scenario health ---
+
+/** Fetch pods/networkpolicies/endpoints in one shot for scenario health evaluation. Returns null if the cluster is unreachable (never fabricates a health result). */
+async function fetchClusterHealthSnapshot() {
+  const podsRaw = await kubectl('get', 'pods', '-n', 'propane', '-o', 'json').catch(() => null);
+  if (!podsRaw) return null;
+  const [netpolRaw, epRaw] = await Promise.all([
+    kubectl('get', 'networkpolicy', '-n', 'propane', '-o', 'json').catch(() => null),
+    kubectl('get', 'endpoints', '-n', 'propane', '-o', 'json').catch(() => null),
+  ]);
+  return {
+    pods: JSON.parse(podsRaw).items || [],
+    networkPolicies: netpolRaw ? (JSON.parse(netpolRaw).items || []) : [],
+    endpoints: epRaw ? (JSON.parse(epRaw).items || []) : [],
+  };
+}
+
+/** Schedule a one-shot post-action assertion: re-check the scenario's health indicator shortly after a remediation action executes. */
+function schedulePostActionAssertion(correlationId, scenarioId, actionKey, delayMs = 8000) {
+  setTimeout(async () => {
+    try {
+      const snapshot = await fetchClusterHealthSnapshot();
+      if (!snapshot) return; // cluster unreachable this tick; skip rather than fabricate a result
+      const health = evaluateScenarioHealth(scenarioId, snapshot);
+      if (health.active === null) return; // no server-side indicator for this scenario; nothing to assert
+      incidentStore.recordPostActionAssertion(correlationId, {
+        actionKey,
+        passed: !health.active,
+        details: health.reason,
+      });
+    } catch { /* best effort; never throw from a background timer */ }
+  }, delayMs);
+}
+
+/** Record a fully "operator-direct" remediation: proposed, auto-approved (no agent involved), executed, then asserted. */
+function recordOperatorDirectAction(toolName, params, outcome) {
+  const active = incidentStore.getActive();
+  if (!active) return;
+  const actionKey = `${toolName}::${JSON.stringify(params || {})}::${Date.now()}`;
+  incidentStore.proposeAction(active.correlationId, { actionKey, toolName, params, runMode: 'operator-direct' });
+  incidentStore.approveAction(active.correlationId, { actionKey, approver: 'operator (Mission Control UI)' });
+  incidentStore.recordActionResult(active.correlationId, {
+    actionKey,
+    toolName,
+    success: outcome.success,
+    summary: outcome.summary,
+  });
+  if (outcome.success && active.scenarioId) {
+    schedulePostActionAssertion(active.correlationId, active.scenarioId, actionKey);
+  }
+}
+
+/** Periodic poll: detect first impact, organic recovery, and approval expiry for the active incident. Runs only while there is an active incident. */
+const INCIDENT_POLL_INTERVAL_MS = Number(process.env.MISSION_CONTROL_INCIDENT_POLL_MS || 5000);
+async function pollActiveIncident() {
+  const pending = securityState.pendingApproval;
+  if (pending && pending.status === 'pending' && pending.expiresAt <= Date.now()) {
+    incidentStore.sweepExpiredApprovals(Date.now(), [{ actionKey: pending.actionKey, toolName: pending.toolName, expiresAt: pending.expiresAt }]);
+    securityState.pendingApproval = null;
+  }
+
+  const active = incidentStore.getActive();
+  if (!active || !active.scenarioId) return;
+  try {
+    const snapshot = await fetchClusterHealthSnapshot();
+    if (!snapshot) return;
+    const health = evaluateScenarioHealth(active.scenarioId, snapshot);
+    if (health.active === null) return;
+    if (health.active) {
+      incidentStore.recordImpact(active.correlationId, { reason: health.reason, source: 'mission-control-health-poll' });
+      return;
+    }
+    const stored = incidentStore.getIncident(active.correlationId);
+    const hadImpact = stored.milestones.some((m) => m.type === 'impact_detected');
+    if (hadImpact) {
+      incidentStore.recordRecovery(active.correlationId, { reason: health.reason, source: 'mission-control-health-poll' });
+      incidentStore.finalize(active.correlationId, 'recovered', { reason: 'automated health poll confirmed the scenario indicator cleared' });
+    }
+  } catch { /* best effort; the next tick will retry */ }
+}
+const incidentPollTimer = setInterval(pollActiveIncident, INCIDENT_POLL_INTERVAL_MS);
+if (typeof incidentPollTimer.unref === 'function') incidentPollTimer.unref();
+
+/** Best-effort approver identity for the incident timeline. Only meaningful when operator auth is configured; falls back to a generic, honest label otherwise. */
+function resolveApproverIdentity(req) {
+  const authorization = req.get('authorization') || '';
+  if (authorization.startsWith('Basic ')) {
+    try {
+      const decoded = Buffer.from(authorization.slice(6).trim(), 'base64').toString('utf8');
+      const [user] = decoded.split(':');
+      if (user) return user;
+    } catch { /* fall through to generic label */ }
+  }
+  return 'authenticated operator (token)';
+}
+
 function spawnPwsh(op, scriptPath, scriptArgs) {
   const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-File', scriptPath, ...scriptArgs], {
     cwd: REPO_ROOT, env: { ...process.env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -189,9 +280,22 @@ app.get('/api/cluster-info', async (req, res) => {
 // --- Break / Fix Endpoints ---
 
 app.post('/api/break/:scenario', async (req, res) => {
-  const filename = SCENARIO_MAP[req.params.scenario];
-  if (!filename) return res.status(400).json({ error: `Unknown scenario: ${req.params.scenario}` });
-  try { const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'scenarios', filename)); res.json({ success: true, message: out.trim() }); }
+  const scenarioId = req.params.scenario;
+  const filename = SCENARIO_MAP[scenarioId];
+  if (!filename) return res.status(400).json({ error: `Unknown scenario: ${scenarioId}` });
+  try {
+    const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'scenarios', filename));
+    const meta = SCENARIO_METADATA[scenarioId] || {};
+    const incident = incidentStore.activate({
+      scenarioId,
+      scenarioName: meta.name || scenarioId,
+      domain: meta.domain || null,
+      impactedService: meta.impactedService || null,
+      relatedIds: meta.relatedIds || [],
+      runMode: 'operator-direct',
+    });
+    res.json({ success: true, message: out.trim(), correlationId: incident.correlationId });
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -200,14 +304,26 @@ app.post('/api/fix/all', async (req, res) => {
     await kubectl('delete', 'deployment', 'safety-compliance-monitor', '-n', 'propane', '--ignore-not-found');
     await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
     const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml'));
+    recordOperatorDirectAction('fix_all', {}, { success: true, summary: out.trim() });
     res.json({ success: true, message: out.trim() });
   }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) {
+    recordOperatorDirectAction('fix_all', {}, { success: false, summary: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/fix/network', async (req, res) => {
-  try { const out = await kubectl('delete', 'networkpolicy', 'deny-tank-monitor', '-n', 'propane', '--ignore-not-found'); res.json({ success: true, message: out.trim() || 'Network policy removed' }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  try {
+    const out = await kubectl('delete', 'networkpolicy', 'deny-tank-monitor', '-n', 'propane', '--ignore-not-found');
+    const message = out.trim() || 'Network policy removed';
+    recordOperatorDirectAction('fix_network', {}, { success: true, summary: message });
+    res.json({ success: true, message });
+  }
+  catch (err) {
+    recordOperatorDirectAction('fix_network', {}, { success: false, summary: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/fix/extras', async (req, res) => {
@@ -215,9 +331,59 @@ app.post('/api/fix/extras', async (req, res) => {
     const deploymentOut = await kubectl('delete', 'deployment', 'demand-forecast-overload', 'fleet-telemetry-monitor', 'safety-compliance-monitor', 'delivery-zone-config', '-n', 'propane', '--ignore-not-found');
     const configOut = await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
     const message = [deploymentOut, configOut].filter(Boolean).join('\n') || 'Extra deployments and scenario config removed';
+    recordOperatorDirectAction('fix_extras', {}, { success: true, summary: message });
     res.json({ success: true, message });
   }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) {
+    recordOperatorDirectAction('fix_extras', {}, { success: false, summary: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Incident Evidence Timeline API ---
+
+app.get('/api/incidents/active', (req, res) => {
+  const active = incidentStore.getActive();
+  if (!active) return res.json(null);
+  res.json({
+    incident: incidentStore.toRedactedSnapshot(active.correlationId),
+    links: getSreAgentLinks(),
+  });
+});
+
+app.get('/api/incidents', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 10, 50);
+  const recent = incidentStore.listRecent(limit);
+  res.json(recent.map((incident) => ({
+    correlationId: incident.correlationId,
+    scenarioId: incident.scenarioId,
+    scenarioName: incident.scenarioName,
+    createdAt: incident.createdAt,
+    finalState: incident.finalState,
+  })));
+});
+
+app.get('/api/incidents/:correlationId', (req, res) => {
+  const incident = incidentStore.getIncident(req.params.correlationId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  res.json({ incident: incidentStore.toRedactedSnapshot(incident.correlationId), links: getSreAgentLinks() });
+});
+
+app.get('/api/incidents/:correlationId/export.json', (req, res) => {
+  const incident = incidentStore.getIncident(req.params.correlationId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  const snapshot = { ...incidentStore.toRedactedSnapshot(incident.correlationId), links: getSreAgentLinks() };
+  res.setHeader('Content-Disposition', `attachment; filename="${incident.correlationId}.json"`);
+  res.json(snapshot);
+});
+
+app.get('/api/incidents/:correlationId/export.md', (req, res) => {
+  const incident = incidentStore.getIncident(req.params.correlationId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  const markdown = incidentStore.toRedactedMarkdown(incident.correlationId);
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${incident.correlationId}.md"`);
+  res.send(markdown);
 });
 
 // --- Long-Running Operations ---
@@ -311,7 +477,7 @@ let chatHistory = [];
 
 // Helper to create a fresh Copilot session
 async function createCopilotSession() {
-  const tools = createTools(securityState);
+  const tools = createTools(securityState, incidentStore);
   return copilotClient.createSession({
     clientName: 'amerigas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
@@ -333,13 +499,27 @@ app.get('/api/approval/pending', (req, res) => {
 app.post('/api/approval/approve', (req, res) => {
   const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  res.json(approvePendingApproval(securityState, approvalId, { sessionId, actionKey }));
+  const result = approvePendingApproval(securityState, approvalId, { sessionId, actionKey });
+  if (result.success) {
+    const active = incidentStore.getActive();
+    if (active) {
+      incidentStore.approveAction(active.correlationId, { actionKey, approver: resolveApproverIdentity(req) });
+    }
+  }
+  res.json(result);
 });
 
 app.post('/api/approval/deny', (req, res) => {
   const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  res.json(denyPendingApproval(securityState, approvalId, { sessionId, actionKey }));
+  const result = denyPendingApproval(securityState, approvalId, { sessionId, actionKey });
+  if (result.success) {
+    const active = incidentStore.getActive();
+    if (active) {
+      incidentStore.denyAction(active.correlationId, { actionKey, approver: resolveApproverIdentity(req) });
+    }
+  }
+  res.json(result);
 });
 
 app.post('/api/chat', async (req, res) => {

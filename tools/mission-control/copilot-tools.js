@@ -15,24 +15,34 @@ const {
   markTelemetry,
   wrapUntrustedTelemetry,
   validateKubectlArgs,
+  createApprovalSignature,
+  APPROVAL_REQUIRED_TOOLS,
 } = require('./security-policy');
 const { getApprovalContext } = require('./auth');
+const { SCENARIO_MAP } = require('./scenario-catalog');
 
 const execFileAsync = util.promisify(execFile);
 const IS_WIN = process.platform === 'win32';
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
-const SCENARIO_MAP = {
-  oom: 'oom-killed.yaml',
-  crash: 'crash-loop.yaml',
-  image: 'image-pull-backoff.yaml',
-  cpu: 'high-cpu.yaml',
-  pending: 'pending-pods.yaml',
-  probe: 'probe-failure.yaml',
-  network: 'network-block.yaml',
-  config: 'missing-config.yaml',
-  mongodb: 'mongodb-down.yaml',
-  service: 'service-mismatch.yaml',
+// Maps each read-only diagnostic tool to the incident evidence-source
+// category it represents (see incident-timeline.js EVIDENCE_CATEGORIES).
+// `get_nodes` is tagged "metrics" because it includes `kubectl top`; the
+// underlying tool itself falls back gracefully when metrics-server is
+// unavailable, and the incident engine never fabricates a metrics reading
+// when this tool wasn't called at all.
+const EVIDENCE_CATEGORY_BY_TOOL = {
+  get_pods: 'kubernetes',
+  get_pod_logs: 'logs',
+  describe_pod: 'kubernetes',
+  get_events: 'kubernetes',
+  get_deployments: 'kubernetes',
+  get_services: 'kubernetes',
+  get_nodes: 'metrics',
+  get_cluster_health: 'kubernetes',
+  get_cluster_info: 'kubernetes',
+  validate_deployment: 'kubernetes',
+  kubectl_readonly: 'kubernetes',
 };
 
 function runCommand(cmd, args, opts = {}) {
@@ -63,14 +73,76 @@ function safeHandler(fn) {
   };
 }
 
-function createTools(securityState = createSecurityState()) {
+/** If a mutating tool call is gated on approval, record it as a proposed action against the currently active incident (if any). Extracted as a standalone function so it can be unit tested without the Copilot SDK or a live cluster. */
+function recordProposedActionIfActive(incidentStore, gate, toolName, params) {
+  if (!incidentStore || !gate.approvalId) return;
+  const active = incidentStore.getActive();
+  if (!active) return;
+  incidentStore.proposeAction(active.correlationId, {
+    actionKey: gate.actionKey,
+    approvalId: gate.approvalId,
+    toolName,
+    params,
+    runMode: 'agent-assisted:approval-required',
+  });
+}
+
+/** Record the result of a mutating (approval-required) tool call against the currently active incident, if any. */
+function recordActionResultIfActive(incidentStore, toolName, params, outcome) {
+  if (!incidentStore || !APPROVAL_REQUIRED_TOOLS.has(toolName)) return;
+  const active = incidentStore.getActive();
+  if (!active) return;
+  const actionKey = createApprovalSignature(toolName, params || {});
+  incidentStore.recordActionResult(active.correlationId, {
+    actionKey,
+    toolName,
+    success: outcome.success,
+    summary: outcome.summary,
+  });
+}
+
+/** Record a read-only diagnostic tool call as evidence against the currently active incident, if any. */
+function recordEvidenceIfActive(incidentStore, context, toolName, params, result) {
+  if (!incidentStore) return;
+  const active = incidentStore.getActive();
+  if (!active) return;
+  const category = EVIDENCE_CATEGORY_BY_TOOL[toolName] || 'kubernetes';
+  incidentStore.recordEvidence(active.correlationId, {
+    toolName,
+    category,
+    params,
+    callId: `${context.sessionId || 'local'}:${toolName}:${JSON.stringify(params || {})}`,
+    summary: typeof result === 'string' ? result.slice(0, 500) : '',
+  });
+}
+
+function createTools(securityState = createSecurityState(), incidentStore = null) {
   const runTool = async (toolName, params, handler, options = {}) => {
     const context = getApprovalContext();
     const gate = evaluateToolAccess(securityState, toolName, params || {}, context);
-    if (!gate.allowed) return gate.message;
 
-    const result = await handler();
+    if (!gate.allowed) {
+      // A mutating tool that requires approval and hasn't been approved yet
+      // is a "proposed action" against the currently active incident, if
+      // there is one. Recording this here (rather than only at execution
+      // time) is what lets the timeline show denial/expiry even when the
+      // action is never actually executed.
+      recordProposedActionIfActive(incidentStore, gate, toolName, params);
+      return gate.message;
+    }
+
+    let result;
+    try {
+      result = await handler();
+    } catch (err) {
+      recordActionResultIfActive(incidentStore, toolName, params, { success: false, summary: err && err.message ? err.message : String(err) });
+      throw err;
+    }
+
+    recordActionResultIfActive(incidentStore, toolName, params, { success: true, summary: typeof result === 'string' ? result.slice(0, 800) : '' });
+
     if (options.telemetry) {
+      recordEvidenceIfActive(incidentStore, context, toolName, params, result);
       markTelemetry(securityState, toolName);
       return wrapUntrustedTelemetry(result);
     }
@@ -322,6 +394,24 @@ function createTools(securityState = createSecurityState()) {
       }, { telemetry: true }),
     }),
 
+    defineTool('record_incident_root_cause', {
+      description: 'Record the root cause you have identified for the currently active Mission Control incident, once you are confident based on the evidence you gathered. This only updates the incident evidence timeline — it does not change the cluster and never requires approval. If there is no active incident, it has no effect.',
+      parameters: {
+        type: 'object',
+        properties: {
+          statement: { type: 'string', description: 'A concise root-cause statement, e.g. "tank-monitor memory limit (16Mi) is too low for peak IoT ingestion, causing OOMKilled restarts."' },
+        },
+        required: ['statement'],
+      },
+      handler: async ({ statement }) => runTool('record_incident_root_cause', { statement }, async () => {
+        if (!incidentStore) return 'The incident evidence timeline is not configured in this session.';
+        const active = incidentStore.getActive();
+        if (!active) return 'There is no active incident to attach a root cause to.';
+        incidentStore.recordRootCause(active.correlationId, { statement, assertedBy: 'agent' });
+        return `Root cause recorded for incident ${active.correlationId}.`;
+      }),
+    }),
+
     defineTool('kubectl_readonly', {
       description: 'Run a safe, read-only kubectl command from an allowlist. The tool only permits diagnostic operations such as get/describe/logs/top/config current-context.',
       parameters: {
@@ -396,4 +486,10 @@ function createTools(securityState = createSecurityState()) {
   }));
 }
 
-module.exports = { createTools };
+module.exports = {
+  createTools,
+  EVIDENCE_CATEGORY_BY_TOOL,
+  recordProposedActionIfActive,
+  recordActionResultIfActive,
+  recordEvidenceIfActive,
+};
