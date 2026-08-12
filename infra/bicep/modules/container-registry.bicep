@@ -21,8 +21,8 @@ param tags object
 ])
 param sku string = 'Basic'
 
-@description('Enable admin user for local development')
-param adminUserEnabled bool = true
+@description('Enable admin user for registry authentication. Disabled by default — use managed identity (AcrPull role) instead of shared admin credentials.')
+param adminUserEnabled bool = false
 
 // =============================================================================
 // RESOURCES

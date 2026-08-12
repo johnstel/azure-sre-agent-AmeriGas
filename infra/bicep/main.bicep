@@ -288,7 +288,6 @@ output aksClusterFqdn string = aks.outputs.aksFqdn
 output acrLoginServer string = containerRegistry.outputs.loginServer
 output logAnalyticsWorkspaceId string = logAnalytics.outputs.workspaceId
 output appInsightsId string = appInsights.outputs.appInsightsId
-output appInsightsConnectionString string = appInsights.outputs.connectionString
 output keyVaultUri string = keyVault.outputs.vaultUri
 output grafanaDashboardUrl string = deployObservability ? observability!.outputs.grafanaEndpoint : ''
 output azureMonitorWorkspaceId string = deployObservability ? observability!.outputs.azureMonitorWorkspaceId : ''
