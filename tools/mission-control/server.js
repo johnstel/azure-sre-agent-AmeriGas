@@ -79,8 +79,8 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/') && !isLocalRequest(req)) {
     const token = req.get('x-mission-control-token') || req.headers['x-mission-control-token'];
-    if (AUTH_TOKEN && token !== AUTH_TOKEN) return res.status(401).json({ error: 'Authentication required for privileged operations' });
     if (!AUTH_TOKEN) return res.status(403).json({ error: 'Remote access is disabled by default. Configure MISSION_CONTROL_AUTH_TOKEN to enable it.' });
+    if (token !== AUTH_TOKEN) return res.status(401).json({ error: 'Authentication required for privileged operations' });
   }
 
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();

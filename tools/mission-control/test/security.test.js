@@ -33,6 +33,34 @@ test('csrf tokens are single-use and loopback origins are allowed', () => {
   assert.equal(isLocalRequest(req), true);
 });
 
+test('getAllowedOrigin accepts IPv4-mapped loopback origins and rejects non-loopback 127 addresses', () => {
+  const loopbackReq = {
+    get(name) {
+      if (name === 'origin') return 'http://[::ffff:127.0.0.1]:3000';
+      if (name === 'host') return '[::1]:3000';
+      return null;
+    },
+    hostname: '::1',
+    socket: { remoteAddress: '::1' },
+    headers: {},
+  };
+
+  assert.equal(getAllowedOrigin(loopbackReq), 'http://[::ffff:127.0.0.1]:3000');
+
+  const nonLoopbackReq = {
+    get(name) {
+      if (name === 'origin') return 'http://127.0.0.2:3000';
+      if (name === 'host') return '127.0.0.2:3000';
+      return null;
+    },
+    hostname: '127.0.0.2',
+    socket: { remoteAddress: '127.0.0.2' },
+    headers: {},
+  };
+
+  assert.equal(getAllowedOrigin(nonLoopbackReq), null);
+});
+
 test('isLocalRequest ignores forwarded headers and only trusts the socket peer address', () => {
   const headerCases = [
     ['x-forwarded-for', '127.0.0.1'],
@@ -60,6 +88,8 @@ test('isLocalRequest accepts IPv4 and IPv6 loopback addresses only', () => {
   for (const address of loopbackAddresses) {
     assert.equal(isLocalRequest({ socket: { remoteAddress: address }, connection: {}, headers: {} }), true, `${address} should be treated as loopback`);
   }
+
+  assert.equal(isLocalRequest({ socket: { remoteAddress: '::ffff:7f00:1' }, connection: {}, headers: {} }), true, '::ffff:7f00:1 should be treated as loopback');
 
   const nonLoopbackAddresses = ['127.0.0.2', '::2', '2001:db8::1'];
   for (const address of nonLoopbackAddresses) {

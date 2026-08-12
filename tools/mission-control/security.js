@@ -4,6 +4,23 @@ const KUBERNETES_NAME_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$/;
 const RESOURCE_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,61}$/;
 const WORKLOAD_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{2,9})$/;
 
+function normalizeHostInput(value) {
+  if (typeof value !== 'string') return null;
+
+  let normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized.startsWith('[')) {
+    const end = normalized.indexOf(']');
+    if (end === -1) return null;
+    normalized = normalized.slice(1, end);
+  } else if ((normalized.match(/:/g) || []).length === 1) {
+    normalized = normalized.split(':')[0];
+  }
+
+  return normalized.split('%')[0];
+}
+
 function isIpv4Loopback(address) {
   if (typeof address !== 'string') return false;
   const normalized = address.trim();
@@ -13,22 +30,40 @@ function isIpv4Loopback(address) {
   return octets[0] === 127 && octets[1] === 0 && octets[2] === 0 && octets[3] === 1;
 }
 
-function normalizeLoopbackAddress(address) {
-  if (typeof address !== 'string') return null;
+function parseIpv4MappedLoopback(address) {
+  const prefixes = ['::ffff:', '0:0:0:0:0:ffff:'];
+  for (const prefix of prefixes) {
+    if (!address.startsWith(prefix)) continue;
 
-  const trimmed = address.trim();
-  if (!trimmed) return null;
+    const tail = address.slice(prefix.length);
+    if (tail.includes('.')) {
+      return isIpv4Loopback(tail) ? '127.0.0.1' : null;
+    }
 
-  const bracketless = trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
-  const withoutZone = bracketless.split('%')[0];
+    const parts = tail.split(':');
+    if (parts.length !== 2) return null;
 
-  if (withoutZone.startsWith('::ffff:')) {
-    const ipv4 = withoutZone.slice(7);
+    const hi = Number.parseInt(parts[0], 16);
+    const lo = Number.parseInt(parts[1], 16);
+    if ([hi, lo].some((part) => Number.isNaN(part) || part < 0 || part > 0xffff)) return null;
+
+    const ipv4 = `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
     return isIpv4Loopback(ipv4) ? '127.0.0.1' : null;
   }
 
-  if (withoutZone === '::1' || withoutZone === '0:0:0:0:0:0:0:1') return '::1';
-  if (isIpv4Loopback(withoutZone)) return withoutZone;
+  return null;
+}
+
+function normalizeLoopbackAddress(address) {
+  const normalized = normalizeHostInput(address);
+  if (!normalized) return null;
+
+  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return '::1';
+
+  const mappedLoopback = parseIpv4MappedLoopback(normalized);
+  if (mappedLoopback) return mappedLoopback;
+
+  if (isIpv4Loopback(normalized)) return normalized;
   return null;
 }
 
@@ -37,11 +72,10 @@ function isLoopbackAddress(address) {
 }
 
 function isLoopbackHostname(hostname) {
-  if (typeof hostname !== 'string') return false;
-  const normalized = hostname.toLowerCase().trim();
+  const normalized = normalizeHostInput(hostname);
   if (!normalized) return false;
-  if (normalized === 'localhost' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
-  return normalized === '127.0.0.1' || normalized.startsWith('127.');
+  if (normalized === 'localhost') return true;
+  return Boolean(normalizeLoopbackAddress(normalized));
 }
 
 function isLocalRequest(req) {
@@ -55,9 +89,15 @@ function getAllowedOrigin(req) {
 
   try {
     const parsed = new URL(origin);
-    const host = req.get('host') || '';
-    const isSameHost = parsed.hostname === (req.hostname || '') || parsed.hostname === host.split(':')[0] || isLoopbackHostname(parsed.hostname);
-    return isSameHost ? origin : null;
+    const originHost = normalizeHostInput(parsed.hostname);
+    if (!originHost) return null;
+
+    const requestHosts = [req.hostname, req.get('host')].map(normalizeHostInput).filter(Boolean);
+    const isLoopbackOrigin = isLoopbackHostname(originHost);
+    const isSameHost = requestHosts.includes(originHost) && !originHost.startsWith('127.');
+    const isSameLoopback = isLoopbackOrigin && requestHosts.some(isLoopbackHostname);
+    const allowed = isSameHost || isSameLoopback;
+    return allowed ? origin : null;
   } catch {
     return null;
   }
