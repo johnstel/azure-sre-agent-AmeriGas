@@ -588,6 +588,49 @@ data:
     function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
     function randF(a,b){return+(Math.random()*(b-a)+a).toFixed(2);}
     function fmt(n){return n.toLocaleString();}
+    var PortalHealthState = (typeof window !== 'undefined' && window.PortalHealthState) || (function () {
+      function normalizeServiceState(service) {
+        if (!service) return { ok: true, code: 'unknown', degraded: false, name: 'Service' };
+        if (typeof service.ok === 'boolean') {
+          return { ok: service.ok, code: service.code || service.status || (service.ok ? 200 : 500), degraded: !service.ok, name: service.name || 'Service' };
+        }
+        var numericStatus = Number(service.status || service.code || 0);
+        var ok = service.status === undefined && service.code === undefined ? true : numericStatus >= 200 && numericStatus < 500;
+        return { ok: ok, code: numericStatus || 'unknown', degraded: !ok, name: service.name || 'Service' };
+      }
+      function isStale(updatedAt, staleAfterMs) {
+        if (!updatedAt) return false;
+        var timestamp = new Date(updatedAt).getTime();
+        if (Number.isNaN(timestamp)) return false;
+        return Date.now() - timestamp > (staleAfterMs || 30000);
+      }
+      function derivePortalState(serviceResults, portalName, staleAfterMs) {
+        var serviceResultsSafe = serviceResults || {};
+        var results = {
+          inventory: normalizeServiceState(serviceResultsSafe.inventory),
+          tank: normalizeServiceState(serviceResultsSafe.tank),
+          orders: normalizeServiceState(serviceResultsSafe.orders),
+          mongodb: serviceResultsSafe.mongodb ? normalizeServiceState(serviceResultsSafe.mongodb) : { ok: true, code: 200, degraded: false, name: 'MongoDB' },
+          rabbitmq: serviceResultsSafe.rabbitmq ? normalizeServiceState(serviceResultsSafe.rabbitmq) : { ok: true, code: 200, degraded: false, name: 'RabbitMQ' }
+        };
+        var derivedMongoOk = results.inventory.ok && results.orders.ok && !results.mongodb.degraded;
+        var derivedRabbitOk = results.tank.ok && results.orders.ok && !results.rabbitmq.degraded;
+        results.mongodb = Object.assign({}, results.mongodb, { ok: derivedMongoOk, degraded: !derivedMongoOk, code: derivedMongoOk ? 200 : 503 });
+        results.rabbitmq = Object.assign({}, results.rabbitmq, { ok: derivedRabbitOk, degraded: !derivedRabbitOk, code: derivedRabbitOk ? 200 : 503 });
+        var relevantKeys = portalName === 'customer' ? ['inventory', 'tank', 'mongodb', 'rabbitmq'] : ['orders', 'mongodb', 'rabbitmq', 'tank'];
+        var lastUpdated = serviceResults && serviceResults.updatedAt ? serviceResults.updatedAt : new Date().toISOString();
+        var stale = isStale(lastUpdated, staleAfterMs);
+        var degraded = relevantKeys.some(function (key) { return results[key].degraded; }) || stale;
+        var status = degraded ? 'degraded' : 'healthy';
+        var state = { status: status, degraded: degraded, stale: stale, lastUpdated: lastUpdated, message: degraded ? 'Customer-facing data is temporarily delayed while the propane platform reconnects.' : 'Live operational data is current.', services: results };
+        if (portalName === 'dispatch') {
+          state.message = degraded ? 'Operations data is temporarily delayed while the dispatch pipeline recovers.' : 'Live dispatch telemetry is current.';
+        }
+        return state;
+      }
+      return { normalizeServiceState: normalizeServiceState, isStale: isStale, derivePortalState: derivePortalState };
+    }());
+    if (typeof window !== 'undefined') { window.PortalHealthState = PortalHealthState; }
     var LAST_KNOWN_METRICS=null;
     var LAST_KNOWN_LOCATIONS=null;
     var LAST_KNOWN_USAGE=null;
@@ -797,20 +840,21 @@ data:
         var inventory=results[0];
         var tank=results[1];
         var orders=results[2];
-        var mongoHealthy = inventory.ok && orders.ok;
-        var rabbitHealthy = tank.ok && orders.ok;
-        var healthy = inventory.ok && tank.ok && orders.ok && mongoHealthy && rabbitHealthy;
-        var detail = healthy ? 'All platform services are healthy.' : 'Customer-facing data is temporarily delayed while recovery proceeds.';
-        if(!healthy){
-          detail = 'Customer-safe status: some operational data is temporarily delayed while our propane platform reconnects.';
-        }
-        applyOperationalState({ healthy: healthy, message: detail, lastUpdated: new Date().toISOString() });
+        var state = PortalHealthState.derivePortalState({
+          inventory: inventory,
+          tank: tank,
+          orders: orders,
+          updatedAt: new Date().toISOString()
+        }, 'customer', 30000);
+        var healthy = !state.degraded;
+        var detail = state.message;
+        applyOperationalState({ healthy: healthy, message: detail, lastUpdated: state.lastUpdated });
         var serviceRows=[
           {name:'Inventory Service',ok:inventory.ok,status:'Healthy',detail:inventory.ok ? 'Inventory service responding normally.' : 'HTTP ' + inventory.status},
           {name:'Tank Monitor',ok:tank.ok,status:'Healthy',detail:tank.ok ? 'Tank telemetry stream is online.' : 'HTTP ' + tank.status},
           {name:'Order Service',ok:orders.ok,status:'Healthy',detail:orders.ok ? 'Order flow is matching demand.' : 'HTTP ' + orders.status},
-          {name:'MongoDB',ok:mongoHealthy,status:'Healthy',detail:mongoHealthy ? 'MongoDB dependency is healthy.' : 'Dependency issue detected; data refresh is delayed.'},
-          {name:'RabbitMQ',ok:rabbitHealthy,status:'Healthy',detail:rabbitHealthy ? 'RabbitMQ dependency is healthy.' : 'Dependency issue detected; event flow is degraded.'}
+          {name:'MongoDB',ok:!state.services.mongodb.degraded,status:'Healthy',detail:state.services.mongodb.degraded ? 'Dependency issue detected; data refresh is delayed.' : 'MongoDB dependency is healthy.'},
+          {name:'RabbitMQ',ok:!state.services.rabbitmq.degraded,status:'Healthy',detail:state.services.rabbitmq.degraded ? 'Dependency issue detected; event flow is degraded.' : 'RabbitMQ dependency is healthy.'}
         ];
         serviceRows.forEach(function(svc){
           var card=document.createElement('div');
@@ -1154,7 +1198,50 @@ data:
     let locationData = [];
     let LAST_KNOWN_LOCATION_DATA = [];
     let DISPATCH_STATE = { healthy: true, message: 'Live dispatch telemetry is current.', lastUpdated: new Date().toISOString() };
- 
+    const PortalHealthState = (typeof window !== 'undefined' && window.PortalHealthState) || (function () {
+      function normalizeServiceState(service) {
+        if (!service) return { ok: true, code: 'unknown', degraded: false, name: 'Service' };
+        if (typeof service.ok === 'boolean') {
+          return { ok: service.ok, code: service.code || service.status || (service.ok ? 200 : 500), degraded: !service.ok, name: service.name || 'Service' };
+        }
+        var numericStatus = Number(service.status || service.code || 0);
+        var ok = service.status === undefined && service.code === undefined ? true : numericStatus >= 200 && numericStatus < 500;
+        return { ok: ok, code: numericStatus || 'unknown', degraded: !ok, name: service.name || 'Service' };
+      }
+      function isStale(updatedAt, staleAfterMs) {
+        if (!updatedAt) return false;
+        var timestamp = new Date(updatedAt).getTime();
+        if (Number.isNaN(timestamp)) return false;
+        return Date.now() - timestamp > (staleAfterMs || 30000);
+      }
+      function derivePortalState(serviceResults, portalName, staleAfterMs) {
+        var serviceResultsSafe = serviceResults || {};
+        var results = {
+          inventory: normalizeServiceState(serviceResultsSafe.inventory),
+          tank: normalizeServiceState(serviceResultsSafe.tank),
+          orders: normalizeServiceState(serviceResultsSafe.orders),
+          mongodb: serviceResultsSafe.mongodb ? normalizeServiceState(serviceResultsSafe.mongodb) : { ok: true, code: 200, degraded: false, name: 'MongoDB' },
+          rabbitmq: serviceResultsSafe.rabbitmq ? normalizeServiceState(serviceResultsSafe.rabbitmq) : { ok: true, code: 200, degraded: false, name: 'RabbitMQ' }
+        };
+        var derivedMongoOk = results.inventory.ok && results.orders.ok && !results.mongodb.degraded;
+        var derivedRabbitOk = results.tank.ok && results.orders.ok && !results.rabbitmq.degraded;
+        results.mongodb = Object.assign({}, results.mongodb, { ok: derivedMongoOk, degraded: !derivedMongoOk, code: derivedMongoOk ? 200 : 503 });
+        results.rabbitmq = Object.assign({}, results.rabbitmq, { ok: derivedRabbitOk, degraded: !derivedRabbitOk, code: derivedRabbitOk ? 200 : 503 });
+        var relevantKeys = portalName === 'customer' ? ['inventory', 'tank', 'mongodb', 'rabbitmq'] : ['orders', 'mongodb', 'rabbitmq', 'tank'];
+        var lastUpdated = serviceResults && serviceResults.updatedAt ? serviceResults.updatedAt : new Date().toISOString();
+        var stale = isStale(lastUpdated, staleAfterMs);
+        var degraded = relevantKeys.some(function (key) { return results[key].degraded; }) || stale;
+        var status = degraded ? 'degraded' : 'healthy';
+        var state = { status: status, degraded: degraded, stale: stale, lastUpdated: lastUpdated, message: degraded ? 'Customer-facing data is temporarily delayed while the propane platform reconnects.' : 'Live operational data is current.', services: results };
+        if (portalName === 'dispatch') {
+          state.message = degraded ? 'Operations data is temporarily delayed while the dispatch pipeline recovers.' : 'Live dispatch telemetry is current.';
+        }
+        return state;
+      }
+      return { normalizeServiceState: normalizeServiceState, isStale: isStale, derivePortalState: derivePortalState };
+    }());
+    if (typeof window !== 'undefined') { window.PortalHealthState = PortalHealthState; }
+
     function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
     function randF(min, max) { return +(min + Math.random() * (max - min)).toFixed(1); }
  
@@ -1349,19 +1436,19 @@ data:
         const inventory = results[0];
         const tank = results[1];
         const orders = results[2];
-        const mongoHealthy = inventory.ok && orders.ok;
-        const rabbitHealthy = tank.ok && orders.ok;
-        const healthy = inventory.ok && tank.ok && orders.ok && mongoHealthy && rabbitHealthy;
-        const message = healthy
-          ? 'Live dispatch telemetry is current.'
-          : 'Operations data is temporarily delayed while the platform reconnects.';
-        applyDispatchState(healthy, message, new Date().toISOString());
+        const state = PortalHealthState.derivePortalState({
+          inventory: inventory,
+          tank: tank,
+          orders: orders,
+          updatedAt: new Date().toISOString()
+        }, 'dispatch', 30000);
+        applyDispatchState(!state.degraded, state.message, state.lastUpdated);
         const svcs = [
           { name: 'Inventory Service', ok: inventory.ok, detail: inventory.ok ? 'Inventory stream responding normally.' : 'HTTP ' + inventory.status },
           { name: 'Tank Monitor', ok: tank.ok, detail: tank.ok ? 'Tank telemetry is flowing.' : 'HTTP ' + tank.status },
           { name: 'Order Service', ok: orders.ok, detail: orders.ok ? 'Orders flow is normal.' : 'HTTP ' + orders.status },
-          { name: 'MongoDB', ok: mongoHealthy, detail: mongoHealthy ? 'MongoDB dependency is healthy.' : 'Dependency issue detected; stale dashboard values are being shown.' },
-          { name: 'RabbitMQ', ok: rabbitHealthy, detail: rabbitHealthy ? 'RabbitMQ dependency is healthy.' : 'Dependency issue detected; queue-driven updates are delayed.' },
+          { name: 'MongoDB', ok: !state.services.mongodb.degraded, detail: state.services.mongodb.degraded ? 'Dependency issue detected; stale dashboard values are being shown.' : 'MongoDB dependency is healthy.' },
+          { name: 'RabbitMQ', ok: !state.services.rabbitmq.degraded, detail: state.services.rabbitmq.degraded ? 'Dependency issue detected; queue-driven updates are delayed.' : 'RabbitMQ dependency is healthy.' },
         ];
         svcs.forEach(svc => {
           const card = document.createElement('div');
