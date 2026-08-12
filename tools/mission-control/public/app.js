@@ -744,11 +744,26 @@ async function startValidate() {
   }
 }
 
+/**
+ * Cancels the in-progress operation. The decision logic for interpreting
+ * the server's response — including the "cancellation lost the race,
+ * never fabricate success" behavior — lives in the standalone,
+ * unit-tested cancel-response.js module so it can be verified without a
+ * real browser DOM.
+ */
 async function cancelOperation() {
   if (!currentOpId) return;
+  const opId = currentOpId;
   try {
-    await apiClient.request('operations/' + currentOpId, { method: 'DELETE' });
-    toast('Operation cancelled');
+    const response = await apiClient.request('operations/' + opId, { method: 'DELETE' });
+    let data = null;
+    try { data = await response.json(); } catch { /* non-JSON body; interpretCancelOperationResponse falls back to a generic truthful message */ }
+
+    const result = window.MissionControlCancelResponse.interpretCancelOperationResponse({ ok: response.ok, status: response.status, data });
+    toast(result.toastMessage, result.toastType);
+    if (result.terminalInfo && currentOpId === opId) {
+      handleTerminalOperation(result.terminalInfo);
+    }
   } catch (e) {
     toast('Cancel failed: ' + e.message, 'error');
   }

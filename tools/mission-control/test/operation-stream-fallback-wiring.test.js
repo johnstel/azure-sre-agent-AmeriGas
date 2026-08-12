@@ -118,10 +118,10 @@ test('closeTerminal() and streamOperation() both stop any in-flight operation po
   assert.match(streamOperationBody, /currentOperationPoller[\s\S]*?\.stop\(\)/);
 });
 
-test('cancelOperation() is unchanged: still cancels via the authenticated apiClient DELETE and works regardless of whether EventSource or polling is currently active', () => {
+test('cancelOperation() still cancels via the authenticated apiClient DELETE (now using a captured opId rather than reading currentOpId a second time, to avoid a race if the tracked operation changes while the request is in flight)', () => {
   const js = readPublic('app.js');
   const cancelBody = extractFunctionBody(js, /async function cancelOperation\(\)\s*\{/);
-  assert.match(cancelBody, /apiClient\.request\(\s*['"]operations\/['"]\s*\+\s*currentOpId\s*,\s*\{\s*method:\s*['"]DELETE['"]/);
+  assert.match(cancelBody, /apiClient\.request\(\s*['"]operations\/['"]\s*\+\s*opId\s*,\s*\{\s*method:\s*['"]DELETE['"]/);
 });
 
 test('server.js routes operation finalization/cancellation through the guarded operation-lifecycle module, never mutating op.status inline — this is what makes a truthful "cancelled" outcome sticky against a late child-process close/error event', () => {

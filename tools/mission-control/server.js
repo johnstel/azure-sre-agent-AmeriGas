@@ -473,7 +473,13 @@ app.get('/api/operations/:id/stream', (req, res) => {
 app.delete('/api/operations/:id', (req, res) => {
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
-  if (op.status !== 'running') return res.json({ message: 'Already finished' });
+  // Every response includes a structured `cancelled` boolean plus the
+  // operation's current, truthful `status`/`exitCode`, in addition to
+  // the legacy `message` string, so callers can branch on explicit
+  // fields instead of parsing message text — brittle, and easy to
+  // misinterpret as success. `cancelled: true` is returned if and only
+  // if this exact request actually won the cancellation race.
+  if (op.status !== 'running') return res.json({ message: 'Already finished', cancelled: false, status: op.status, exitCode: op.exitCode });
   if (op.childExited) {
     // The underlying child process has already genuinely exited (Node's
     // 'exit'/'error' event already fired) even though 'close' — and
@@ -481,7 +487,7 @@ app.delete('/api/operations/:id', (req, res) => {
     // yet. Don't kill an already-dead process or attempt a cancellation;
     // the real outcome is already determined and about to be recorded
     // truthfully.
-    return res.json({ message: 'Already finished' });
+    return res.json({ message: 'Already finished', cancelled: false, status: op.status, exitCode: op.exitCode });
   }
   // Capture the process reference and attempt the transition FIRST.
   // cancelOperation() atomically decides whether cancellation wins
@@ -492,9 +498,9 @@ app.delete('/api/operations/:id', (req, res) => {
   // this ordering guarantees the log can never claim a cancellation that
   // didn't truly happen.
   const process = op.process;
-  if (!operationLifecycle.cancelOperation(op)) return res.json({ message: 'Already finished' });
+  if (!operationLifecycle.cancelOperation(op)) return res.json({ message: 'Already finished', cancelled: false, status: op.status, exitCode: op.exitCode });
   if (process) process.kill('SIGTERM');
-  res.json({ message: 'Cancelled' });
+  res.json({ message: 'Cancelled', cancelled: true, status: op.status, exitCode: op.exitCode });
 });
 
 app.post('/api/deploy', (req, res) => {
