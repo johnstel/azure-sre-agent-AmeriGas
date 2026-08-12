@@ -250,10 +250,33 @@ test('sweepExpiredApprovals marks unresolved proposals expired without double-re
   const incident = engine.activate({ scenarioId: 'crash' });
   engine.proposeAction(incident.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all' });
 
-  engine.sweepExpiredApprovals(Date.now() + 1, [{ actionKey: 'fix_all::{}', toolName: 'fix_all', expiresAt: Date.now() }]);
+  engine.sweepExpiredApprovals(Date.now() + 1, [{ actionKey: 'fix_all::{}', toolName: 'fix_all', expiresAt: Date.now(), incidentCorrelationId: incident.correlationId }]);
 
   const stored = engine.getIncident(incident.correlationId);
   assert.equal(stored.finalState, FINAL_STATE.EXPIRED);
+});
+
+test('sweepExpiredApprovals only targets the exact bound incidentCorrelationId, never scanning other incidents by actionKey collision', () => {
+  const engine = createIncidentTimelineEngine();
+  const incidentA = engine.activate({ scenarioId: 'crash' });
+  engine.proposeAction(incidentA.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all' });
+  engine.finalize(incidentA.correlationId, FINAL_STATE.DENIED, {});
+
+  const incidentB = engine.activate({ scenarioId: 'oom' });
+  // Coincidentally the same actionKey string as incident A's (same tool + identical params).
+  engine.proposeAction(incidentB.correlationId, { actionKey: 'fix_all::{}', toolName: 'fix_all' });
+
+  // A sweep entry with no incidentCorrelationId must never fall back to scanning all incidents.
+  engine.sweepExpiredApprovals(Date.now() + 1, [{ actionKey: 'fix_all::{}', toolName: 'fix_all', expiresAt: Date.now() }]);
+  assert.equal(engine.getIncident(incidentB.correlationId).finalState, null, 'an unbound sweep entry must not expire an unrelated incident sharing the same actionKey');
+
+  // A sweep entry bound to incident A (already terminal) must not affect incident B either.
+  engine.sweepExpiredApprovals(Date.now() + 1, [{ actionKey: 'fix_all::{}', toolName: 'fix_all', expiresAt: Date.now(), incidentCorrelationId: incidentA.correlationId }]);
+  assert.equal(engine.getIncident(incidentB.correlationId).finalState, null, 'a sweep entry bound to a different (terminal) incident must not expire this one');
+
+  // Only a sweep entry bound to incident B's own correlationId expires it.
+  engine.sweepExpiredApprovals(Date.now() + 1, [{ actionKey: 'fix_all::{}', toolName: 'fix_all', expiresAt: Date.now(), incidentCorrelationId: incidentB.correlationId }]);
+  assert.equal(engine.getIncident(incidentB.correlationId).finalState, FINAL_STATE.EXPIRED);
 });
 
 test('approveAction/denyAction/expireAction/recordActionResult are safe no-ops for an actionKey never proposed on that incident', () => {
@@ -439,4 +462,82 @@ test('an organic health-poll recovery (no action ever proposed) still finalizes 
 
   const stored = engine.getIncident(incident.correlationId);
   assert.equal(stored.finalState, FINAL_STATE.RECOVERED);
+});
+
+test('schedulePendingAssertion persists a descriptor that listUnresolvedPendingAssertions can rehydrate, and is idempotent per actionKey', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  const dueAt = Date.now() + 8000;
+
+  const entry = engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'fix_all::{}', scenarioId: 'oom', dueAt });
+  assert.equal(entry.actionKey, 'fix_all::{}');
+  assert.equal(entry.resolved, false);
+  assert.equal(entry.attempts, 0);
+
+  // Scheduling the same actionKey again must not create a duplicate descriptor.
+  const again = engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'fix_all::{}', scenarioId: 'oom', dueAt: dueAt + 5000 });
+  assert.equal(again.dueAt, entry.dueAt, 'a duplicate schedule call for the same actionKey must be a no-op, not overwrite the due time');
+
+  const unresolved = engine.listUnresolvedPendingAssertions();
+  assert.equal(unresolved.length, 1);
+  assert.equal(unresolved[0].correlationId, incident.correlationId);
+  assert.equal(unresolved[0].actionKey, 'fix_all::{}');
+});
+
+test('recordPostActionAssertion resolves the matching pending-assertion descriptor', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'fix_all::{}', scenarioId: 'oom', dueAt: Date.now() + 1000 });
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 1);
+
+  engine.recordPostActionAssertion(incident.correlationId, { actionKey: 'fix_all::{}', passed: true, details: 'recovered' });
+
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 0, 'the pending descriptor must be resolved once the assertion actually runs');
+});
+
+test('bumpPendingAssertionAttempt tracks retry attempts and pushes the due time out, without resolving the descriptor', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'fix_all::{}', scenarioId: 'oom', dueAt: Date.now() + 1000 });
+
+  const newDueAt = Date.now() + 6000;
+  const bumped = engine.bumpPendingAssertionAttempt(incident.correlationId, 'fix_all::{}', { dueAt: newDueAt });
+  assert.equal(bumped.attempts, 1);
+  assert.equal(new Date(bumped.dueAt).getTime(), new Date(newDueAt).getTime());
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 1, 'bumping an attempt must not resolve the descriptor');
+
+  const bumpedAgain = engine.bumpPendingAssertionAttempt(incident.correlationId, 'fix_all::{}', {});
+  assert.equal(bumpedAgain.attempts, 2);
+});
+
+test('finalize clears all pending-assertion descriptors for a terminal incident', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'mongodb' });
+  engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'fix_network::{}', scenarioId: 'mongodb', dueAt: Date.now() + 8000 });
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 1);
+
+  // The run is denied via a completely separate path before the scheduled assertion ever runs.
+  engine.finalize(incident.correlationId, FINAL_STATE.DENIED, { reason: 'test' });
+
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 0, 'a terminal incident must never retain an unresolved pending assertion');
+});
+
+test('schedulePendingAssertion, bumpPendingAssertionAttempt, and resolvePendingAssertion are safe no-ops on a terminal incident', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  engine.finalize(incident.correlationId, FINAL_STATE.RECOVERED, {});
+
+  assert.equal(engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'late::{}', dueAt: Date.now() }), null);
+  assert.equal(engine.bumpPendingAssertionAttempt(incident.correlationId, 'late::{}', {}), null);
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 0);
+});
+
+test('listUnresolvedPendingAssertions excludes terminal incidents even if their descriptors were never explicitly resolved', () => {
+  const engine = createIncidentTimelineEngine({ clock: () => 1_700_000_000_000 });
+  const incident = engine.activate({ scenarioId: 'oom' });
+  engine.schedulePendingAssertion(incident.correlationId, { actionKey: 'fix_all::{}', scenarioId: 'oom', dueAt: 1_700_000_010_000 });
+  // finalize() itself resolves pending descriptors, but this test guards the
+  // listing function's own terminal filter too, independent of that.
+  engine.finalize(incident.correlationId, FINAL_STATE.FAILED, {});
+  assert.equal(engine.listUnresolvedPendingAssertions().length, 0);
 });

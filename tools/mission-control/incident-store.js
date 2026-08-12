@@ -30,6 +30,9 @@ const MUTATING_METHODS = [
   'recordActionResult',
   'recordPostActionAssertion',
   'recordRecovery',
+  'schedulePendingAssertion',
+  'bumpPendingAssertionAttempt',
+  'resolvePendingAssertion',
   'finalize',
   'sweepExpiredApprovals',
 ];

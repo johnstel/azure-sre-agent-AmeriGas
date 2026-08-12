@@ -12,12 +12,20 @@ const { withApprovalContext } = require('../auth');
 const { createIncidentTimelineEngine } = require('../incident-timeline');
 
 /** Drive an approval-required tool through its full propose -> approve -> execute cycle for tests, returning the final handler response. */
-async function runApprovedTool(tool, securityState, params, sessionId = 'test-session') {
+async function runApprovedTool(tool, securityState, params, incidentStore, sessionId = 'test-session') {
   const firstResponse = await withApprovalContext({ sessionId }, () => tool.handler(params));
   const pending = securityState.pendingApproval;
   if (!pending) throw new Error(`Expected ${tool.name} to require approval, but no pending approval was recorded. First response: ${firstResponse}`);
-  const approval = approvePendingApproval(securityState, pending.id, { sessionId, actionKey: pending.actionKey });
+  // Mirrors what the real /api/approval/approve route does: pass the
+  // incidentCorrelationId the approval was actually proposed against (the
+  // route reads the CURRENT active incident and lets security-policy.js
+  // validate it matches what was stored at proposal time), then record the
+  // approval against that exact incident too.
+  const approval = approvePendingApproval(securityState, pending.id, { sessionId, actionKey: pending.actionKey, incidentCorrelationId: pending.incidentCorrelationId });
   if (!approval.success) throw new Error(`Failed to approve ${tool.name} in test harness: ${approval.reason}`);
+  if (incidentStore && approval.incidentCorrelationId) {
+    incidentStore.approveAction(approval.incidentCorrelationId, { actionKey: pending.actionKey, approver: 'test-operator' });
+  }
   return withApprovalContext({ sessionId }, () => tool.handler(params));
 }
 
@@ -152,7 +160,7 @@ test('deploy_infrastructure records a FAILED action result when the script fails
   const tool = tools.find((t) => t.name === 'deploy_infrastructure');
   assert.ok(tool, 'deploy_infrastructure must be registered');
 
-  const finalResponse = await runApprovedTool(tool, securityState, { location: 'eastus2' });
+  const finalResponse = await runApprovedTool(tool, securityState, { location: 'eastus2' }, engine);
 
   // The tool must still return a descriptive error string to the caller...
   assert.match(finalResponse, /Error:.*Deployment failed/s);
@@ -177,7 +185,7 @@ test('destroy_infrastructure records a FAILED action result when the script fail
   const tool = tools.find((t) => t.name === 'destroy_infrastructure');
   assert.ok(tool, 'destroy_infrastructure must be registered');
 
-  const finalResponse = await runApprovedTool(tool, securityState, { resource_group: 'rg-srelab-eastus2' });
+  const finalResponse = await runApprovedTool(tool, securityState, { resource_group: 'rg-srelab-eastus2' }, engine);
 
   assert.match(finalResponse, /Error:.*Destroy operation failed/s);
 
@@ -196,10 +204,64 @@ test('deploy_infrastructure records a successful action result when the underlyi
   const tools = createTools(securityState, engine, { runCommand: succeedingRunner });
   const tool = tools.find((t) => t.name === 'deploy_infrastructure');
 
-  const finalResponse = await runApprovedTool(tool, securityState, { location: 'eastus2' });
+  const finalResponse = await runApprovedTool(tool, securityState, { location: 'eastus2' }, engine);
   assert.match(finalResponse, /Deployment completed successfully/);
 
   const stored = engine.getIncident(incident.correlationId);
   const resultMilestone = stored.milestones.find((m) => m.type === 'action_executed');
   assert.equal(resultMilestone.data.success, true);
+});
+
+test('a successful Copilot-approved remediation schedules a post-action assertion bound to the exact incident/actionKey, so hasPendingAssertion is never left true forever', async () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+  const securityState = createSecurityState();
+  const succeedingRunner = async () => ({ stdout: 'deployment updated', stderr: '' });
+
+  const scheduledCalls = [];
+  const scheduleAssertion = (correlationId, scenarioId, actionKey) => {
+    scheduledCalls.push({ correlationId, scenarioId, actionKey });
+  };
+
+  const tools = createTools(securityState, engine, { runCommand: succeedingRunner, scheduleAssertion });
+  const tool = tools.find((t) => t.name === 'deploy_infrastructure');
+  assert.ok(tool, 'deploy_infrastructure must be registered');
+
+  await runApprovedTool(tool, securityState, { location: 'eastus2' }, engine);
+
+  assert.equal(scheduledCalls.length, 1, 'scheduleAssertion must be called exactly once for the successful action');
+  assert.equal(scheduledCalls[0].correlationId, incident.correlationId);
+  assert.equal(scheduledCalls[0].scenarioId, 'oom');
+  assert.match(scheduledCalls[0].actionKey, /deploy_infrastructure/);
+
+  // Before any assertion is actually recorded, the incident correctly shows a pending assertion.
+  assert.equal(engine.hasPendingAssertion(incident.correlationId), true);
+});
+
+test('scheduleAssertion is never called when the action fails, even if a scheduler callback is provided — failures finalize truthfully instead', async () => {
+  const engine = createIncidentTimelineEngine();
+  engine.activate({ scenarioId: 'crash' });
+  const securityState = createSecurityState();
+  const failure = Object.assign(new Error('boom'), { code: 1, stdout: '', stderr: 'boom' });
+  const failingRunner = async () => { throw failure; };
+
+  let scheduleCallCount = 0;
+  const scheduleAssertion = () => { scheduleCallCount += 1; };
+
+  const tools = createTools(securityState, engine, { runCommand: failingRunner, scheduleAssertion });
+  const tool = tools.find((t) => t.name === 'deploy_infrastructure');
+
+  await runApprovedTool(tool, securityState, { location: 'eastus2' }, engine);
+
+  assert.equal(scheduleCallCount, 0, 'a failed action must never schedule a post-action assertion');
+});
+
+test('scheduleAssertion is never invoked for a non-approval-required tool, because recordActionResultIfActive returns null for it (nothing to bind an assertion to)', () => {
+  const engine = createIncidentTimelineEngine();
+  const incident = engine.activate({ scenarioId: 'oom' });
+
+  const resultInfo = recordActionResultIfActive(engine, 'get_pods', {}, { success: true, summary: 'irrelevant' });
+
+  assert.equal(resultInfo, null, 'a read-only diagnostic tool must never produce a result binding an assertion could attach to');
+  assert.equal(engine.hasPendingAssertion(incident.correlationId), false);
 });

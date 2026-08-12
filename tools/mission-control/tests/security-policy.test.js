@@ -149,3 +149,72 @@ test('markTelemetry ignores non-telemetry tools', () => {
   markTelemetry(state, 'deploy_infrastructure');
   assert.equal(state.untrustedTelemetryActive, false);
 });
+
+test('approvals bind to the exact incidentCorrelationId supplied at proposal time', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'fix_all', {}, { sessionId: 'chat-1', incidentCorrelationId: 'INC-AAA' });
+  assert.equal(gate.allowed, false);
+  assert.equal(state.pendingApproval.incidentCorrelationId, 'INC-AAA');
+
+  const approved = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey, incidentCorrelationId: 'INC-AAA' });
+  assert.equal(approved.success, true);
+  assert.equal(approved.incidentCorrelationId, 'INC-AAA');
+});
+
+test('an approval whose incident has since been superseded by a new run is rejected, not silently applied to whichever incident is now active', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'fix_all', {}, { sessionId: 'chat-1', incidentCorrelationId: 'INC-AAA' });
+  assert.equal(gate.allowed, false);
+
+  // Approval arrives after a completely different incident became active
+  // (e.g. the operator broke a new scenario while the old approval was
+  // still outstanding).
+  const stale = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey, incidentCorrelationId: 'INC-BBB' });
+  assert.equal(stale.success, false);
+  assert.match(stale.reason, /no longer matches the incident/i);
+
+  // The pending approval must still be intact (not silently consumed) so a
+  // correctly-bound retry can still succeed.
+  assert.equal(state.pendingApproval.status, 'pending');
+  const correct = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey, incidentCorrelationId: 'INC-AAA' });
+  assert.equal(correct.success, true);
+});
+
+test('an approval for an incident that has since been finalized (terminal) is rejected — modeled as the caller now supplying no active incident', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'fix_all', {}, { sessionId: 'chat-1', incidentCorrelationId: 'INC-AAA' });
+  assert.equal(gate.allowed, false);
+
+  // The route always passes the CURRENT active incident's correlationId (or
+  // null if none is active/it finalized). A finalized incident means
+  // getActive() returns null, so the caller passes incidentCorrelationId:
+  // null here — which must not match the non-null value stored at
+  // proposal time.
+  const rejected = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey, incidentCorrelationId: null });
+  assert.equal(rejected.success, false);
+  assert.match(rejected.reason, /no longer matches the incident/i);
+});
+
+test('denial is likewise rejected when the incidentCorrelationId does not match, and the mismatch never clears the pending approval', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'restart_deployment', { deployment: 'tank-monitor' }, { sessionId: 'chat-2', incidentCorrelationId: 'INC-AAA' });
+  assert.equal(gate.allowed, false);
+
+  const staleDeny = denyPendingApproval(state, gate.approvalId, { sessionId: 'chat-2', actionKey: gate.actionKey, incidentCorrelationId: 'INC-ZZZ' });
+  assert.equal(staleDeny.success, false);
+  assert.equal(state.pendingApproval.status, 'pending', 'a rejected stale denial must not consume the pending approval');
+
+  const correctDeny = denyPendingApproval(state, gate.approvalId, { sessionId: 'chat-2', actionKey: gate.actionKey, incidentCorrelationId: 'INC-AAA' });
+  assert.equal(correctDeny.success, true);
+  assert.equal(correctDeny.incidentCorrelationId, 'INC-AAA');
+});
+
+test('approvals proposed with no active incident (e.g. deploy_infrastructure before any scenario is broken) match null-to-null, not treated as a mismatch', () => {
+  const state = createSecurityState();
+  const gate = evaluateToolAccess(state, 'deploy_infrastructure', { location: 'eastus2' }, { sessionId: 'chat-1' });
+  assert.equal(gate.allowed, false);
+  assert.equal(state.pendingApproval.incidentCorrelationId, null);
+
+  const approved = approvePendingApproval(state, gate.approvalId, { sessionId: 'chat-1', actionKey: gate.actionKey });
+  assert.equal(approved.success, true, 'omitting incidentCorrelationId on both sides must be treated as a valid null-to-null match');
+});

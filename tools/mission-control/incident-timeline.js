@@ -205,6 +205,7 @@ function createIncidentTimelineEngine(options = {}) {
       createdAt: toIso(now),
       milestones: [],
       finalState: null,
+      pendingAssertions: [],
     };
     incidents.set(correlationId, incident);
     activeCorrelationId = correlationId;
@@ -331,11 +332,77 @@ function createIncidentTimelineEngine(options = {}) {
     return successfulActions.some((exec) => !findMilestone(incident, MILESTONE.POST_ACTION_ASSERTION, `assertion:${exec.data.actionKey}`));
   }
 
+  /**
+   * Persist a "pending assertion" descriptor onto the incident so a
+   * scheduled post-action assertion can be rehydrated (and its remaining
+   * delay recomputed) after a Mission Control restart, instead of being
+   * lost as an in-memory-only timer. Idempotent per actionKey: scheduling
+   * the same actionKey twice returns the existing entry unchanged rather
+   * than creating a duplicate descriptor.
+   */
+  function schedulePendingAssertion(correlationId, data = {}) {
+    const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
+    const { actionKey, scenarioId, dueAt } = data;
+    if (!actionKey) throw new Error('schedulePendingAssertion requires actionKey');
+    incident.pendingAssertions = incident.pendingAssertions || [];
+    const existing = incident.pendingAssertions.find((p) => p.actionKey === actionKey);
+    if (existing) return existing;
+    const entry = redactDeep({
+      actionKey,
+      scenarioId: scenarioId || incident.scenarioId || null,
+      scheduledAt: toIso(clock()),
+      dueAt: toIso(dueAt),
+      attempts: 0,
+      resolved: false,
+    });
+    incident.pendingAssertions.push(entry);
+    return entry;
+  }
+
+  /** Record another attempt (e.g. a retry after the cluster was unreachable) and push the next due time out. */
+  function bumpPendingAssertionAttempt(correlationId, actionKey, data = {}) {
+    const incident = getIncidentOrThrow(correlationId);
+    if (isTerminal(incident)) return null;
+    const entry = (incident.pendingAssertions || []).find((p) => p.actionKey === actionKey);
+    if (!entry || entry.resolved) return null;
+    entry.attempts = (entry.attempts || 0) + 1;
+    if (data.dueAt) entry.dueAt = toIso(data.dueAt);
+    return entry;
+  }
+
+  /** Mark a pending assertion descriptor resolved, whether because its milestone was recorded or because the incident closed before it could run. */
+  function resolvePendingAssertion(correlationId, actionKey) {
+    const incident = getIncidentOrThrow(correlationId);
+    const entry = (incident.pendingAssertions || []).find((p) => p.actionKey === actionKey);
+    if (!entry) return null;
+    entry.resolved = true;
+    return entry;
+  }
+
+  /**
+   * All unresolved pending-assertion descriptors across every non-terminal
+   * incident, each tagged with its correlationId. Used at startup to
+   * rehydrate in-memory timers for assertions that were scheduled before a
+   * restart (see server.js).
+   */
+  function listUnresolvedPendingAssertions() {
+    const results = [];
+    for (const incident of incidents.values()) {
+      if (incident.finalState) continue;
+      for (const entry of incident.pendingAssertions || []) {
+        if (!entry.resolved) results.push({ correlationId: incident.correlationId, ...entry });
+      }
+    }
+    return results;
+  }
+
   function recordPostActionAssertion(correlationId, data = {}) {
     const incident = getIncidentOrThrow(correlationId);
     if (isTerminal(incident)) return null;
     const actionKey = data.actionKey || 'unspecified';
     const entry = record(incident, MILESTONE.POST_ACTION_ASSERTION, data, { dedupeKey: `assertion:${actionKey}` });
+    resolvePendingAssertion(correlationId, actionKey);
     if (data.passed === false) {
       finalize(correlationId, FINAL_STATE.PARTIAL_RECOVERY, { reason: 'post-action assertion did not confirm recovery' });
     } else if (data.passed === true) {
@@ -364,18 +431,24 @@ function createIncidentTimelineEngine(options = {}) {
     }
     if (incident.finalState) return findMilestone(incident, MILESTONE.FINAL_STATE);
     incident.finalState = finalState;
+    // A closed run has nothing left to assert; clear any pending
+    // descriptors so a stray rehydrated timer (or a late-arriving check)
+    // has nothing unresolved to act on for this incident.
+    for (const entry of incident.pendingAssertions || []) {
+      entry.resolved = true;
+    }
     return record(incident, MILESTONE.FINAL_STATE, { ...data, finalState }, { dedupeKey: 'final-state' });
   }
 
-  /** Best-effort sweep for approvals that expired without an approve/deny call. */
+  /** Best-effort sweep for approvals that expired without an approve/deny call. Each pending entry must carry the exact incidentCorrelationId it was proposed against (see security-policy.js) — this never scans other incidents by actionKey collision. */
   function sweepExpiredApprovals(nowMs, pendingApprovals = []) {
     for (const pending of pendingApprovals) {
       if (!pending || pending.expiresAt > nowMs) continue;
-      for (const incident of incidents.values()) {
-        if (incident.finalState) continue;
-        if (findMilestone(incident, MILESTONE.ACTION_PROPOSED, pending.actionKey)) {
-          expireAction(incident.correlationId, { actionKey: pending.actionKey, toolName: pending.toolName });
-        }
+      if (!pending.incidentCorrelationId) continue;
+      const incident = incidents.get(pending.incidentCorrelationId);
+      if (!incident || incident.finalState) continue;
+      if (findMilestone(incident, MILESTONE.ACTION_PROPOSED, pending.actionKey)) {
+        expireAction(incident.correlationId, { actionKey: pending.actionKey, toolName: pending.toolName });
       }
     }
   }
@@ -509,6 +582,10 @@ function createIncidentTimelineEngine(options = {}) {
     recordPostActionAssertion,
     recordRecovery,
     hasPendingAssertion,
+    schedulePendingAssertion,
+    bumpPendingAssertionAttempt,
+    resolvePendingAssertion,
+    listUnresolvedPendingAssertions,
     finalize,
     sweepExpiredApprovals,
     getIncident,

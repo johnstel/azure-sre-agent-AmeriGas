@@ -74,9 +74,9 @@ function safeHandler(fn) {
 }
 
 /** If a mutating tool call is gated on approval, record it as a proposed action against the currently active incident (if any). Extracted as a standalone function so it can be unit tested without the Copilot SDK or a live cluster. */
-function recordProposedActionIfActive(incidentStore, gate, toolName, params) {
+function recordProposedActionIfActive(incidentStore, gate, toolName, params, activeIncident) {
   if (!incidentStore || !gate.approvalId) return;
-  const active = incidentStore.getActive();
+  const active = activeIncident !== undefined ? activeIncident : incidentStore.getActive();
   if (!active) return;
   incidentStore.proposeAction(active.correlationId, {
     actionKey: gate.actionKey,
@@ -87,11 +87,18 @@ function recordProposedActionIfActive(incidentStore, gate, toolName, params) {
   });
 }
 
-/** Record the result of a mutating (approval-required) tool call against the currently active incident, if any. */
-function recordActionResultIfActive(incidentStore, toolName, params, outcome) {
-  if (!incidentStore || !APPROVAL_REQUIRED_TOOLS.has(toolName)) return;
-  const active = incidentStore.getActive();
-  if (!active) return;
+/**
+ * Record the result of a mutating (approval-required) tool call against
+ * the currently active incident, if any. Returns the exact
+ * {correlationId, scenarioId, actionKey} the result was recorded against
+ * (or null if nothing was recorded) so callers can bind a post-action
+ * assertion to precisely that incident/action, rather than re-querying
+ * "whichever incident is active" a second time.
+ */
+function recordActionResultIfActive(incidentStore, toolName, params, outcome, activeIncident) {
+  if (!incidentStore || !APPROVAL_REQUIRED_TOOLS.has(toolName)) return null;
+  const active = activeIncident !== undefined ? activeIncident : incidentStore.getActive();
+  if (!active) return null;
   const actionKey = createApprovalSignature(toolName, params || {});
   incidentStore.recordActionResult(active.correlationId, {
     actionKey,
@@ -99,12 +106,13 @@ function recordActionResultIfActive(incidentStore, toolName, params, outcome) {
     success: outcome.success,
     summary: outcome.summary,
   });
+  return { correlationId: active.correlationId, scenarioId: active.scenarioId, actionKey };
 }
 
 /** Record a read-only diagnostic tool call as evidence against the currently active incident, if any. */
-function recordEvidenceIfActive(incidentStore, context, toolName, params, result) {
+function recordEvidenceIfActive(incidentStore, context, toolName, params, result, activeIncident) {
   if (!incidentStore) return;
-  const active = incidentStore.getActive();
+  const active = activeIncident !== undefined ? activeIncident : incidentStore.getActive();
   if (!active) return;
   const category = EVIDENCE_CATEGORY_BY_TOOL[toolName] || 'kubernetes';
   incidentStore.recordEvidence(active.correlationId, {
@@ -121,9 +129,19 @@ function createTools(securityState = createSecurityState(), incidentStore = null
   // handling can be exercised deterministically without spawning a real
   // pwsh process. Defaults to the real runCommand in production.
   const exec = typeof deps.runCommand === 'function' ? deps.runCommand : runCommand;
+  // A clean integration point into the same post-action-assertion scheduler
+  // used by operator-direct fixes (see server.js schedulePostActionAssertion).
+  // Bound to the exact correlationId/scenarioId/actionKey the action result
+  // was just recorded against, so a Copilot-approved remediation gets the
+  // same "did it actually work?" verification a button-triggered fix does,
+  // instead of leaving hasPendingAssertion() true forever.
+  const scheduleAssertion = typeof deps.scheduleAssertion === 'function' ? deps.scheduleAssertion : null;
+
   const runTool = async (toolName, params, handler, options = {}) => {
     const context = getApprovalContext();
-    const gate = evaluateToolAccess(securityState, toolName, params || {}, context);
+    const activeIncident = incidentStore ? incidentStore.getActive() : null;
+    const contextWithIncident = { ...context, incidentCorrelationId: activeIncident ? activeIncident.correlationId : null };
+    const gate = evaluateToolAccess(securityState, toolName, params || {}, contextWithIncident);
 
     if (!gate.allowed) {
       // A mutating tool that requires approval and hasn't been approved yet
@@ -131,7 +149,7 @@ function createTools(securityState = createSecurityState(), incidentStore = null
       // there is one. Recording this here (rather than only at execution
       // time) is what lets the timeline show denial/expiry even when the
       // action is never actually executed.
-      recordProposedActionIfActive(incidentStore, gate, toolName, params);
+      recordProposedActionIfActive(incidentStore, gate, toolName, params, activeIncident);
       return gate.message;
     }
 
@@ -139,14 +157,17 @@ function createTools(securityState = createSecurityState(), incidentStore = null
     try {
       result = await handler();
     } catch (err) {
-      recordActionResultIfActive(incidentStore, toolName, params, { success: false, summary: err && err.message ? err.message : String(err) });
+      recordActionResultIfActive(incidentStore, toolName, params, { success: false, summary: err && err.message ? err.message : String(err) }, activeIncident);
       throw err;
     }
 
-    recordActionResultIfActive(incidentStore, toolName, params, { success: true, summary: typeof result === 'string' ? result.slice(0, 800) : '' });
+    const resultInfo = recordActionResultIfActive(incidentStore, toolName, params, { success: true, summary: typeof result === 'string' ? result.slice(0, 800) : '' }, activeIncident);
+    if (resultInfo && resultInfo.scenarioId && scheduleAssertion) {
+      scheduleAssertion(resultInfo.correlationId, resultInfo.scenarioId, resultInfo.actionKey);
+    }
 
     if (options.telemetry) {
-      recordEvidenceIfActive(incidentStore, context, toolName, params, result);
+      recordEvidenceIfActive(incidentStore, context, toolName, params, result, activeIncident);
       markTelemetry(securityState, toolName);
       return wrapUntrustedTelemetry(result);
     }

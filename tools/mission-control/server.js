@@ -21,6 +21,7 @@ const { evaluateScenarioHealth } = require('./scenario-health');
 const { createIncidentStore } = require('./incident-store');
 const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
+const { createAssertionScheduler } = require('./assertion-scheduler');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -137,31 +138,24 @@ async function fetchClusterHealthSnapshot() {
   };
 }
 
-/** Schedule a one-shot post-action assertion: re-check the scenario's health indicator shortly after a remediation action executes. */
-function schedulePostActionAssertion(correlationId, scenarioId, actionKey, delayMs = 8000) {
-  setTimeout(async () => {
-    try {
-      // Re-fetch the incident and re-validate it is still the same,
-      // non-terminal run before mutating it — a lot can happen during the
-      // delay (the operator could have started a fresh run, or another
-      // signal could have already finalized this one). The engine itself
-      // also rejects mutations against a terminal incident, but checking
-      // here avoids doing unnecessary cluster calls for a run that's
-      // already closed.
-      const incident = incidentStore.getIncident(correlationId);
-      if (!incident || incident.finalState) return;
-      const snapshot = await fetchClusterHealthSnapshot();
-      if (!snapshot) return; // cluster unreachable this tick; skip rather than fabricate a result
-      const health = evaluateScenarioHealth(scenarioId, snapshot);
-      if (health.active === null) return; // no server-side indicator for this scenario; nothing to assert
-      incidentStore.recordPostActionAssertion(correlationId, {
-        actionKey,
-        passed: !health.active,
-        details: health.reason,
-      });
-    } catch { /* best effort; never throw from a background timer */ }
-  }, delayMs);
-}
+/**
+ * Post-action assertion scheduling (see assertion-scheduler.js): schedules
+ * a one-shot re-check of a scenario's health indicator shortly after a
+ * remediation action executes, persists enough state to survive a Mission
+ * Control restart, and rehydrates any assertion that was still pending
+ * when the process last exited.
+ */
+const assertionScheduler = createAssertionScheduler({
+  incidentStore,
+  retryDelayMs: Number(process.env.MISSION_CONTROL_ASSERTION_RETRY_MS || 5000),
+  checkScenarioHealth: async (scenarioId) => {
+    const snapshot = await fetchClusterHealthSnapshot();
+    if (!snapshot) return null; // cluster unreachable this tick; never fabricate a result
+    return evaluateScenarioHealth(scenarioId, snapshot);
+  },
+});
+const schedulePostActionAssertion = assertionScheduler.schedule;
+const rehydratePendingAssertions = assertionScheduler.rehydrate;
 
 /** Record a fully "operator-direct" remediation: proposed, auto-approved (no agent involved), executed, then asserted. */
 function recordOperatorDirectAction(toolName, params, outcome) {
@@ -196,7 +190,12 @@ function recordOperatorDirectAction(toolName, params, outcome) {
 async function pollActiveIncidentOnce() {
   const pending = securityState.pendingApproval;
   if (pending && pending.status === 'pending' && pending.expiresAt <= Date.now()) {
-    incidentStore.sweepExpiredApprovals(Date.now(), [{ actionKey: pending.actionKey, toolName: pending.toolName, expiresAt: pending.expiresAt }]);
+    incidentStore.sweepExpiredApprovals(Date.now(), [{
+      actionKey: pending.actionKey,
+      toolName: pending.toolName,
+      expiresAt: pending.expiresAt,
+      incidentCorrelationId: pending.incidentCorrelationId || null,
+    }]);
     securityState.pendingApproval = null;
   }
 
@@ -514,7 +513,7 @@ let chatHistory = [];
 
 // Helper to create a fresh Copilot session
 async function createCopilotSession() {
-  const tools = createTools(securityState, incidentStore);
+  const tools = createTools(securityState, incidentStore, { scheduleAssertion: schedulePostActionAssertion });
   return copilotClient.createSession({
     clientName: 'amerigas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
@@ -536,12 +535,19 @@ app.get('/api/approval/pending', (req, res) => {
 app.post('/api/approval/approve', (req, res) => {
   const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  const result = approvePendingApproval(securityState, approvalId, { sessionId, actionKey });
-  if (result.success) {
-    const active = incidentStore.getActive();
-    if (active) {
-      incidentStore.approveAction(active.correlationId, { actionKey, approver: resolveApproverIdentity(req) });
-    }
+  // Always pass the CURRENT active incident's correlationId — security-policy.js
+  // validates it against whatever was stored at proposal time, and rejects
+  // the approval outright if they don't match (stale, superseded by a new
+  // run, or the original incident has since been finalized). This never
+  // falls back to writing to "whichever incident happens to be active".
+  const activeIncident = incidentStore.getActive();
+  const result = approvePendingApproval(securityState, approvalId, {
+    sessionId,
+    actionKey,
+    incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
+  });
+  if (result.success && result.incidentCorrelationId) {
+    incidentStore.approveAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
   }
   res.json(result);
 });
@@ -549,12 +555,14 @@ app.post('/api/approval/approve', (req, res) => {
 app.post('/api/approval/deny', (req, res) => {
   const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  const result = denyPendingApproval(securityState, approvalId, { sessionId, actionKey });
-  if (result.success) {
-    const active = incidentStore.getActive();
-    if (active) {
-      incidentStore.denyAction(active.correlationId, { actionKey, approver: resolveApproverIdentity(req) });
-    }
+  const activeIncident = incidentStore.getActive();
+  const result = denyPendingApproval(securityState, approvalId, {
+    sessionId,
+    actionKey,
+    incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
+  });
+  if (result.success && result.incidentCorrelationId) {
+    incidentStore.denyAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
   }
   res.json(result);
 });
@@ -618,6 +626,11 @@ async function preflight() {
   console.log('');
   const checks = await preflight();
   checks.forEach(c => console.log(c));
+
+  const rehydratedCount = rehydratePendingAssertions();
+  if (rehydratedCount > 0) {
+    console.log(`  ⏳ Rehydrated ${rehydratedCount} pending post-action assertion(s) from a prior run`);
+  }
 
   console.log('  ⏳ Initializing Copilot SDK...');
   try {
