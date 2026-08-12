@@ -134,6 +134,27 @@ test('server.js routes operation finalization/cancellation through the guarded o
   assert.doesNotMatch(serverJs, /op\.status\s*=\s*exitCode/, 'finalization must go through the guarded finishOperation(), never an inline assignment');
 });
 
+test('the DELETE /api/operations/:id handler never appends a "Cancelled by user" log line itself — that line is appended atomically inside cancelOperation() only once it has actually won the race, never speculatively before the outcome is known', () => {
+  const serverJs = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
+  const deleteRouteMatch = serverJs.match(/app\.delete\(\s*['"]\/api\/operations\/:id['"]\s*,\s*\(req,\s*res\)\s*=>\s*\{[\s\S]*?\n\}\);/);
+  assert.ok(deleteRouteMatch, 'DELETE /api/operations/:id route must exist');
+  assert.doesNotMatch(deleteRouteMatch[0], /appendLog\(/, 'the route handler must never append the cancellation log line itself — cancelOperation() owns that atomically');
+  // The kill() call must come AFTER operationLifecycle.cancelOperation() has already won, not before.
+  const killIndex = deleteRouteMatch[0].search(/process\.kill\(/);
+  const cancelCallIndex = deleteRouteMatch[0].search(/operationLifecycle\.cancelOperation\(/);
+  assert.ok(killIndex > -1 && cancelCallIndex > -1);
+  assert.ok(cancelCallIndex < killIndex, 'cancelOperation() must be called and its result checked before the process is signalled, so a losing race never kills a process out from under a different truthful outcome');
+});
+
+test('the literal "Cancelled by user" log message is appended exclusively by operation-lifecycle.js\'s cancelOperation(), not duplicated anywhere in server.js', () => {
+  const operationLifecycleJs = fs.readFileSync(path.resolve(__dirname, '../operation-lifecycle.js'), 'utf8');
+  const serverJs = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
+  assert.match(operationLifecycleJs, /appendLog\(op, 'system', '\\n── Cancelled by user ──'/, 'cancelOperation() must be the sole place that appends this line, atomically with winning the transition');
+  assert.doesNotMatch(serverJs, /appendLog\([^)]*Cancelled by user/, 'server.js must never append this line itself — only operation-lifecycle.js may, and only atomically with a winning cancellation');
+});
+
+
+
 test('no code path builds an /api/operations URL containing a token, remote-token header name, or query-string credential', () => {
   const appJs = readPublic('app.js');
   const pollerJs = fs.readFileSync(path.resolve(__dirname, '../public/operation-poller.js'), 'utf8');

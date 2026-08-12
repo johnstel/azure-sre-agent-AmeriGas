@@ -132,11 +132,23 @@ function finishOperation(op, exitCode, opts = {}) {
  * completed/failed outcome is already determined and about to be
  * recorded; a cancellation request arriving in that narrow window must
  * not be allowed to record 'cancelled' instead.
+ *
+ * The "Cancelled by user" log line is appended here — atomically with
+ * the winning transition, via the same guarded transitionToTerminal()
+ * call — rather than by the caller before invoking cancelOperation().
+ * That ordering matters: if the cancel line were appended first and
+ * cancelOperation() then lost the race (e.g. because the process had
+ * already genuinely exited), the log would misleadingly claim the
+ * operation was cancelled by the user even though the real, different
+ * outcome (completed/failed) is what actually gets recorded. Appending
+ * the line only after transitionToTerminal() has actually won means a
+ * losing cancel attempt leaves no cancel-related log trace at all.
  */
 function cancelOperation(op, opts = {}) {
   if (!op || op.childExited) return false;
   if (!transitionToTerminal(op, 'cancelled', opts)) return false;
   op.process = null;
+  appendLog(op, 'system', '\n── Cancelled by user ──', { now: () => op.endedAt });
   for (const res of op.subscribers) {
     res.write(`event: done\ndata: ${JSON.stringify({ status: 'cancelled', exitCode: null })}\n\n`);
     res.end();

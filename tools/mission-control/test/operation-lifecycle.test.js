@@ -55,7 +55,7 @@ test('a non-zero exit code finalizes as failed', () => {
   assert.equal(op.exitCode, 1);
 });
 
-test('cancelOperation transitions running -> cancelled and notifies subscribers exactly once', () => {
+test('cancelOperation transitions running -> cancelled, persists the "Cancelled by user" log line, and notifies subscribers of both the log entry and the terminal event', () => {
   const op = createOperation('deploy', 'Deploy');
   const sub = fakeSubscriber();
   op.subscribers.add(sub);
@@ -68,8 +68,11 @@ test('cancelOperation transitions running -> cancelled and notifies subscribers 
   assert.ok(op.endedAt);
   assert.equal(op.process, null);
   assert.equal(op.subscribers.size, 0);
-  assert.equal(sub.writes.length, 1);
-  assert.match(sub.writes[0], /"status":"cancelled"/);
+  assert.equal(op.log.length, 1, 'the cancellation must append exactly one persisted log line');
+  assert.match(op.log[0].text, /Cancelled by user/);
+  assert.equal(sub.writes.length, 2, 'a live subscriber gets the persisted log entry, then the terminal done event');
+  assert.match(sub.writes[0], /Cancelled by user/);
+  assert.match(sub.writes[1], /"status":"cancelled"/);
 });
 
 test('REGRESSION: a child-close event arriving after cancellation must never overwrite the truthful cancelled outcome', () => {
@@ -179,6 +182,64 @@ test('CANCEL-BEFORE-EXIT (the normal case) is unaffected: cancelOperation() succ
   markChildExited(op);
   assert.equal(finishOperation(op, 143), false, 'the SIGTERM-induced exit must not overwrite the already-recorded cancellation');
   assert.equal(op.status, 'cancelled');
+});
+
+test('DETERMINISTIC RACE — cancel-before-exit: cancelOperation() wins, persists exactly one "Cancelled by user" log line, and the SIGTERM-induced exit/close afterward adds no further log line or status change', () => {
+  const op = createOperation('deploy', 'Deploy');
+  const sub = fakeSubscriber();
+  op.subscribers.add(sub);
+  op.process = { kill: () => {} };
+
+  assert.equal(cancelOperation(op), true);
+  assert.equal(op.status, 'cancelled');
+  assert.equal(op.log.length, 1, 'cancellation must persist exactly one log line');
+  assert.match(op.log[0].text, /Cancelled by user/);
+
+  // The process we SIGTERM'd now genuinely exits and its 'close' fires,
+  // exactly as it would moments later in production.
+  markChildExited(op);
+  assert.equal(finishOperation(op, 143), false, 'the late exit must not finalize anything further');
+
+  assert.equal(op.status, 'cancelled', 'status remains cancelled');
+  assert.equal(op.log.length, 1, 'no additional log line (e.g. an "Operation failed" summary) may be appended once cancellation has already won');
+  assert.match(op.log[0].text, /Cancelled by user/, 'the persisted log must never contain a spurious success/failure summary for a cancelled operation');
+});
+
+test('DETERMINISTIC RACE — exit-before-cancel: the process genuinely exits first (markChildExited), so a subsequent cancel attempt is refused and persists NO "Cancelled by user" log line at all; only the eventual finishOperation() call appends the true terminal summary', () => {
+  const op = createOperation('validate', 'Validate rg');
+  const sub = fakeSubscriber();
+  op.subscribers.add(sub);
+  op.process = { kill: () => {} };
+
+  markChildExited(op);
+  assert.equal(op.log.length, 0, 'marking the child exited must not itself append anything');
+
+  const cancelApplied = cancelOperation(op);
+  assert.equal(cancelApplied, false, 'a cancel attempt racing a genuine exit must be refused');
+  assert.equal(op.status, 'running', 'status must remain running until finishOperation() actually finalizes');
+  assert.equal(op.log.length, 0, 'a losing cancel attempt must leave NO trace in the log — never a "Cancelled by user" line for an operation that did not actually get cancelled');
+  assert.equal(sub.writes.length, 0, 'a losing cancel attempt must not notify subscribers of anything either');
+
+  // The pending 'close' event now fires with the true outcome.
+  assert.equal(finishOperation(op, 0), true);
+  assert.equal(op.status, 'completed');
+  assert.equal(op.log.length, 1, 'only the true terminal summary line is ever appended');
+  assert.match(op.log[0].text, /Operation completed/);
+  assert.doesNotMatch(op.log[0].text, /Cancelled/, 'the persisted log must never contain a cancellation line for an operation that actually completed on its own');
+});
+
+test('DETERMINISTIC RACE — exit-before-cancel with a failing outcome: no cancel log line is ever persisted, and the true "failed" summary is the only log entry', () => {
+  const op = createOperation('destroy', 'Destroy');
+  markChildExited(op);
+
+  assert.equal(cancelOperation(op), false);
+  assert.equal(op.log.length, 0);
+
+  assert.equal(finishOperation(op, 1), true);
+  assert.equal(op.status, 'failed');
+  assert.equal(op.log.length, 1);
+  assert.match(op.log[0].text, /Operation failed/);
+  assert.doesNotMatch(op.log[0].text, /Cancelled/);
 });
 
 test('markChildExited on a null/undefined op is a safe no-op', () => {

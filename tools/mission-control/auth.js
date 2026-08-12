@@ -48,7 +48,12 @@ function authenticateOperator(req) {
 
   const authorization = req.get('authorization') || '';
   const xToken = req.get('x-mission-control-operator-token') || '';
-  const queryToken = req.query?.operator_token || '';
+  // Deliberately no query-string token support: a token in a URL is
+  // copied into browser history, server access logs, Referer headers
+  // sent to third parties, and any error-tracking/log-aggregation tool
+  // that captures request URLs — all leaks that a header or cookie does
+  // not have. Only the Authorization/X-Mission-Control-Operator-Token
+  // header and the session cookie are ever honored.
   const cookies = parseCookies(req.get('cookie') || '');
 
   if (bearerToken) {
@@ -56,7 +61,7 @@ function authenticateOperator(req) {
       const supplied = authorization.slice(7).trim();
       if (supplied === bearerToken) return { ok: true };
     }
-    if (xToken === bearerToken || queryToken === bearerToken) return { ok: true };
+    if (xToken === bearerToken) return { ok: true };
   }
 
   if (username && password) {

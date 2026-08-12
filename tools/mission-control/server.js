@@ -478,17 +478,22 @@ app.delete('/api/operations/:id', (req, res) => {
     // The underlying child process has already genuinely exited (Node's
     // 'exit'/'error' event already fired) even though 'close' — and
     // therefore the true completed/failed finalization — hasn't landed
-    // yet. Don't kill an already-dead process or append a misleading
-    // "Cancelled by user" line; the real outcome is already determined
-    // and about to be recorded truthfully.
+    // yet. Don't kill an already-dead process or attempt a cancellation;
+    // the real outcome is already determined and about to be recorded
+    // truthfully.
     return res.json({ message: 'Already finished' });
   }
-  if (op.process) { op.process.kill('SIGTERM'); appendLog(op, 'system', '\n── Cancelled by user ──'); }
-  // Guarded: if the operation reached a terminal state (or its process
-  // exited) on its own between the checks above and here, this is a
-  // truthful no-op rather than overwriting a real completed/failed
-  // outcome with 'cancelled'.
+  // Capture the process reference and attempt the transition FIRST.
+  // cancelOperation() atomically decides whether cancellation wins
+  // (transitioning to 'cancelled' AND appending the "Cancelled by user"
+  // log line together) or loses (leaving op — and its log — completely
+  // untouched, because the true completed/failed outcome already won or
+  // is about to). Only if it wins do we actually signal the process;
+  // this ordering guarantees the log can never claim a cancellation that
+  // didn't truly happen.
+  const process = op.process;
   if (!operationLifecycle.cancelOperation(op)) return res.json({ message: 'Already finished' });
+  if (process) process.kill('SIGTERM');
   res.json({ message: 'Cancelled' });
 });
 
