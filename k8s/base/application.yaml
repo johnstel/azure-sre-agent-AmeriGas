@@ -100,9 +100,15 @@ spec:
             failureThreshold: 6
           env:
             - name: RABBITMQ_DEFAULT_USER
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: username
             - name: RABBITMQ_DEFAULT_PASS
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: password
 
 ---
 apiVersion: v1
@@ -306,9 +312,15 @@ spec:
             - name: ORDER_QUEUE_PORT
               value: "5672"
             - name: ORDER_QUEUE_USERNAME
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: username
             - name: ORDER_QUEUE_PASSWORD
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: password
             - name: ORDER_QUEUE_NAME
               value: "tank-events"
             - name: FASTIFY_ADDRESS
@@ -381,11 +393,20 @@ spec:
               cpu: "100m"
           env:
             - name: ORDER_QUEUE_URI
-              value: "amqp://guest:guest@rabbitmq:5672/"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: uri
             - name: ORDER_QUEUE_USERNAME
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: username
             - name: ORDER_QUEUE_PASSWORD
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: password
             - name: ORDER_QUEUE_NAME
               value: "tank-events"
             - name: ORDER_DB_URI
