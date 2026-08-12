@@ -1,12 +1,15 @@
 # =============================================================================
-# SCENARIO 6: Failed Liveness Probe - Safety Compliance Monitor Misconfigured
-# Domain: Shared (safety compliance applies to both domains)
+# SCENARIO 6: Bulk Tank Safety Alarm - Healthy Workload, Delayed Processing
+# Domain: Bulk Tank
 # =============================================================================
-# Safety compliance monitoring probe misconfigured after maintenance window,
-# causing Kubernetes to continuously restart the pod.
+# This scenario replaces the former dummy nginx probe failure with a
+# deterministic, simulated abnormal tank level reading. The workload remains
+# healthy while the alarm-processing component delays or suppresses the pending
+# safety alarm. Azure SRE Agent can correlate the healthy pod state with the
+# delayed alarm queue and the exact-once processing recovery path.
 #
-# SRE Agent can diagnose: Pod being killed due to failed liveness probe,
-# recommend checking application health endpoint or probe configuration.
+# The thresholds and severity labels below are SIMULATED only and require
+# AmeriGas safety SME validation before they are treated as production policy.
 #
 # HOW TO BREAK:
 # kubectl apply -f k8s/scenarios/probe-failure.yaml
@@ -14,6 +17,30 @@
 # HOW TO FIX:
 # kubectl delete deployment safety-compliance-monitor -n propane
 # =============================================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tank-safety-alarm-config
+  namespace: propane
+  labels:
+    app: safety-compliance-monitor
+    scenario: probe-failure
+    sre-demo: breakable
+    domain: bulk-tank
+data:
+  alarm_id: "BT-SAFETY-ALM-00042"
+  asset_id: "BT-1551"
+  alarm_type: "rapid_level_drop"
+  reading_age_minutes: "9"
+  simulated_severity: "SEV-1"
+  ack_state: "pending"
+  processed_exactly_once: "false"
+  threshold: "SIMULATED tank level drop below 20% after 15 minutes; requires AmeriGas safety SME validation."
+  triggered_at: "2025-02-11T06:41:52Z"
+  detected_at: "2025-02-11T06:51:12Z"
+  processing_component: "safety-compliance-monitor"
+  processing_state: "suppressed"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -24,8 +51,9 @@ metadata:
     app: safety-compliance-monitor
     scenario: probe-failure
     sre-demo: breakable
+    domain: bulk-tank
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: safety-compliance-monitor
@@ -34,14 +62,23 @@ spec:
       labels:
         app: safety-compliance-monitor
         scenario: probe-failure
+        domain: bulk-tank
     spec:
       nodeSelector:
         nodepool-type: user
       containers:
         - name: safety-compliance-app
-          image: mcr.microsoft.com/mirror/docker/library/nginx:alpine
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo '{"event":"bulk_tank_safety_alarm","alarm_id":"BT-SAFETY-ALM-00042","asset_id":"BT-1551","reading_age_minutes":9,"simulated_severity":"SEV-1","ack_state":"pending","triggered_at":"2025-02-11T06:41:52Z","detected_at":"2025-02-11T06:51:12Z","threshold":"SIMULATED tank level drop below 20% after 15 minutes; requires AmeriGas safety SME validation.","processing_component":"safety-compliance-monitor","processing_state":"suppressed","workload_healthy":true,"duplicate_incident_count":0}'
+              while true; do
+                echo '{"event":"alarm_processing","alarm_id":"BT-SAFETY-ALM-00042","status":"delayed","component":"safety-compliance-monitor","processing_state":"suppressed","workload_healthy":true,"duplicate_incident_count":0}'
+                sleep 30
+              done
           ports:
-            - containerPort: 80
+            - containerPort: 8080
           resources:
             requests:
               memory: "32Mi"
@@ -49,17 +86,15 @@ spec:
             limits:
               memory: "64Mi"
               cpu: "50m"
-          # BREAKING CHANGE: Liveness probe to endpoint that doesn't exist
           livenessProbe:
-            httpGet:
-              path: /health/nonexistent
-              port: 80
+            exec:
+              command: ["sh", "-c", "echo ok && exit 0"]
             initialDelaySeconds: 5
-            periodSeconds: 5
+            periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /health/nonexistent
-              port: 80
+            exec:
+              command: ["sh", "-c", "echo ready && exit 0"]
             initialDelaySeconds: 3
-            periodSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3

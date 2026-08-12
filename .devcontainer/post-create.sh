@@ -186,7 +186,7 @@ function menu {
 ║    break-image                 - ImagePullBackOff (order-service)            ║
 ║    break-cpu                   - High CPU (demand forecast overload)         ║
 ║    break-pending               - Pending pods (fleet telemetry monitor)      ║
-║    break-probe                 - Liveness probe failure                      ║
+║    break-probe                 - Bulk Tank safety alarm                     ║
 ║    break-network               - Network policy blocking                     ║
 ║    break-config                - Missing ConfigMap                           ║
 ║    break-mongodb               - MongoDB down (cascading failure)            ║

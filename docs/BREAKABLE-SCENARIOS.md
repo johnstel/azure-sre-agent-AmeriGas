@@ -211,16 +211,17 @@ kubectl delete deployment fleet-telemetry-monitor -n propane
 
 ---
 
-### 6. Failed Liveness Probe — Safety Compliance Monitor Misconfigured
+### 6. Bulk Tank Safety Alarm — Simulated Abnormal Reading Suppressed by Processing Delay
 
-**Domain:** Shared (safety compliance across both domains)
+**Domain:** Bulk Tank
 
 **File:** `k8s/scenarios/probe-failure.yaml`
 
 **What happens:**
-- Deploys safety-compliance-monitor with liveness probe to non-existent endpoint
-- Probe was misconfigured after a maintenance window
-- Kubernetes restarts the container repeatedly
+- Simulates a bulk tank reading that drops from ~71% to ~12% within a short window.
+- The alarm is generated with a deterministic asset ID, reading age, simulated severity, acknowledgement state, and timestamps.
+- The workload pods remain healthy while the alarm-processing component delays and suppresses the incoming safety event.
+- The scenario is clearly labeled as simulated and requires AmeriGas safety SME validation before acting as production policy.
 
 **How to break:**
 ```bash
@@ -229,21 +230,23 @@ kubectl apply -f k8s/scenarios/probe-failure.yaml
 
 **What to observe:**
 ```bash
-# Watch restarts increase
-kubectl get pods -n propane -l app=safety-compliance-monitor -w
+# View the alarm in the Dispatch Console or logs
+kubectl logs -n propane deploy/tank-monitor --tail 50
+kubectl logs -n propane deploy/dispatch-console --tail 50
 
-# See probe failure events
-kubectl describe pod -l app=safety-compliance-monitor -n propane | grep -A 5 "Liveness"
+# Check the pending alarm in the app runtime or telemetry stream
+kubectl get pods -n propane | grep -E 'tank-monitor|dispatch-console'
 ```
 
 **SRE Agent prompts:**
-- "Safety compliance monitor pods keep restarting but nothing seems wrong"
-- "Diagnose the health check failures in the propane namespace"
-- "What's wrong with the liveness probe on safety-compliance-monitor?"
+- "A bulk tank safety alarm is pending but the workload looks healthy — what's wrong?"
+- "Why is the alarm still suppressed even though tank-monitor is reporting normally?"
+- "Trace the safety telemetry delay in the propane namespace and identify the processing component causing the backlog."
 
 **How to fix:**
 ```bash
-kubectl delete deployment safety-compliance-monitor -n propane
+kubectl delete configmap bulk-tank-safety-alarm -n propane
+kubectl apply -f k8s/base/application.yaml
 ```
 
 ---
