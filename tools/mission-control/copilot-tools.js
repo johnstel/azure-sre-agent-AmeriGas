@@ -15,24 +15,34 @@ const {
   markTelemetry,
   wrapUntrustedTelemetry,
   validateKubectlArgs,
+  createApprovalSignature,
+  APPROVAL_REQUIRED_TOOLS,
 } = require('./security-policy');
 const { getApprovalContext } = require('./auth');
+const { SCENARIO_MAP } = require('./scenario-catalog');
 
 const execFileAsync = util.promisify(execFile);
 const IS_WIN = process.platform === 'win32';
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
-const SCENARIO_MAP = {
-  oom: 'oom-killed.yaml',
-  crash: 'crash-loop.yaml',
-  image: 'image-pull-backoff.yaml',
-  cpu: 'high-cpu.yaml',
-  pending: 'pending-pods.yaml',
-  probe: 'probe-failure.yaml',
-  network: 'network-block.yaml',
-  config: 'missing-config.yaml',
-  mongodb: 'mongodb-down.yaml',
-  service: 'service-mismatch.yaml',
+// Maps each read-only diagnostic tool to the incident evidence-source
+// category it represents (see incident-timeline.js EVIDENCE_CATEGORIES).
+// `get_nodes` is tagged "metrics" because it includes `kubectl top`; the
+// underlying tool itself falls back gracefully when metrics-server is
+// unavailable, and the incident engine never fabricates a metrics reading
+// when this tool wasn't called at all.
+const EVIDENCE_CATEGORY_BY_TOOL = {
+  get_pods: 'kubernetes',
+  get_pod_logs: 'logs',
+  describe_pod: 'kubernetes',
+  get_events: 'kubernetes',
+  get_deployments: 'kubernetes',
+  get_services: 'kubernetes',
+  get_nodes: 'metrics',
+  get_cluster_health: 'kubernetes',
+  get_cluster_info: 'kubernetes',
+  validate_deployment: 'kubernetes',
+  kubectl_readonly: 'kubernetes',
 };
 
 function runCommand(cmd, args, opts = {}) {
@@ -63,14 +73,101 @@ function safeHandler(fn) {
   };
 }
 
-function createTools(securityState = createSecurityState()) {
+/** If a mutating tool call is gated on approval, record it as a proposed action against the currently active incident (if any). Extracted as a standalone function so it can be unit tested without the Copilot SDK or a live cluster. */
+function recordProposedActionIfActive(incidentStore, gate, toolName, params, activeIncident) {
+  if (!incidentStore || !gate.approvalId) return;
+  const active = activeIncident !== undefined ? activeIncident : incidentStore.getActive();
+  if (!active) return;
+  incidentStore.proposeAction(active.correlationId, {
+    actionKey: gate.actionKey,
+    approvalId: gate.approvalId,
+    toolName,
+    params,
+    runMode: 'agent-assisted:approval-required',
+  });
+}
+
+/**
+ * Record the result of a mutating (approval-required) tool call against
+ * the currently active incident, if any. Returns the exact
+ * {correlationId, scenarioId, actionKey} the result was recorded against
+ * (or null if nothing was recorded) so callers can bind a post-action
+ * assertion to precisely that incident/action, rather than re-querying
+ * "whichever incident is active" a second time.
+ */
+function recordActionResultIfActive(incidentStore, toolName, params, outcome, activeIncident) {
+  if (!incidentStore || !APPROVAL_REQUIRED_TOOLS.has(toolName)) return null;
+  const active = activeIncident !== undefined ? activeIncident : incidentStore.getActive();
+  if (!active) return null;
+  const actionKey = createApprovalSignature(toolName, params || {});
+  incidentStore.recordActionResult(active.correlationId, {
+    actionKey,
+    toolName,
+    success: outcome.success,
+    summary: outcome.summary,
+  });
+  return { correlationId: active.correlationId, scenarioId: active.scenarioId, actionKey };
+}
+
+/** Record a read-only diagnostic tool call as evidence against the currently active incident, if any. */
+function recordEvidenceIfActive(incidentStore, context, toolName, params, result, activeIncident) {
+  if (!incidentStore) return;
+  const active = activeIncident !== undefined ? activeIncident : incidentStore.getActive();
+  if (!active) return;
+  const category = EVIDENCE_CATEGORY_BY_TOOL[toolName] || 'kubernetes';
+  incidentStore.recordEvidence(active.correlationId, {
+    toolName,
+    category,
+    params,
+    callId: `${context.sessionId || 'local'}:${toolName}:${JSON.stringify(params || {})}`,
+    summary: typeof result === 'string' ? result.slice(0, 500) : '',
+  });
+}
+
+function createTools(securityState = createSecurityState(), incidentStore = null, deps = {}) {
+  // Allow tests to inject a fake process runner so deploy/destroy failure
+  // handling can be exercised deterministically without spawning a real
+  // pwsh process. Defaults to the real runCommand in production.
+  const exec = typeof deps.runCommand === 'function' ? deps.runCommand : runCommand;
+  // A clean integration point into the same post-action-assertion scheduler
+  // used by operator-direct fixes (see server.js schedulePostActionAssertion).
+  // Bound to the exact correlationId/scenarioId/actionKey the action result
+  // was just recorded against, so a Copilot-approved remediation gets the
+  // same "did it actually work?" verification a button-triggered fix does,
+  // instead of leaving hasPendingAssertion() true forever.
+  const scheduleAssertion = typeof deps.scheduleAssertion === 'function' ? deps.scheduleAssertion : null;
+
   const runTool = async (toolName, params, handler, options = {}) => {
     const context = getApprovalContext();
-    const gate = evaluateToolAccess(securityState, toolName, params || {}, context);
-    if (!gate.allowed) return gate.message;
+    const activeIncident = incidentStore ? incidentStore.getActive() : null;
+    const contextWithIncident = { ...context, incidentCorrelationId: activeIncident ? activeIncident.correlationId : null };
+    const gate = evaluateToolAccess(securityState, toolName, params || {}, contextWithIncident);
 
-    const result = await handler();
+    if (!gate.allowed) {
+      // A mutating tool that requires approval and hasn't been approved yet
+      // is a "proposed action" against the currently active incident, if
+      // there is one. Recording this here (rather than only at execution
+      // time) is what lets the timeline show denial/expiry even when the
+      // action is never actually executed.
+      recordProposedActionIfActive(incidentStore, gate, toolName, params, activeIncident);
+      return gate.message;
+    }
+
+    let result;
+    try {
+      result = await handler();
+    } catch (err) {
+      recordActionResultIfActive(incidentStore, toolName, params, { success: false, summary: err && err.message ? err.message : String(err) }, activeIncident);
+      throw err;
+    }
+
+    const resultInfo = recordActionResultIfActive(incidentStore, toolName, params, { success: true, summary: typeof result === 'string' ? result.slice(0, 800) : '' }, activeIncident);
+    if (resultInfo && resultInfo.scenarioId && scheduleAssertion) {
+      scheduleAssertion(resultInfo.correlationId, resultInfo.scenarioId, resultInfo.actionKey);
+    }
+
     if (options.telemetry) {
+      recordEvidenceIfActive(incidentStore, context, toolName, params, result, activeIncident);
       markTelemetry(securityState, toolName);
       return wrapUntrustedTelemetry(result);
     }
@@ -322,6 +419,24 @@ function createTools(securityState = createSecurityState()) {
       }, { telemetry: true }),
     }),
 
+    defineTool('record_incident_root_cause', {
+      description: 'Record the root cause you have identified for the currently active Mission Control incident, once you are confident based on the evidence you gathered. This only updates the incident evidence timeline — it does not change the cluster and never requires approval. If there is no active incident, it has no effect.',
+      parameters: {
+        type: 'object',
+        properties: {
+          statement: { type: 'string', description: 'A concise root-cause statement, e.g. "tank-monitor memory limit (16Mi) is too low for peak IoT ingestion, causing OOMKilled restarts."' },
+        },
+        required: ['statement'],
+      },
+      handler: async ({ statement }) => runTool('record_incident_root_cause', { statement }, async () => {
+        if (!incidentStore) return 'The incident evidence timeline is not configured in this session.';
+        const active = incidentStore.getActive();
+        if (!active) return 'There is no active incident to attach a root cause to.';
+        incidentStore.recordRootCause(active.correlationId, { statement, assertedBy: 'agent' });
+        return `Root cause recorded for incident ${active.correlationId}.`;
+      }),
+    }),
+
     defineTool('kubectl_readonly', {
       description: 'Run a safe, read-only kubectl command from an allowlist. The tool only permits diagnostic operations such as get/describe/logs/top/config current-context.',
       parameters: {
@@ -359,10 +474,15 @@ function createTools(securityState = createSecurityState()) {
         if (skip_rbac) args.push('-SkipRbac');
         if (skip_sre_agent) args.push('-SkipSreAgent');
         try {
-          const { stdout, stderr } = await runCommand('pwsh', args, { timeout: 600000 });
+          const { stdout, stderr } = await exec('pwsh', args, { timeout: 600000 });
           return `Deployment completed successfully.\n\n${stdout}${stderr ? '\nSTDERR:\n' + stderr : ''}`;
         } catch (err) {
-          return `Deployment failed (exit code ${err.code || 'unknown'}):\n${err.stdout || ''}\n${err.stderr || err.message}`;
+          // Rethrow (rather than returning an "error" string) so runTool's
+          // own catch records this as a failed action result. Returning a
+          // string here would let runTool infer success merely because
+          // this async function didn't throw -- exactly the false-success
+          // bug this rethrow avoids.
+          throw new Error(`Deployment failed (exit code ${err.code || 'unknown'}):\n${err.stdout || ''}\n${err.stderr || err.message}`);
         }
       }),
     }),
@@ -380,10 +500,12 @@ function createTools(securityState = createSecurityState()) {
         const scriptPath = path.resolve(REPO_ROOT, 'scripts', 'destroy.ps1');
         const args = ['-NoLogo', '-NoProfile', '-File', scriptPath, '-ResourceGroupName', resource_group, '-Force'];
         try {
-          const { stdout, stderr } = await runCommand('pwsh', args, { timeout: 600000 });
+          const { stdout, stderr } = await exec('pwsh', args, { timeout: 600000 });
           return `Infrastructure destroyed successfully.\n\n${stdout}${stderr ? '\nSTDERR:\n' + stderr : ''}`;
         } catch (err) {
-          return `Destroy operation failed:\n${err.stdout || ''}\n${err.stderr || err.message}`;
+          // Rethrow for the same reason as deploy_infrastructure above:
+          // never let a caught script failure be reported as a success.
+          throw new Error(`Destroy operation failed:\n${err.stdout || ''}\n${err.stderr || err.message}`);
         }
       }),
     }),
@@ -396,4 +518,10 @@ function createTools(securityState = createSecurityState()) {
   }));
 }
 
-module.exports = { createTools };
+module.exports = {
+  createTools,
+  EVIDENCE_CATEGORY_BY_TOOL,
+  recordProposedActionIfActive,
+  recordActionResultIfActive,
+  recordEvidenceIfActive,
+};

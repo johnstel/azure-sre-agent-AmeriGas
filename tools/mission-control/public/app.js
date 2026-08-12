@@ -22,50 +22,69 @@ const SCENARIO_INDICATORS = {
   pending: p => p.name.startsWith('fleet-telemetry'),
   probe:   p => p.name.startsWith('safety-compliance'),
   config:  p => p.name.startsWith('delivery-zone'),
-  mongodb: p => p.name.startsWith('mongodb') && (p.ready === '0/1' || p.status !== 'Running'),
+  mongodb: null, // detected via a dedicated check below: mongodb-down scales the Deployment to 0, so "any matching pod" is not a safe indicator (see isMongoPodReady)
   network: null, // detected via networkpolicies API
   service: null, // detected via endpoints API
 };
 
+/** True only when a pod is both Running and fully Ready (all containers ready). Mirrors the server-side check in scenario-health.js so client/server health semantics stay aligned. */
+function isMongoPodReady(p) {
+  if (!p || p.status !== 'Running' || !p.ready) return false;
+  const parts = String(p.ready).split('/');
+  if (parts.length !== 2) return false;
+  const readyCount = Number(parts[0]);
+  const total = Number(parts[1]);
+  return Number.isFinite(readyCount) && Number.isFinite(total) && total > 0 && readyCount === total;
+}
+
+/** The mongodb-down scenario scales the Deployment to 0 replicas, so the scenario is active both when mongodb pods are unhealthy AND when there are no mongodb pods at all — recovery requires an actual Running/Ready pod, not just "no unhealthy pod found". */
+function isMongodbScenarioActive(pods) {
+  const mongoPods = pods.filter(p => p.name.startsWith('mongodb'));
+  return !mongoPods.some(isMongoPodReady);
+}
+
 let currentPods = [];
 let networkPolicyActive = false;
 let serviceMismatchActive = false;
-let csrfToken = null;
-let csrfTokenPromise = null;
 const render = window.MissionControlRender;
+const incidentUI = window.IncidentTimelineUI;
 
-async function getCsrfToken() {
-  if (csrfToken) return csrfToken;
-  if (!csrfTokenPromise) {
-    csrfTokenPromise = fetch('/api/csrf-token')
-      .then(async (r) => {
-        const data = r.ok ? await r.json() : null;
-        csrfToken = data?.token || null;
-        return csrfToken;
-      })
-      .catch(() => null);
-  }
-  return csrfTokenPromise;
+/* ── Remote Access Token Prompt ────────────────────────── */
+// Resolves the promise created by showRemoteAuthModal() once the operator
+// submits or cancels. Only one prompt is ever shown at a time — the
+// apiClient de-dupes concurrent 401s into a single call to this function.
+let remoteAuthResolver = null;
+
+function showRemoteAuthModal() {
+  return new Promise((resolve) => {
+    remoteAuthResolver = resolve;
+    const input = document.getElementById('remote-auth-token-input');
+    input.value = '';
+    document.getElementById('remote-auth-modal').style.display = '';
+    input.focus();
+  });
 }
 
-async function buildRequestOptions(opts = {}) {
-  const headers = new Headers(opts.headers || {});
-  const method = String(opts.method || 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-    const token = await getCsrfToken();
-    if (token) headers.set('X-CSRF-Token', token);
-  }
-  if (opts.body !== undefined && !headers.has('Content-Type') && !(opts.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
-  }
-  return { ...opts, headers };
+function submitRemoteAuthToken() {
+  const input = document.getElementById('remote-auth-token-input');
+  const token = input.value.trim();
+  input.value = ''; // never leave the token sitting in the input longer than needed
+  document.getElementById('remote-auth-modal').style.display = 'none';
+  if (remoteAuthResolver) { remoteAuthResolver(token || null); remoteAuthResolver = null; }
 }
-   
+
+function cancelRemoteAuthModal() {
+  document.getElementById('remote-auth-token-input').value = '';
+  document.getElementById('remote-auth-modal').style.display = 'none';
+  if (remoteAuthResolver) { remoteAuthResolver(null); remoteAuthResolver = null; }
+}
+
 /* ── API Helpers ───────────────────────────────────────── */
-async function api(path, opts = {}) {
-  const r = await fetch('/api/' + path, await buildRequestOptions(opts));
-  return r.json();
-}
+// Centralizes CSRF token handling (a fresh, single-use token per mutation)
+// and the optional remote-access token (attached as a header, never a
+// query string; kept only in sessionStorage/memory — see api-client.js).
+const apiClient = window.MissionControlApiClient.createApiClient({ onAuthRequired: showRemoteAuthModal });
+const api = apiClient.api;
 
 /* ── Toast ─────────────────────────────────────────────── */
 function toast(msg, type='success') {
@@ -260,6 +279,8 @@ function updateScenarioIndicators() {
       isActive = networkPolicyActive;
     } else if (sc.id === 'service') {
       isActive = serviceMismatchActive;
+    } else if (sc.id === 'mongodb') {
+      isActive = isMongodbScenarioActive(currentPods);
     } else {
       const fn = SCENARIO_INDICATORS[sc.id];
       if (!fn) { indicator.textContent = '–'; indicator.className = 'sc-status'; continue; }
@@ -371,6 +392,96 @@ async function refreshEndpoints() {
   } catch { serviceMismatchActive = false; }
 }
 
+/* ── Incident Evidence Timeline & Value Scorecard ─────── */
+let currentIncidentCorrelationId = null;
+let viewingHistoricalIncident = false;
+
+function renderIncidentSnapshot(payload) {
+  const empty = document.getElementById('incident-panel-empty');
+  const content = document.getElementById('incident-panel-content');
+  if (!payload || !payload.incident) {
+    empty.style.display = '';
+    content.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  content.style.display = '';
+
+  const { incident, links } = payload;
+  currentIncidentCorrelationId = incident.correlationId;
+
+  document.getElementById('incident-scorecard-mount').replaceChildren(incidentUI.buildScorecard(incident, document));
+  document.getElementById('incident-evidence-mount').replaceChildren(incidentUI.buildEvidenceSummary(incident.evidence, document));
+  document.getElementById('incident-timeline-mount').replaceChildren(incidentUI.buildTimeline(incident.milestones, document));
+  document.getElementById('incident-links-mount').replaceChildren(incidentUI.buildLinks(links, document, render.toSafeHttpUrl));
+}
+
+async function refreshActiveIncident() {
+  if (viewingHistoricalIncident) return; // don't clobber an operator's historical selection
+  try {
+    const payload = await api('incidents/active');
+    renderIncidentSnapshot(payload);
+  } catch { /* keep last-known rendering on transient fetch errors */ }
+}
+
+async function refreshRecentIncidents() {
+  try {
+    const recent = await api('incidents?limit=10');
+    const select = document.getElementById('incident-recent-select');
+    if (!Array.isArray(recent) || recent.length === 0) {
+      select.style.display = 'none';
+      return;
+    }
+    select.style.display = '';
+    const fragment = document.createDocumentFragment();
+    const liveOption = document.createElement('option');
+    liveOption.value = '';
+    liveOption.textContent = 'Live (current run)';
+    fragment.appendChild(liveOption);
+    recent.forEach((entry) => {
+      const option = document.createElement('option');
+      option.value = entry.correlationId;
+      const stateLabel = incidentUI.finalStateLabel(entry.finalState);
+      option.textContent = `${entry.scenarioName || entry.scenarioId || entry.correlationId} — ${stateLabel}`;
+      fragment.appendChild(option);
+    });
+    select.replaceChildren(fragment);
+  } catch { /* recent-run history is best-effort */ }
+}
+
+async function onSelectRecentIncident(correlationId) {
+  if (!correlationId) {
+    viewingHistoricalIncident = false;
+    refreshActiveIncident();
+    return;
+  }
+  viewingHistoricalIncident = true;
+  try {
+    const payload = await api('incidents/' + encodeURIComponent(correlationId));
+    renderIncidentSnapshot(payload);
+  } catch (e) {
+    toast('Failed to load incident: ' + e.message, 'error');
+  }
+}
+
+/**
+ * Downloads a redacted incident evidence-pack export via the shared,
+ * authenticated apiClient instead of window.open()/plain navigation
+ * (which cannot attach the X-Mission-Control-Token header, and always
+ * fails once remote access is enabled). The actual download logic
+ * (fetch → Blob → object-URL download → revoke, plus error handling)
+ * lives in the standalone, dependency-injected incident-export.js module
+ * so it can be unit tested without a real browser DOM.
+ */
+async function exportIncident(format) {
+  return window.MissionControlIncidentExport.downloadIncidentExport({
+    request: (path) => apiClient.request(path),
+    correlationId: currentIncidentCorrelationId,
+    format,
+    onError: (message) => toast(message, 'error'),
+  });
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 buildScenarioGrid();
 refreshPods();
@@ -381,6 +492,8 @@ refreshDeployments();
 refreshClusterInfo();
 refreshNetworkPolicies();
 refreshEndpoints();
+refreshActiveIncident();
+refreshRecentIncidents();
 
 setInterval(refreshPods, 5000);
 setInterval(refreshEvents, 10000);
@@ -389,10 +502,16 @@ setInterval(refreshDeployments, 10000);
 setInterval(refreshNodes, 30000);
 setInterval(refreshNetworkPolicies, 5000);
 setInterval(refreshEndpoints, 5000);
+setInterval(refreshActiveIncident, 5000);
+setInterval(refreshRecentIncidents, 20000);
+
+document.getElementById('incident-recent-select').addEventListener('change', (e) => onSelectRecentIncident(e.target.value));
 
 /* ── Infrastructure Operations ────────────────────────── */
 let currentOpId = null;
 let currentEventSource = null;
+let currentOperationPoller = null;
+let renderedLogCount = 0; // count of log entries already rendered for the current operation, so an EventSource-to-poller handoff can resume from the exact same cursor instead of re-fetching (and duplicating) from the start
 
 function autoDetectRG() {
   const rgEl = document.getElementById('rg-name');
@@ -417,6 +536,7 @@ function showTerminal() {
 function closeTerminal() {
   document.getElementById('terminal-panel').style.display = 'none';
   if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+  if (currentOperationPoller) { currentOperationPoller.stop(); currentOperationPoller = null; }
 }
 
 function setTerminalStatus(status) {
@@ -427,60 +547,122 @@ function setTerminalStatus(status) {
   cancelBtn.style.display = status === 'running' ? '' : 'none';
 }
 
+/** Appends already-parsed log entries to the terminal output. Shared by both the EventSource path and the polling fallback so neither can render a log line the other already showed. Also advances renderedLogCount, the cursor used to hand off from EventSource to the polling fallback without re-fetching (and duplicating) already-rendered lines. */
+function appendLogEntries(entries) {
+  const out = document.getElementById('terminal-output');
+  for (const entry of entries) {
+    const span = document.createElement('span');
+    if (entry.stream === 'stderr') span.style.color = '#f85149';
+    else if (entry.stream === 'system') span.style.color = '#58a6ff';
+    span.textContent = entry.text;
+    out.appendChild(span);
+  }
+  if (entries.length > 0) {
+    out.scrollTop = out.scrollHeight;
+    renderedLogCount += entries.length;
+  }
+}
+
+/**
+ * Handles a genuine, server-reported terminal status (from either the
+ * EventSource `done` event or the polling fallback's onTerminal). This is
+ * the ONLY place that may mark an operation's terminal state — a
+ * transport-level failure (EventSource onerror, a poll-level network
+ * error) must never reach this function on its own.
+ */
+function handleTerminalOperation(info) {
+  setTerminalStatus(info.status);
+
+  if (info.status === 'failed') {
+    const termOutput = document.getElementById('terminal-output').textContent || '';
+    window._lastFailure = {
+      opId: currentOpId,
+      status: info.status,
+      exitCode: info.exitCode,
+      logTail: termOutput.slice(-3000),
+    };
+    const fb = document.getElementById('copilot-failure-banner');
+    document.getElementById('failure-banner-title').textContent = 'Operation Failed (exit ' + info.exitCode + ')';
+    document.getElementById('failure-banner-desc').textContent = 'The operation failed. Let Copilot analyze the logs and suggest a fix.';
+    fb.style.display = 'flex';
+  }
+
+  currentOpId = null;
+  setInfraButtonsEnabled(true);
+  refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
+}
+
+/**
+ * Authenticated same-origin polling fallback for when EventSource
+ * streaming is unavailable. EventSource cannot carry the
+ * X-Mission-Control-Token header, so in remote mode
+ * /api/operations/:id/stream always fails with a generic transport
+ * error — that says nothing about whether the operation itself
+ * succeeded, failed, or is still running server-side. We fall back to
+ * polling the plain JSON endpoint through the shared, authenticated
+ * `api()` helper (never a query-string token) until the server reports a
+ * genuine terminal status.
+ */
+function startOperationPolling(opId) {
+  if (currentOperationPoller) { currentOperationPoller.stop(); currentOperationPoller = null; }
+  currentOperationPoller = window.MissionControlOperationPoller.createOperationPoller({
+    api,
+    operationId: opId,
+    since: renderedLogCount, // resume exactly where EventSource left off — never re-fetch (and duplicate) already-rendered lines, never skip lines added between disconnect and the first poll
+    onLogEntries: appendLogEntries,
+    onTerminal: (info) => {
+      currentOperationPoller = null;
+      handleTerminalOperation(info);
+    },
+    onError: () => {
+      // Transient poll failure: keep the UI truthfully "running" and let the poller retry.
+    },
+    onGiveUp: () => {
+      // We genuinely don't know the outcome — never fabricate success or
+      // failure. Leave the terminal status as "running" (truthfully
+      // "last known status"), but re-enable controls so the operator is
+      // not stuck, and let them refresh/poll the operations list manually.
+      currentOperationPoller = null;
+      setInfraButtonsEnabled(true);
+    },
+  });
+  currentOperationPoller.start();
+}
+
 function streamOperation(opId) {
   currentOpId = opId;
+  renderedLogCount = 0;
   const out = document.getElementById('terminal-output');
   out.textContent = '';
   setTerminalStatus('running');
   showTerminal();
 
   if (currentEventSource) currentEventSource.close();
+  if (currentOperationPoller) { currentOperationPoller.stop(); currentOperationPoller = null; }
   const es = new EventSource('/api/operations/' + opId + '/stream');
   currentEventSource = es;
 
   es.onmessage = (e) => {
-    const entry = JSON.parse(e.data);
-    const span = document.createElement('span');
-    if (entry.stream === 'stderr') span.style.color = '#f85149';
-    else if (entry.stream === 'system') span.style.color = '#58a6ff';
-    span.textContent = entry.text;
-    out.appendChild(span);
-    out.scrollTop = out.scrollHeight;
+    appendLogEntries([JSON.parse(e.data)]);
   };
 
   es.addEventListener('done', (e) => {
     const info = JSON.parse(e.data);
-    setTerminalStatus(info.status);
     es.close();
     currentEventSource = null;
-
-    // On failure, show the Copilot failure diagnosis banner
-    if (info.status === 'failed') {
-      const termOutput = document.getElementById('terminal-output').textContent || '';
-      // Store failure context for Copilot
-      window._lastFailure = {
-        opId: currentOpId,
-        status: info.status,
-        exitCode: info.exitCode,
-        logTail: termOutput.slice(-3000),
-      };
-      const fb = document.getElementById('copilot-failure-banner');
-      document.getElementById('failure-banner-title').textContent = 'Operation Failed (exit ' + info.exitCode + ')';
-      document.getElementById('failure-banner-desc').textContent = 'The operation failed. Let Copilot analyze the logs and suggest a fix.';
-      fb.style.display = 'flex';
-    }
-
-    currentOpId = null;
-    setInfraButtonsEnabled(true);
-    refreshPods(); refreshDeployments(); refreshServices(); refreshClusterInfo();
+    handleTerminalOperation(info);
   });
 
   es.onerror = () => {
-    setTerminalStatus('failed');
+    // EventSource transport failure (expected in remote mode, since it
+    // cannot attach the auth token header). This is NOT a report that the
+    // operation failed — the deploy/destroy/validate script is very
+    // likely still running server-side. Preserve currentOpId, do not
+    // touch the terminal status, and fall back to authenticated polling
+    // for status/log deltas until a genuine terminal state is reported.
     es.close();
     currentEventSource = null;
-    currentOpId = null;
-    setInfraButtonsEnabled(true);
+    startOperationPolling(opId);
   };
 }
 
@@ -498,11 +680,11 @@ async function startDeploy() {
 
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/deploy', await buildRequestOptions({
+    const r = await apiClient.request('deploy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ location, workloadName, skipRbac, skipSreAgent }),
-    }));
+    });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Deploy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Deployment started');
@@ -528,11 +710,11 @@ async function executeDestroy() {
   const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/destroy', await buildRequestOptions({
+    const r = await apiClient.request('destroy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resourceGroupName: rg }),
-    }));
+    });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Destroy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Destroy operation started');
@@ -547,11 +729,11 @@ async function startValidate() {
   const rg = document.getElementById('validate-rg').value || 'rg-srelab-eastus2';
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/validate', await buildRequestOptions({
+    const r = await apiClient.request('validate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resourceGroupName: rg }),
-    }));
+    });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Validate failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Validation started');
@@ -562,11 +744,26 @@ async function startValidate() {
   }
 }
 
+/**
+ * Cancels the in-progress operation. The decision logic for interpreting
+ * the server's response — including the "cancellation lost the race,
+ * never fabricate success" behavior — lives in the standalone,
+ * unit-tested cancel-response.js module so it can be verified without a
+ * real browser DOM.
+ */
 async function cancelOperation() {
   if (!currentOpId) return;
+  const opId = currentOpId;
   try {
-    await fetch('/api/operations/' + currentOpId, await buildRequestOptions({ method: 'DELETE' }));
-    toast('Operation cancelled');
+    const response = await apiClient.request('operations/' + opId, { method: 'DELETE' });
+    let data = null;
+    try { data = await response.json(); } catch { /* non-JSON body; interpretCancelOperationResponse falls back to a generic truthful message */ }
+
+    const result = window.MissionControlCancelResponse.interpretCancelOperationResponse({ ok: response.ok, status: response.status, data });
+    toast(result.toastMessage, result.toastType);
+    if (result.terminalInfo && currentOpId === opId) {
+      handleTerminalOperation(result.terminalInfo);
+    }
   } catch (e) {
     toast('Cancel failed: ' + e.message, 'error');
   }
@@ -578,8 +775,7 @@ async function showPodLogs(podName) {
   document.getElementById('log-modal-content').textContent = 'Loading...';
   document.getElementById('log-modal').style.display = '';
   try {
-    const r = await fetch('/api/pods/' + encodeURIComponent(podName) + '/logs');
-    const data = await r.json();
+    const data = await api('pods/' + encodeURIComponent(podName) + '/logs');
     document.getElementById('log-modal-content').textContent = data.logs || data.error || 'No logs available';
   } catch (e) {
     document.getElementById('log-modal-content').textContent = 'Error: ' + e.message;
@@ -667,6 +863,18 @@ function handleGlobalClick(event) {
       break;
     case 'send-chat':
       sendChatMessage();
+      break;
+    case 'export-incident-md':
+      exportIncident('md');
+      break;
+    case 'export-incident-json':
+      exportIncident('json');
+      break;
+    case 'submit-remote-auth':
+      submitRemoteAuthToken();
+      break;
+    case 'cancel-remote-auth':
+      cancelRemoteAuthModal();
       break;
   }
 }
@@ -789,11 +997,11 @@ async function sendChatMessage() {
   showTyping();
 
   try {
-    const resp = await fetch('/api/chat', await buildRequestOptions({
+    const resp = await apiClient.request('chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
-    }));
+    });
 
     hideTyping();
 
@@ -815,7 +1023,7 @@ async function sendChatMessage() {
 
 async function resetChat() {
   try {
-    await fetch('/api/chat/reset', await buildRequestOptions({ method: 'POST' }));
+    await apiClient.request('chat/reset', { method: 'POST' });
     const container = document.getElementById('chat-messages');
     container.innerHTML = '';
     const welcome = document.getElementById('chat-welcome');
@@ -842,12 +1050,15 @@ async function resetChat() {
 
 document.addEventListener('click', handleGlobalClick);
 document.getElementById('chat-input').addEventListener('keydown', handleChatKey);
+document.getElementById('remote-auth-token-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitRemoteAuthToken(); }
+  if (e.key === 'Escape') { e.preventDefault(); cancelRemoteAuthModal(); }
+});
 
 // Check Copilot status periodically
 async function checkCopilotStatus() {
   try {
-    const r = await fetch('/api/copilot/status');
-    const s = await r.json();
+    const s = await api('copilot/status');
     const badge = document.getElementById('chat-badge');
     const status = document.getElementById('chat-conn-status');
     const bannerStatus = document.getElementById('copilot-banner-status');

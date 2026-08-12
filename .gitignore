@@ -156,6 +156,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Mission Control incident timeline persistence (local demo run state; never commit)
+tools/mission-control/.data/
+
 # =============================================================================
 # Package Managers
 # =============================================================================

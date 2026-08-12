@@ -75,11 +75,16 @@ function evaluateToolAccess(state, toolName, params = {}, context = {}) {
 
   const actionKey = createApprovalSignature(toolName, params);
   const sessionId = context.sessionId || null;
+  const incidentCorrelationId = context.incidentCorrelationId || null;
   const pendingApproval = state?.pendingApproval;
 
   if (pendingApproval && pendingApproval.expiresAt > Date.now()) {
     if (pendingApproval.status === 'approved') {
-      if (pendingApproval.sessionId === sessionId && pendingApproval.actionKey === actionKey) {
+      if (
+        pendingApproval.sessionId === sessionId &&
+        pendingApproval.actionKey === actionKey &&
+        (pendingApproval.incidentCorrelationId || null) === incidentCorrelationId
+      ) {
         state.pendingApproval = null;
         return { allowed: true };
       }
@@ -117,6 +122,7 @@ function evaluateToolAccess(state, toolName, params = {}, context = {}) {
     params,
     actionKey,
     sessionId,
+    incidentCorrelationId,
     paramsSignature: actionKey,
     approved: false,
     denied: false,
@@ -151,10 +157,13 @@ function approvePendingApproval(state, approvalId, context = {}) {
   if (pendingApproval.actionKey !== context.actionKey) {
     return { success: false, reason: 'The approval request does not match the requested action.' };
   }
+  if ((pendingApproval.incidentCorrelationId || null) !== (context.incidentCorrelationId || null)) {
+    return { success: false, reason: 'The approval request no longer matches the incident it was proposed against — it may be stale, superseded by a new run, or already closed.' };
+  }
 
   pendingApproval.approved = true;
   pendingApproval.status = 'approved';
-  return { success: true, approvalId, toolName: pendingApproval.toolName, sessionId: pendingApproval.sessionId };
+  return { success: true, approvalId, toolName: pendingApproval.toolName, sessionId: pendingApproval.sessionId, incidentCorrelationId: pendingApproval.incidentCorrelationId || null };
 }
 
 function denyPendingApproval(state, approvalId, context = {}) {
@@ -175,11 +184,14 @@ function denyPendingApproval(state, approvalId, context = {}) {
   if (pendingApproval.actionKey !== context.actionKey) {
     return { success: false, reason: 'The approval request does not match the requested action.' };
   }
+  if ((pendingApproval.incidentCorrelationId || null) !== (context.incidentCorrelationId || null)) {
+    return { success: false, reason: 'The denial request no longer matches the incident it was proposed against — it may be stale, superseded by a new run, or already closed.' };
+  }
 
   pendingApproval.denied = true;
   pendingApproval.status = 'denied';
   state.pendingApproval = null;
-  return { success: true, approvalId, toolName: pendingApproval.toolName };
+  return { success: true, approvalId, toolName: pendingApproval.toolName, incidentCorrelationId: pendingApproval.incidentCorrelationId || null };
 }
 
 function tokenizeKubectlArgs(args) {
@@ -322,4 +334,5 @@ module.exports = {
   markTelemetry,
   wrapUntrustedTelemetry,
   validateKubectlArgs,
+  createApprovalSignature,
 };

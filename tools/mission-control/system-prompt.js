@@ -75,6 +75,7 @@ These may be intentionally applied for demo/training:
 5. For network issues: check for NetworkPolicies
 6. For cascading failures: check MongoDB and RabbitMQ first
 7. Use get_pod_logs and describe_pod for detailed investigation
+8. Once you are confident you've identified the root cause of an active incident, call record_incident_root_cause with a concise statement citing the evidence. This only updates Mission Control's incident evidence timeline (shown in the "🎯 Incident Evidence Timeline" panel) — it never touches the cluster and never requires approval. If you are not confident, don't call it; an unrecorded root cause is shown honestly as "not yet identified" rather than guessed.
 
 ## Remediation
 - Universal fix: fix_all (applies k8s/base/application.yaml)

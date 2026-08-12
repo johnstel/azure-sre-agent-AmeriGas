@@ -16,6 +16,13 @@ const {
 } = require('./security');
 const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
 const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
+const { SCENARIO_MAP, SCENARIO_METADATA } = require('./scenario-catalog');
+const { evaluateScenarioHealth } = require('./scenario-health');
+const { createIncidentStore } = require('./incident-store');
+const { getSreAgentLinks } = require('./sre-agent-links');
+const { createPoller } = require('./poll-scheduler');
+const { createAssertionScheduler } = require('./assertion-scheduler');
+const operationLifecycle = require('./operation-lifecycle');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -25,48 +32,33 @@ const HOST = process.env.MISSION_CONTROL_HOST || (process.env.MISSION_CONTROL_AL
 const AUTH_TOKEN = process.env.MISSION_CONTROL_AUTH_TOKEN || '';
 const csrfTokenStore = createCsrfTokenStore();
 
-// Scenario file mapping
-const SCENARIO_MAP = {
-  oom: 'oom-killed.yaml',
-  crash: 'crash-loop.yaml',
-  image: 'image-pull-backoff.yaml',
-  cpu: 'high-cpu.yaml',
-  pending: 'pending-pods.yaml',
-  probe: 'probe-failure.yaml',
-  network: 'network-block.yaml',
-  config: 'missing-config.yaml',
-  mongodb: 'mongodb-down.yaml',
-  service: 'service-mismatch.yaml',
-};
-
 // --- Operation Tracking (deploy / destroy / validate) ---
 const operations = new Map();
 const securityState = createSecurityState();
+const incidentStore = createIncidentStore({
+  filePath: path.resolve(__dirname, '.data', 'incidents.json'),
+  onPersistError: (err) => console.error('  ⚠️  Incident timeline persistence error:', err.message),
+});
 
+
+// Operation records are created/finalized/cancelled through
+// operation-lifecycle.js, whose terminal-state guard makes 'cancelled',
+// 'completed', and 'failed' sticky — see that module for why this
+// matters (a killed child's late 'close' event must never overwrite a
+// truthful 'cancelled' outcome, and vice versa for a legitimate
+// completion that narrowly beats a concurrent cancel request).
 function createOperation(type, label) {
-  const id = crypto.randomBytes(4).toString('hex');
-  const op = { id, type, label, status: 'running', startedAt: new Date().toISOString(), endedAt: null, exitCode: null, log: [], subscribers: new Set(), process: null };
-  operations.set(id, op);
+  const op = operationLifecycle.createOperation(type, label);
+  operations.set(op.id, op);
   return op;
 }
 
 function appendLog(op, stream, text) {
-  const entry = { ts: new Date().toISOString(), stream, text };
-  op.log.push(entry);
-  for (const res of op.subscribers) res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  return operationLifecycle.appendLog(op, stream, text);
 }
 
 function finishOperation(op, exitCode) {
-  op.status = exitCode === 0 ? 'completed' : 'failed';
-  op.exitCode = exitCode;
-  op.endedAt = new Date().toISOString();
-  op.process = null;
-  for (const res of op.subscribers) {
-    res.write(`data: ${JSON.stringify({ ts: op.endedAt, stream: 'system', text: `\n── Operation ${op.status} (exit ${exitCode}) ──` })}\n\n`);
-    res.write(`event: done\ndata: ${JSON.stringify({ status: op.status, exitCode })}\n\n`);
-    res.end();
-  }
-  op.subscribers.clear();
+  return operationLifecycle.finishOperation(op, exitCode);
 }
 
 // Middleware
@@ -124,6 +116,136 @@ async function az(...args) {
   catch (err) { throw new Error(err.stderr || err.message); }
 }
 
+// --- Incident Timeline: server-authoritative scenario health ---
+
+/** Fetch pods/networkpolicies/endpoints in one shot for scenario health evaluation. Returns null if the cluster is unreachable (never fabricates a health result). */
+async function fetchClusterHealthSnapshot() {
+  const podsRaw = await kubectl('get', 'pods', '-n', 'propane', '-o', 'json').catch(() => null);
+  if (!podsRaw) return null;
+  const [netpolRaw, epRaw] = await Promise.all([
+    kubectl('get', 'networkpolicy', '-n', 'propane', '-o', 'json').catch(() => null),
+    kubectl('get', 'endpoints', '-n', 'propane', '-o', 'json').catch(() => null),
+  ]);
+  return {
+    pods: JSON.parse(podsRaw).items || [],
+    networkPolicies: netpolRaw ? (JSON.parse(netpolRaw).items || []) : [],
+    endpoints: epRaw ? (JSON.parse(epRaw).items || []) : [],
+  };
+}
+
+/**
+ * Post-action assertion scheduling (see assertion-scheduler.js): schedules
+ * a one-shot re-check of a scenario's health indicator shortly after a
+ * remediation action executes, persists enough state to survive a Mission
+ * Control restart, and rehydrates any assertion that was still pending
+ * when the process last exited.
+ */
+const assertionScheduler = createAssertionScheduler({
+  incidentStore,
+  retryDelayMs: Number(process.env.MISSION_CONTROL_ASSERTION_RETRY_MS || 5000),
+  checkScenarioHealth: async (scenarioId) => {
+    const snapshot = await fetchClusterHealthSnapshot();
+    if (!snapshot) return null; // cluster unreachable this tick; never fabricate a result
+    return evaluateScenarioHealth(scenarioId, snapshot);
+  },
+});
+const schedulePostActionAssertion = assertionScheduler.schedule;
+const rehydratePendingAssertions = assertionScheduler.rehydrate;
+
+/** Record a fully "operator-direct" remediation: proposed, auto-approved (no agent involved), executed, then asserted. */
+function recordOperatorDirectAction(toolName, params, outcome) {
+  const active = incidentStore.getActive();
+  if (!active) return;
+  const actionKey = `${toolName}::${JSON.stringify(params || {})}::${Date.now()}`;
+  incidentStore.proposeAction(active.correlationId, { actionKey, toolName, params, runMode: 'operator-direct' });
+  incidentStore.approveAction(active.correlationId, { actionKey, approver: 'operator (Mission Control UI)' });
+  incidentStore.recordActionResult(active.correlationId, {
+    actionKey,
+    toolName,
+    success: outcome.success,
+    summary: outcome.summary,
+  });
+  if (outcome.success && active.scenarioId) {
+    schedulePostActionAssertion(active.correlationId, active.scenarioId, actionKey);
+  }
+}
+
+/**
+ * Single poll tick: detect first impact, organic recovery, and approval
+ * expiry for the currently active incident (if any). Recovery is only
+ * finalized here when there is NO outstanding post-action assertion for
+ * this incident — if an approved/direct action has executed successfully
+ * but its scheduled assertion (see schedulePostActionAssertion) hasn't run
+ * yet, this poll defers entirely and lets that assertion be the
+ * authoritative source of truth for whether the fix actually worked. This
+ * closes the race where an organic health-poll "recovered" could beat a
+ * later-arriving failed assertion and leave a false "recovered" outcome
+ * that a truthful partial_recovery could never overwrite.
+ */
+async function pollActiveIncidentOnce() {
+  const pending = securityState.pendingApproval;
+  if (pending && pending.status === 'pending' && pending.expiresAt <= Date.now()) {
+    incidentStore.sweepExpiredApprovals(Date.now(), [{
+      actionKey: pending.actionKey,
+      toolName: pending.toolName,
+      expiresAt: pending.expiresAt,
+      incidentCorrelationId: pending.incidentCorrelationId || null,
+    }]);
+    securityState.pendingApproval = null;
+  }
+
+  const active = incidentStore.getActive();
+  if (!active || !active.scenarioId) return;
+  try {
+    const snapshot = await fetchClusterHealthSnapshot();
+    if (!snapshot) return;
+
+    // Re-fetch the active incident after the (possibly slow) cluster call
+    // and re-validate it is still the same, non-terminal run before
+    // mutating it — the run could have been finalized (e.g. by a
+    // concurrently-resolving post-action assertion, or denial/expiry)
+    // while this tick's kubectl calls were in flight.
+    const current = incidentStore.getActive();
+    if (!current || current.correlationId !== active.correlationId) return;
+
+    const health = evaluateScenarioHealth(active.scenarioId, snapshot);
+    if (health.active === null) return;
+    if (health.active) {
+      incidentStore.recordImpact(active.correlationId, { reason: health.reason, source: 'mission-control-health-poll' });
+      return;
+    }
+    const stored = incidentStore.getIncident(active.correlationId);
+    if (!stored || stored.finalState) return;
+    const hadImpact = stored.milestones.some((m) => m.type === 'impact_detected');
+    if (!hadImpact) return;
+    if (incidentStore.hasPendingAssertion(active.correlationId)) return; // defer to the scheduled assertion; never race it
+    incidentStore.recordRecovery(active.correlationId, { reason: health.reason, source: 'mission-control-health-poll' });
+    incidentStore.finalize(active.correlationId, 'recovered', { reason: 'automated health poll confirmed the scenario indicator cleared' });
+  } catch { /* best effort; the next tick will retry */ }
+}
+
+/**
+ * Poll the active incident on an interval, using a recursive-setTimeout
+ * scheduler with an in-flight guard (see poll-scheduler.js) so a slow tick
+ * (e.g. a hung kubectl call) can never overlap with — and race — the next
+ * one against the same incident state.
+ */
+const INCIDENT_POLL_INTERVAL_MS = Number(process.env.MISSION_CONTROL_INCIDENT_POLL_MS || 5000);
+const incidentPoller = createPoller(pollActiveIncidentOnce, INCIDENT_POLL_INTERVAL_MS);
+
+/** Best-effort approver identity for the incident timeline. Only meaningful when operator auth is configured; falls back to a generic, honest label otherwise. */
+function resolveApproverIdentity(req) {
+  const authorization = req.get('authorization') || '';
+  if (authorization.startsWith('Basic ')) {
+    try {
+      const decoded = Buffer.from(authorization.slice(6).trim(), 'base64').toString('utf8');
+      const [user] = decoded.split(':');
+      if (user) return user;
+    } catch { /* fall through to generic label */ }
+  }
+  return 'authenticated operator (token)';
+}
+
 function spawnPwsh(op, scriptPath, scriptArgs) {
   const child = spawn('pwsh', ['-NoLogo', '-NoProfile', '-File', scriptPath, ...scriptArgs], {
     cwd: REPO_ROOT, env: { ...process.env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -131,7 +253,14 @@ function spawnPwsh(op, scriptPath, scriptArgs) {
   op.process = child;
   child.stdout.on('data', (buf) => appendLog(op, 'stdout', buf.toString()));
   child.stderr.on('data', (buf) => appendLog(op, 'stderr', buf.toString()));
-  child.on('error', (err) => { appendLog(op, 'stderr', `Process error: ${err.message}`); finishOperation(op, 1); });
+  // 'exit' fires as soon as the OS process has genuinely terminated,
+  // strictly before 'close' (which waits for stdio streams to flush and
+  // is what actually finalizes the operation below). Recording that here
+  // — rather than only at 'close' — is what lets the DELETE handler
+  // truthfully refuse a cancellation that arrives in the narrow window
+  // after the process has already exited but before 'close' has fired.
+  child.on('exit', () => operationLifecycle.markChildExited(op));
+  child.on('error', (err) => { operationLifecycle.markChildExited(op); appendLog(op, 'stderr', `Process error: ${err.message}`); finishOperation(op, 1); });
   child.on('close', (code) => finishOperation(op, code ?? 1));
   return op;
 }
@@ -189,9 +318,22 @@ app.get('/api/cluster-info', async (req, res) => {
 // --- Break / Fix Endpoints ---
 
 app.post('/api/break/:scenario', async (req, res) => {
-  const filename = SCENARIO_MAP[req.params.scenario];
-  if (!filename) return res.status(400).json({ error: `Unknown scenario: ${req.params.scenario}` });
-  try { const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'scenarios', filename)); res.json({ success: true, message: out.trim() }); }
+  const scenarioId = req.params.scenario;
+  const filename = SCENARIO_MAP[scenarioId];
+  if (!filename) return res.status(400).json({ error: `Unknown scenario: ${scenarioId}` });
+  try {
+    const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'scenarios', filename));
+    const meta = SCENARIO_METADATA[scenarioId] || {};
+    const incident = incidentStore.activate({
+      scenarioId,
+      scenarioName: meta.name || scenarioId,
+      domain: meta.domain || null,
+      impactedService: meta.impactedService || null,
+      relatedIds: meta.relatedIds || [],
+      runMode: 'operator-direct',
+    });
+    res.json({ success: true, message: out.trim(), correlationId: incident.correlationId });
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -200,14 +342,26 @@ app.post('/api/fix/all', async (req, res) => {
     await kubectl('delete', 'deployment', 'safety-compliance-monitor', '-n', 'propane', '--ignore-not-found');
     await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
     const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml'));
+    recordOperatorDirectAction('fix_all', {}, { success: true, summary: out.trim() });
     res.json({ success: true, message: out.trim() });
   }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) {
+    recordOperatorDirectAction('fix_all', {}, { success: false, summary: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/fix/network', async (req, res) => {
-  try { const out = await kubectl('delete', 'networkpolicy', 'deny-tank-monitor', '-n', 'propane', '--ignore-not-found'); res.json({ success: true, message: out.trim() || 'Network policy removed' }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  try {
+    const out = await kubectl('delete', 'networkpolicy', 'deny-tank-monitor', '-n', 'propane', '--ignore-not-found');
+    const message = out.trim() || 'Network policy removed';
+    recordOperatorDirectAction('fix_network', {}, { success: true, summary: message });
+    res.json({ success: true, message });
+  }
+  catch (err) {
+    recordOperatorDirectAction('fix_network', {}, { success: false, summary: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/fix/extras', async (req, res) => {
@@ -215,9 +369,59 @@ app.post('/api/fix/extras', async (req, res) => {
     const deploymentOut = await kubectl('delete', 'deployment', 'demand-forecast-overload', 'fleet-telemetry-monitor', 'safety-compliance-monitor', 'delivery-zone-config', '-n', 'propane', '--ignore-not-found');
     const configOut = await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
     const message = [deploymentOut, configOut].filter(Boolean).join('\n') || 'Extra deployments and scenario config removed';
+    recordOperatorDirectAction('fix_extras', {}, { success: true, summary: message });
     res.json({ success: true, message });
   }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) {
+    recordOperatorDirectAction('fix_extras', {}, { success: false, summary: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Incident Evidence Timeline API ---
+
+app.get('/api/incidents/active', (req, res) => {
+  const active = incidentStore.getActive();
+  if (!active) return res.json(null);
+  res.json({
+    incident: incidentStore.toRedactedSnapshot(active.correlationId),
+    links: getSreAgentLinks(),
+  });
+});
+
+app.get('/api/incidents', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 10, 50);
+  const recent = incidentStore.listRecent(limit);
+  res.json(recent.map((incident) => ({
+    correlationId: incident.correlationId,
+    scenarioId: incident.scenarioId,
+    scenarioName: incident.scenarioName,
+    createdAt: incident.createdAt,
+    finalState: incident.finalState,
+  })));
+});
+
+app.get('/api/incidents/:correlationId', (req, res) => {
+  const incident = incidentStore.getIncident(req.params.correlationId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  res.json({ incident: incidentStore.toRedactedSnapshot(incident.correlationId), links: getSreAgentLinks() });
+});
+
+app.get('/api/incidents/:correlationId/export.json', (req, res) => {
+  const incident = incidentStore.getIncident(req.params.correlationId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  const snapshot = { ...incidentStore.toRedactedSnapshot(incident.correlationId), links: getSreAgentLinks() };
+  res.setHeader('Content-Disposition', `attachment; filename="${incident.correlationId}.json"`);
+  res.json(snapshot);
+});
+
+app.get('/api/incidents/:correlationId/export.md', (req, res) => {
+  const incident = incidentStore.getIncident(req.params.correlationId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  const markdown = incidentStore.toRedactedMarkdown(incident.correlationId);
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${incident.correlationId}.md"`);
+  res.send(markdown);
 });
 
 // --- Long-Running Operations ---
@@ -226,6 +430,34 @@ app.get('/api/operations', (req, res) => {
   const list = [];
   for (const op of operations.values()) list.push({ id: op.id, type: op.type, label: op.label, status: op.status, startedAt: op.startedAt, endedAt: op.endedAt, exitCode: op.exitCode });
   res.json(list.reverse());
+});
+
+/**
+ * Plain JSON status+log endpoint for a single operation, used as an
+ * authenticated polling fallback when EventSource streaming is
+ * unavailable (EventSource cannot attach the X-Mission-Control-Token
+ * header required for remote access, so it always fails once
+ * MISSION_CONTROL_AUTH_TOKEN is configured — see public/operation-poller.js).
+ * `?since=N` returns only log entries from index N onward (never the
+ * whole log every poll), plus `logLength` so the caller knows the next
+ * cursor to request — this is what keeps repeated polling from
+ * duplicating already-rendered log lines.
+ */
+app.get('/api/operations/:id', (req, res) => {
+  const op = operations.get(req.params.id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+  const since = Math.max(0, Math.trunc(Number(req.query.since)) || 0);
+  res.json({
+    id: op.id,
+    type: op.type,
+    label: op.label,
+    status: op.status,
+    startedAt: op.startedAt,
+    endedAt: op.endedAt,
+    exitCode: op.exitCode,
+    log: op.log.slice(since),
+    logLength: op.log.length,
+  });
 });
 
 app.get('/api/operations/:id/stream', (req, res) => {
@@ -241,12 +473,34 @@ app.get('/api/operations/:id/stream', (req, res) => {
 app.delete('/api/operations/:id', (req, res) => {
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
-  if (op.status !== 'running') return res.json({ message: 'Already finished' });
-  if (op.process) { op.process.kill('SIGTERM'); appendLog(op, 'system', '\n── Cancelled by user ──'); }
-  op.status = 'cancelled'; op.endedAt = new Date().toISOString();
-  for (const r of op.subscribers) { r.write(`event: done\ndata: ${JSON.stringify({ status: 'cancelled', exitCode: null })}\n\n`); r.end(); }
-  op.subscribers.clear();
-  res.json({ message: 'Cancelled' });
+  // Every response includes a structured `cancelled` boolean plus the
+  // operation's current, truthful `status`/`exitCode`, in addition to
+  // the legacy `message` string, so callers can branch on explicit
+  // fields instead of parsing message text — brittle, and easy to
+  // misinterpret as success. `cancelled: true` is returned if and only
+  // if this exact request actually won the cancellation race.
+  if (op.status !== 'running') return res.json({ message: 'Already finished', cancelled: false, status: op.status, exitCode: op.exitCode });
+  if (op.childExited) {
+    // The underlying child process has already genuinely exited (Node's
+    // 'exit'/'error' event already fired) even though 'close' — and
+    // therefore the true completed/failed finalization — hasn't landed
+    // yet. Don't kill an already-dead process or attempt a cancellation;
+    // the real outcome is already determined and about to be recorded
+    // truthfully.
+    return res.json({ message: 'Already finished', cancelled: false, status: op.status, exitCode: op.exitCode });
+  }
+  // Capture the process reference and attempt the transition FIRST.
+  // cancelOperation() atomically decides whether cancellation wins
+  // (transitioning to 'cancelled' AND appending the "Cancelled by user"
+  // log line together) or loses (leaving op — and its log — completely
+  // untouched, because the true completed/failed outcome already won or
+  // is about to). Only if it wins do we actually signal the process;
+  // this ordering guarantees the log can never claim a cancellation that
+  // didn't truly happen.
+  const process = op.process;
+  if (!operationLifecycle.cancelOperation(op)) return res.json({ message: 'Already finished', cancelled: false, status: op.status, exitCode: op.exitCode });
+  if (process) process.kill('SIGTERM');
+  res.json({ message: 'Cancelled', cancelled: true, status: op.status, exitCode: op.exitCode });
 });
 
 app.post('/api/deploy', (req, res) => {
@@ -311,7 +565,7 @@ let chatHistory = [];
 
 // Helper to create a fresh Copilot session
 async function createCopilotSession() {
-  const tools = createTools(securityState);
+  const tools = createTools(securityState, incidentStore, { scheduleAssertion: schedulePostActionAssertion });
   return copilotClient.createSession({
     clientName: 'amerigas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
@@ -333,13 +587,36 @@ app.get('/api/approval/pending', (req, res) => {
 app.post('/api/approval/approve', (req, res) => {
   const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  res.json(approvePendingApproval(securityState, approvalId, { sessionId, actionKey }));
+  // Always pass the CURRENT active incident's correlationId — security-policy.js
+  // validates it against whatever was stored at proposal time, and rejects
+  // the approval outright if they don't match (stale, superseded by a new
+  // run, or the original incident has since been finalized). This never
+  // falls back to writing to "whichever incident happens to be active".
+  const activeIncident = incidentStore.getActive();
+  const result = approvePendingApproval(securityState, approvalId, {
+    sessionId,
+    actionKey,
+    incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
+  });
+  if (result.success && result.incidentCorrelationId) {
+    incidentStore.approveAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
+  }
+  res.json(result);
 });
 
 app.post('/api/approval/deny', (req, res) => {
   const { approvalId, sessionId, actionKey } = req.body || {};
   if (!approvalId) return res.status(400).json({ error: 'approvalId is required' });
-  res.json(denyPendingApproval(securityState, approvalId, { sessionId, actionKey }));
+  const activeIncident = incidentStore.getActive();
+  const result = denyPendingApproval(securityState, approvalId, {
+    sessionId,
+    actionKey,
+    incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
+  });
+  if (result.success && result.incidentCorrelationId) {
+    incidentStore.denyAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
+  }
+  res.json(result);
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -401,6 +678,11 @@ async function preflight() {
   console.log('');
   const checks = await preflight();
   checks.forEach(c => console.log(c));
+
+  const rehydratedCount = rehydratePendingAssertions();
+  if (rehydratedCount > 0) {
+    console.log(`  ⏳ Rehydrated ${rehydratedCount} pending post-action assertion(s) from a prior run`);
+  }
 
   console.log('  ⏳ Initializing Copilot SDK...');
   try {
