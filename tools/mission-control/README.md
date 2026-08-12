@@ -19,6 +19,16 @@ MISSION_CONTROL_ALLOW_REMOTE=true
 MISSION_CONTROL_AUTH_TOKEN=your-secret
 ```
 
+## Remote access token entry (browser)
+
+When `MISSION_CONTROL_AUTH_TOKEN` is configured and the UI is loaded from a non-loopback address, the server rejects every `/api/*` call (including the CSRF token endpoint) with `401` until the matching `X-Mission-Control-Token` header is supplied. The browser UI (`public/api-client.js`) handles this with an explicit entry flow instead of ever putting the token in a URL:
+
+- The first request that comes back `401` opens a "Remote Access Token Required" modal (`public/index.html` / `app.js`). Concurrent requests share the same prompt instead of opening several.
+- The token the operator enters is attached as the `X-Mission-Control-Token` request header on every subsequent `/api/*` call (both reads and mutations). Sending it on a loopback request is harmless — the server only checks it for non-loopback callers.
+- The token is kept in memory and, for convenience across a page reload within the same tab, in `sessionStorage` — **never** `localStorage`, a query string, a log line, an exported evidence pack, or rendered as page text. `sessionStorage` is cleared automatically when the browser tab closes.
+- The Content-Security-Policy is unchanged (`connect-src 'self'`) — attaching a header to a same-origin request needs no CSP relaxation.
+- Known limitation: the terminal output stream (`EventSource`) and the incident evidence-pack export buttons (plain navigations) cannot attach custom headers, so they remain loopback-only today; they never fall back to a query-string token.
+
 ## Incident evidence timeline
 
 Every breakable scenario applied via Mission Control (button or Copilot chat) is tracked as a single, per-run "incident" with a unique correlation id. The timeline records scenario activation, server-observed impact, evidence gathered, proposed/approved/denied/expired remediation actions, the action's result, a post-action assertion, and recovery — all with server timestamps, so time-to-detect/root-cause/recover are only ever reported when actually observed.

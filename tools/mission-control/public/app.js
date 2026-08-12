@@ -46,43 +46,45 @@ function isMongodbScenarioActive(pods) {
 let currentPods = [];
 let networkPolicyActive = false;
 let serviceMismatchActive = false;
-let csrfToken = null;
-let csrfTokenPromise = null;
 const render = window.MissionControlRender;
 const incidentUI = window.IncidentTimelineUI;
 
-async function getCsrfToken() {
-  if (csrfToken) return csrfToken;
-  if (!csrfTokenPromise) {
-    csrfTokenPromise = fetch('/api/csrf-token')
-      .then(async (r) => {
-        const data = r.ok ? await r.json() : null;
-        csrfToken = data?.token || null;
-        return csrfToken;
-      })
-      .catch(() => null);
-  }
-  return csrfTokenPromise;
+/* ── Remote Access Token Prompt ────────────────────────── */
+// Resolves the promise created by showRemoteAuthModal() once the operator
+// submits or cancels. Only one prompt is ever shown at a time — the
+// apiClient de-dupes concurrent 401s into a single call to this function.
+let remoteAuthResolver = null;
+
+function showRemoteAuthModal() {
+  return new Promise((resolve) => {
+    remoteAuthResolver = resolve;
+    const input = document.getElementById('remote-auth-token-input');
+    input.value = '';
+    document.getElementById('remote-auth-modal').style.display = '';
+    input.focus();
+  });
 }
 
-async function buildRequestOptions(opts = {}) {
-  const headers = new Headers(opts.headers || {});
-  const method = String(opts.method || 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-    const token = await getCsrfToken();
-    if (token) headers.set('X-CSRF-Token', token);
-  }
-  if (opts.body !== undefined && !headers.has('Content-Type') && !(opts.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
-  }
-  return { ...opts, headers };
+function submitRemoteAuthToken() {
+  const input = document.getElementById('remote-auth-token-input');
+  const token = input.value.trim();
+  input.value = ''; // never leave the token sitting in the input longer than needed
+  document.getElementById('remote-auth-modal').style.display = 'none';
+  if (remoteAuthResolver) { remoteAuthResolver(token || null); remoteAuthResolver = null; }
 }
-   
+
+function cancelRemoteAuthModal() {
+  document.getElementById('remote-auth-token-input').value = '';
+  document.getElementById('remote-auth-modal').style.display = 'none';
+  if (remoteAuthResolver) { remoteAuthResolver(null); remoteAuthResolver = null; }
+}
+
 /* ── API Helpers ───────────────────────────────────────── */
-async function api(path, opts = {}) {
-  const r = await fetch('/api/' + path, await buildRequestOptions(opts));
-  return r.json();
-}
+// Centralizes CSRF token handling (a fresh, single-use token per mutation)
+// and the optional remote-access token (attached as a header, never a
+// query string; kept only in sessionStorage/memory — see api-client.js).
+const apiClient = window.MissionControlApiClient.createApiClient({ onAuthRequired: showRemoteAuthModal });
+const api = apiClient.api;
 
 /* ── Toast ─────────────────────────────────────────────── */
 function toast(msg, type='success') {
@@ -601,11 +603,11 @@ async function startDeploy() {
 
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/deploy', await buildRequestOptions({
+    const r = await apiClient.request('deploy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ location, workloadName, skipRbac, skipSreAgent }),
-    }));
+    });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Deploy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Deployment started');
@@ -631,11 +633,11 @@ async function executeDestroy() {
   const rg = document.getElementById('destroy-rg').value || 'rg-srelab-eastus2';
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/destroy', await buildRequestOptions({
+    const r = await apiClient.request('destroy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resourceGroupName: rg }),
-    }));
+    });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Destroy failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Destroy operation started');
@@ -650,11 +652,11 @@ async function startValidate() {
   const rg = document.getElementById('validate-rg').value || 'rg-srelab-eastus2';
   setInfraButtonsEnabled(false);
   try {
-    const r = await fetch('/api/validate', await buildRequestOptions({
+    const r = await apiClient.request('validate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resourceGroupName: rg }),
-    }));
+    });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Validate failed to start', 'error'); setInfraButtonsEnabled(true); return; }
     toast('Validation started');
@@ -668,7 +670,7 @@ async function startValidate() {
 async function cancelOperation() {
   if (!currentOpId) return;
   try {
-    await fetch('/api/operations/' + currentOpId, await buildRequestOptions({ method: 'DELETE' }));
+    await apiClient.request('operations/' + currentOpId, { method: 'DELETE' });
     toast('Operation cancelled');
   } catch (e) {
     toast('Cancel failed: ' + e.message, 'error');
@@ -681,8 +683,7 @@ async function showPodLogs(podName) {
   document.getElementById('log-modal-content').textContent = 'Loading...';
   document.getElementById('log-modal').style.display = '';
   try {
-    const r = await fetch('/api/pods/' + encodeURIComponent(podName) + '/logs');
-    const data = await r.json();
+    const data = await api('pods/' + encodeURIComponent(podName) + '/logs');
     document.getElementById('log-modal-content').textContent = data.logs || data.error || 'No logs available';
   } catch (e) {
     document.getElementById('log-modal-content').textContent = 'Error: ' + e.message;
@@ -776,6 +777,12 @@ function handleGlobalClick(event) {
       break;
     case 'export-incident-json':
       exportIncident('json');
+      break;
+    case 'submit-remote-auth':
+      submitRemoteAuthToken();
+      break;
+    case 'cancel-remote-auth':
+      cancelRemoteAuthModal();
       break;
   }
 }
@@ -898,11 +905,11 @@ async function sendChatMessage() {
   showTyping();
 
   try {
-    const resp = await fetch('/api/chat', await buildRequestOptions({
+    const resp = await apiClient.request('chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
-    }));
+    });
 
     hideTyping();
 
@@ -924,7 +931,7 @@ async function sendChatMessage() {
 
 async function resetChat() {
   try {
-    await fetch('/api/chat/reset', await buildRequestOptions({ method: 'POST' }));
+    await apiClient.request('chat/reset', { method: 'POST' });
     const container = document.getElementById('chat-messages');
     container.innerHTML = '';
     const welcome = document.getElementById('chat-welcome');
@@ -951,12 +958,15 @@ async function resetChat() {
 
 document.addEventListener('click', handleGlobalClick);
 document.getElementById('chat-input').addEventListener('keydown', handleChatKey);
+document.getElementById('remote-auth-token-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitRemoteAuthToken(); }
+  if (e.key === 'Escape') { e.preventDefault(); cancelRemoteAuthModal(); }
+});
 
 // Check Copilot status periodically
 async function checkCopilotStatus() {
   try {
-    const r = await fetch('/api/copilot/status');
-    const s = await r.json();
+    const s = await api('copilot/status');
     const badge = document.getElementById('chat-badge');
     const status = document.getElementById('chat-conn-status');
     const bannerStatus = document.getElementById('copilot-banner-status');

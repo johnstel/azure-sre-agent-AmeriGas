@@ -293,9 +293,15 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 #chat-send{background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;border:none;width:42px;height:42px;border-radius:8px;font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .2s}
 #chat-send:disabled{opacity:.4;cursor:not-allowed}
 #chat-send:hover:not(:disabled){opacity:.85}
+
+/* ── Remote Auth Modal ────────────────────────────────── */
+.remote-auth-input{width:100%;background:var(--bg);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:.9rem;font-family:inherit;margin-top:.5rem}
+.remote-auth-input:focus{outline:none;border-color:var(--cyan)}
+.remote-auth-hint{font-size:.78rem;color:var(--text-dim);margin-top:.4rem}
 </style>
 <script src="/render-utils.js"></script>
 <script src="/incident-timeline-ui.js"></script>
+<script src="/api-client.js"></script>
 </head>
 <body>
 
@@ -486,6 +492,20 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     <pre id="log-modal-content" class="log-content">Loading...</pre>
     <div class="modal-buttons">
       <button class="fix-btn secondary" data-action="close-log">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Remote Access Token Modal -->
+<div id="remote-auth-modal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3>🔒 Remote Access Token Required</h3>
+    <p>This Mission Control instance requires a token for remote API access. Enter the token configured via <code>MISSION_CONTROL_AUTH_TOKEN</code> on the server.</p>
+    <input type="password" id="remote-auth-token-input" class="remote-auth-input" autocomplete="off" placeholder="Remote access token">
+    <p class="remote-auth-hint">The token is kept only for this browser tab (sessionStorage) and is never written to logs, exports, or the page itself.</p>
+    <div class="modal-buttons">
+      <button class="fix-btn secondary" data-action="cancel-remote-auth">Cancel</button>
+      <button class="infra-btn deploy" data-action="submit-remote-auth">Connect</button>
     </div>
   </div>
 </div>
