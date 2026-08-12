@@ -26,3 +26,18 @@ output "managed_identity_principal_id" {
   description = "SRE Agent managed identity principal ID"
   value       = azurerm_user_assigned_identity.sre_agent.principal_id
 }
+
+output "access_level" {
+  description = "The access level (Low/High) the SRE Agent's role assignments were derived from"
+  value       = var.access_level
+}
+
+output "assigned_role_definition_ids" {
+  description = "The exact built-in role definition GUIDs assigned to the SRE Agent identity for the selected access level"
+  value       = local.selected_roles
+}
+
+output "managed_resource_group_id" {
+  description = "The exact resource group ID bound in knowledgeGraphConfiguration.managedResources"
+  value       = data.azurerm_resource_group.main.id
+}

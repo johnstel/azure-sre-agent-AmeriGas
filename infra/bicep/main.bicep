@@ -321,5 +321,7 @@ output sreAgentManagedIdentityPrincipalId string = deploySreAgent ? sreAgent!.ou
 output sreAgentApiVersionUsed string = deploySreAgent ? sreAgent!.outputs.apiVersionUsed : ''
 output sreAgentManagedResourceGroupId string = deploySreAgent ? sreAgent!.outputs.managedResourceGroupId : ''
 output sreAgentAppInsightsResourceId string = deploySreAgent ? sreAgent!.outputs.appInsightsResourceIdBound : ''
+output sreAgentAccessLevel string = deploySreAgent ? sreAgent!.outputs.accessLevel : ''
+output sreAgentAssignedRoleDefinitionIds array = deploySreAgent ? sreAgent!.outputs.assignedRoleDefinitionIds : []
 output adxClusterUri string = deployDataExplorer ? dataExplorer!.outputs.clusterUri : ''
 output adxDatabaseName string = deployDataExplorer ? dataExplorer!.outputs.databaseName : ''

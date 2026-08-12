@@ -64,7 +64,7 @@ When you create an SRE Agent, Azure automatically provisions:
 
 ## Step 2: Agent Permissions (automated, least-scope)
 
-The SRE Agent needs access to your Azure resources to diagnose and **remediate** issues. When deployed via Bicep (default), the agent's managed identity is automatically assigned Reader, Contributor, and Log Analytics Reader roles **scoped to the deployment resource group only** — never subscription-wide. `scripts/configure-rbac.ps1` runs automatically from `deploy.ps1` to grant the additional AKS-specific roles below; you only need to run it manually if you skipped RBAC during deploy (`-SkipRbac`) or created the agent via the portal:
+The SRE Agent needs access to your Azure resources to diagnose and **remediate** issues. When deployed via Bicep (default `accessLevel = High`), the agent's managed identity is automatically assigned Reader, Contributor, and Log Analytics Contributor roles **scoped to the deployment resource group only** — never subscription-wide. (A `Low` access level is also available for read-only diagnosis: Reader + Log Analytics Reader, no Contributor.) `scripts/configure-rbac.ps1` runs automatically from `deploy.ps1` to grant the additional AKS-specific roles below; you only need to run it manually if you skipped RBAC during deploy (`-SkipRbac`) or created the agent via the portal:
 
 ```powershell
 .\scripts\configure-rbac.ps1 `

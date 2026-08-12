@@ -248,11 +248,36 @@ if ($sreAgentResourceSummary) {
             $agentPrincipalId = $sreAgentArm.identity.principalId
         }
 
+        # Expected role definition GUIDs per access level. Must stay in sync
+        # with infra/bicep/modules/sre-agent.bicep's roleDefinitionIds/
+        # roleDefinitions variables (verified against
+        # `az role definition list --query "[?name=='<guid>'].{name:roleName}"`
+        # — 92aaf0da-... is Log Analytics *Contributor*, not Reader; the
+        # actual Log Analytics *Reader* GUID is 73c42c96-...).
+        $expectedRoleGuidsByLevel = @{
+            Low  = @('73c42c96-874c-492b-b04d-ab87d138a893', 'acdd72a7-3385-48ef-bd42-f606fba81ae7') # Log Analytics Reader, Reader
+            High = @('92aaf0da-9dab-42b6-94a3-d43ce8d16293', 'acdd72a7-3385-48ef-bd42-f606fba81ae7', 'b24988ac-6180-42a0-ab88-20f7382dd24c') # Log Analytics Contributor, Reader, Contributor
+        }
+        $accessLevel = $sreAgentArm.properties.actionConfiguration.accessLevel
+
         if ($agentPrincipalId) {
-            $rgScopeAssignments = az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId/resourceGroups/$ResourceGroupName" --output json 2>$null | ConvertFrom-Json
+            $rgScopeAssignments = @(az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId/resourceGroups/$ResourceGroupName" --output json 2>$null | ConvertFrom-Json)
             $totalChecks++
-            if (Write-Check "SRE Agent identity has resource-group-scoped role assignment" ($null -ne $rgScopeAssignments -and $rgScopeAssignments.Count -gt 0)) {
+            if (Write-Check "SRE Agent identity has resource-group-scoped role assignment" ($rgScopeAssignments.Count -gt 0)) {
                 $passedChecks++
+            }
+
+            if ($accessLevel -and $expectedRoleGuidsByLevel.ContainsKey($accessLevel)) {
+                $expectedRoleGuids = @($expectedRoleGuidsByLevel[$accessLevel] | Sort-Object)
+                $actualRoleGuids = @($rgScopeAssignments | ForEach-Object { ($_.roleDefinitionId -split '/')[-1] } | Sort-Object -Unique)
+                $rolesMatchExactly = (Compare-Object -ReferenceObject $expectedRoleGuids -DifferenceObject $actualRoleGuids -SyncWindow 0 | Measure-Object).Count -eq 0
+                $totalChecks++
+                if (Write-Check "SRE Agent RG-scope roles exactly match the '$accessLevel' access level" $rolesMatchExactly "Expected: $($expectedRoleGuids -join ', ') / Actual: $($actualRoleGuids -join ', ')") {
+                    $passedChecks++
+                }
+            }
+            else {
+                Write-Host "  ⚠️  Unrecognized or missing actionConfiguration.accessLevel ('$accessLevel') — skipping exact role-set check" -ForegroundColor Yellow
             }
 
             $subScopeAssignments = az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId" --output json 2>$null | ConvertFrom-Json

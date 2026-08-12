@@ -23,7 +23,7 @@ param location string
 @description('Tags to apply to resources')
 param tags object
 
-@description('The access level for the SRE Agent (High = Reader + Contributor + Log Analytics Reader, Low = Reader + Log Analytics Reader)')
+@description('The access level for the SRE Agent (High = Reader + Contributor + Log Analytics Contributor for approved remediation, Low = Reader + Log Analytics Reader — read-only, no remediation)')
 @allowed(['High', 'Low'])
 param accessLevel string = 'High'
 
@@ -58,17 +58,33 @@ var identityName = '${agentName}-${uniqueSuffix}'
 // graph can never drift to a different resource group or subscription.
 var managedResourceGroupId = resourceGroup().id
 
+// Built-in Azure RBAC role definition GUIDs, named explicitly so the
+// GUID-to-role mapping is verifiable from the compiled ARM template (not
+// just from a comment) and can't silently drift out of sync with its label.
+// Verified against `az role definition list` on 2026-08-12:
+//   az role definition list --query "[?name=='<guid>'].{name:roleName}"
+var roleDefinitionIds = {
+  logAnalyticsReader: '73c42c96-874c-492b-b04d-ab87d138a893' // Log Analytics Reader — read-only query access
+  logAnalyticsContributor: '92aaf0da-9dab-42b6-94a3-d43ce8d16293' // Log Analytics Contributor — manage saved searches/alerts, required for approved remediation
+  reader: 'acdd72a7-3385-48ef-bd42-f606fba81ae7' // Reader
+  contributor: 'b24988ac-6180-42a0-ab88-20f7382dd24c' // Contributor
+}
+
 // Role definition IDs by access level. All assignments are scoped to this
 // resource group only (least-scope RBAC) — never subscription-wide.
+// Low is strictly read-only (diagnosis only, no remediation). High adds
+// Contributor (full remediation) and Log Analytics Contributor
+// (manage/act on Log Analytics saved searches and alerts as part of
+// approved remediation actions) — deliberately, not a mislabeled Reader.
 var roleDefinitions = {
   Low: [
-    '92aaf0da-9dab-42b6-94a3-d43ce8d16293' // Log Analytics Reader
-    'acdd72a7-3385-48ef-bd42-f606fba81ae7' // Reader
+    roleDefinitionIds.logAnalyticsReader
+    roleDefinitionIds.reader
   ]
   High: [
-    '92aaf0da-9dab-42b6-94a3-d43ce8d16293' // Log Analytics Reader
-    'acdd72a7-3385-48ef-bd42-f606fba81ae7' // Reader
-    'b24988ac-6180-42a0-ab88-20f7382dd24c' // Contributor
+    roleDefinitionIds.logAnalyticsContributor
+    roleDefinitionIds.reader
+    roleDefinitionIds.contributor
   ]
 }
 
@@ -190,3 +206,5 @@ output managedIdentityPrincipalId string = managedIdentity.properties.principalI
 output apiVersionUsed string = apiVersion
 output managedResourceGroupId string = managedResourceGroupId
 output appInsightsResourceIdBound string = appInsightsResourceId
+output accessLevel string = accessLevel
+output assignedRoleDefinitionIds array = roleDefinitions[accessLevel]
