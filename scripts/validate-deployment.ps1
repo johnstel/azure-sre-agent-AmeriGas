@@ -29,10 +29,24 @@ param(
     [string]$ResourceGroupName,
 
     [Parameter()]
-    [switch]$Detailed
+    [switch]$Detailed,
+
+    [Parameter()]
+    [string]$ExpectedSubscriptionId,
+
+    [Parameter()]
+    [string]$KnowledgeFilePath = (Join-Path $PSScriptRoot ".." "docs/sre-agent-knowledge.md")
 )
 
 $ErrorActionPreference = 'Continue'
+
+# Reuse the SRE Agent knowledge-bootstrap functions (ARM read, data-plane
+# token, agent-memory status/indexer calls) instead of duplicating them here.
+# Dot-sourcing runs the file's param block but not its guarded entry point
+# (see bottom of that script), so a dummy AgentName is supplied only to
+# satisfy mandatory parameter binding — it is never used for an actual
+# bootstrap since only the function definitions are needed.
+. (Join-Path $PSScriptRoot "bootstrap-sre-agent-knowledge.ps1") -ResourceGroupName $ResourceGroupName -AgentName '__validate-deployment-dot-source__' -KnowledgeFilePath $KnowledgeFilePath
 
 # Colors and formatting
 function Write-Check {
@@ -143,6 +157,166 @@ if ($grafana) {
     $totalChecks++
     if (Write-Check "Managed Grafana exists" $true $grafana.name) {
         $passedChecks++
+    }
+}
+
+# =============================================================================
+# AZURE SRE AGENT
+# =============================================================================
+$sreAgentResourceSummary = $resources | Where-Object { $_.type -eq "Microsoft.App/agents" } | Select-Object -First 1
+
+if ($sreAgentResourceSummary) {
+    Write-Section "Azure SRE Agent"
+
+    # --- Subscription context -------------------------------------------------
+    $currentSubscriptionId = az account show --query id --output tsv 2>$null
+    $totalChecks++
+    $subscriptionOk = -not [string]::IsNullOrWhiteSpace($currentSubscriptionId)
+    if ($ExpectedSubscriptionId) {
+        $subscriptionOk = $subscriptionOk -and ($currentSubscriptionId -eq $ExpectedSubscriptionId)
+    }
+    if (Write-Check "Subscription context matches expected" $subscriptionOk "Current: $currentSubscriptionId$(if ($ExpectedSubscriptionId) { " / Expected: $ExpectedSubscriptionId" })") {
+        $passedChecks++
+    }
+
+    # --- Read the agent's control-plane state, trying supported API versions --
+    $sreAgentArm = $null
+    $sreAgentArmApiVersion = $null
+    foreach ($candidateApiVersion in @('2026-01-01', '2025-05-01-preview')) {
+        try {
+            $sreAgentArm = Get-SreAgentResource -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentResourceSummary.name -ApiVersion $candidateApiVersion
+            $sreAgentArmApiVersion = $candidateApiVersion
+            break
+        }
+        catch {
+            continue
+        }
+    }
+
+    $totalChecks++
+    if (Write-Check "SRE Agent control-plane state readable" ($null -ne $sreAgentArm) "API version: $sreAgentArmApiVersion") {
+        $passedChecks++
+    }
+
+    if ($sreAgentArm) {
+        # --- Exact managed resource group binding (no drift) -------------------
+        $expectedManagedResourceId = "/subscriptions/$currentSubscriptionId/resourceGroups/$ResourceGroupName"
+        $managedResources = @($sreAgentArm.properties.knowledgeGraphConfiguration.managedResources)
+        $managedResourcesOk = ($managedResources.Count -eq 1) -and ($managedResources[0] -ieq $expectedManagedResourceId)
+        $totalChecks++
+        if (Write-Check "managedResources contains exactly the lab resource group" $managedResourcesOk "$($managedResources -join ', ')") {
+            $passedChecks++
+        }
+
+        # --- Provisioning / running state --------------------------------------
+        $totalChecks++
+        if (Write-Check "Agent provisioningState is Succeeded" ($sreAgentArm.properties.provisioningState -eq 'Succeeded') "State: $($sreAgentArm.properties.provisioningState)") {
+            $passedChecks++
+        }
+
+        $totalChecks++
+        if (Write-Check "Agent powerState is Running" ($sreAgentArm.properties.powerState -eq 'Running') "State: $($sreAgentArm.properties.powerState)") {
+            $passedChecks++
+        }
+
+        # --- Review mode (never Autonomous/Automatic for this demo lab) --------
+        $totalChecks++
+        if (Write-Check "actionConfiguration.mode is Review" ($sreAgentArm.properties.actionConfiguration.mode -eq 'Review') "Mode: $($sreAgentArm.properties.actionConfiguration.mode)") {
+            $passedChecks++
+        }
+
+        # --- Telemetry / Application Insights consistency ----------------------
+        $appInsightsResource = $resources | Where-Object { $_.type -eq "Microsoft.Insights/components" } | Select-Object -First 1
+        if ($appInsightsResource) {
+            $appInsightsDetails = az resource show --ids $appInsightsResource.id --api-version 2020-02-02 --query properties.AppId --output tsv 2>$null
+            $telemetryOk = -not [string]::IsNullOrWhiteSpace($appInsightsDetails) -and ($sreAgentArm.properties.logConfiguration.applicationInsightsConfiguration.appId -eq $appInsightsDetails)
+            $totalChecks++
+            if (Write-Check "SRE Agent App Insights App ID matches deployed resource" $telemetryOk) {
+                $passedChecks++
+            }
+        }
+
+        # --- Least-scope RBAC (resource group only, never subscription-wide) --
+        $agentPrincipalId = $null
+        if ($sreAgentArm.identity.userAssignedIdentities) {
+            $firstIdentity = @($sreAgentArm.identity.userAssignedIdentities.PSObject.Properties)[0]
+            if ($firstIdentity) {
+                $agentPrincipalId = $firstIdentity.Value.principalId
+            }
+        }
+        if (-not $agentPrincipalId -and $sreAgentArm.identity.principalId) {
+            $agentPrincipalId = $sreAgentArm.identity.principalId
+        }
+
+        if ($agentPrincipalId) {
+            $rgScopeAssignments = az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId/resourceGroups/$ResourceGroupName" --output json 2>$null | ConvertFrom-Json
+            $totalChecks++
+            if (Write-Check "SRE Agent identity has resource-group-scoped role assignment" ($null -ne $rgScopeAssignments -and $rgScopeAssignments.Count -gt 0)) {
+                $passedChecks++
+            }
+
+            $subScopeAssignments = az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId" --output json 2>$null | ConvertFrom-Json
+            $exactSubscriptionScopeAssignments = @($subScopeAssignments | Where-Object { $_.scope -ieq "/subscriptions/$currentSubscriptionId" })
+            $totalChecks++
+            if (Write-Check "No subscription-wide role assignment for SRE Agent identity" ($exactSubscriptionScopeAssignments.Count -eq 0) "Least-scope RBAC — RG/resource scope only") {
+                $passedChecks++
+            }
+        }
+
+        # --- Knowledge readiness (content hash + indexer status) ---------------
+        if (Test-Path -Path $KnowledgeFilePath) {
+            $expectedHash = (Get-FileHash -Path $KnowledgeFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expectedDocumentName = "sre-agent-knowledge.$($expectedHash.Substring(0, 12)).md"
+
+            if ($sreAgentArm.properties.provisioningState -eq 'Succeeded' -and $sreAgentArm.properties.agentEndpoint) {
+                try {
+                    $dataPlaneToken = Get-DataPlaneAccessToken
+                    $apiSupported = Test-AgentMemoryApiSupported -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken
+
+                    $totalChecks++
+                    if (Write-Check "Agent memory (knowledge) API is available" $apiSupported) {
+                        $passedChecks++
+                    }
+
+                    if ($apiSupported) {
+                        $documentNames = @(Get-AgentMemoryDocumentNames -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken)
+                        $currentDocPresent = $documentNames -contains $expectedDocumentName
+                        $staleDocs = @($documentNames | Where-Object { $_ -like 'sre-agent-knowledge.*' -and $_ -ne $expectedDocumentName })
+
+                        $totalChecks++
+                        if (Write-Check "Current knowledge version is present (hash $expectedHash)" $currentDocPresent "Expected document: $expectedDocumentName") {
+                            $passedChecks++
+                        }
+
+                        $totalChecks++
+                        if (Write-Check "No stale knowledge versions remain" ($staleDocs.Count -eq 0) "$($staleDocs -join ', ')") {
+                            $passedChecks++
+                        }
+
+                        if ($currentDocPresent) {
+                            $indexed = $false
+                            try {
+                                $indexed = Wait-KnowledgeIndexed -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken -DocumentName $expectedDocumentName -TimeoutSeconds 30 -PollIntervalSeconds 5
+                            }
+                            catch {
+                                $indexed = $false
+                            }
+                            $totalChecks++
+                            if (Write-Check "Current knowledge version is indexed" $indexed) {
+                                $passedChecks++
+                            }
+                        }
+                    }
+                }
+                catch {
+                    $totalChecks++
+                    Write-Check "Agent memory (knowledge) API is available" $false "Error probing data plane: $_" | Out-Null
+                }
+            }
+        }
+        else {
+            Write-Host "  ⚠️  Knowledge file not found at $KnowledgeFilePath — skipping knowledge readiness checks" -ForegroundColor Yellow
+        }
     }
 }
 

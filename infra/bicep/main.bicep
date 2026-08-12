@@ -34,6 +34,13 @@ param deployAlerts bool = false
 @description('Deploy Azure SRE Agent for AI-powered diagnostics and remediation')
 param deploySreAgent bool = true
 
+@description('Pinned Microsoft.App/agents control-plane API version. scripts/deploy.ps1 detects the newest version supported by the target subscription via the resource-provider metadata and passes it here; it fails deployment rather than silently degrading when neither version is registered.')
+@allowed([
+  '2026-01-01'
+  '2025-05-01-preview'
+])
+param sreAgentApiVersion string = '2026-01-01'
+
 @description('Deploy Azure Data Explorer cluster for propane operations log analytics (optional — SRE Agent uses Log Analytics directly)')
 param deployDataExplorer bool = false
 
@@ -217,9 +224,11 @@ module sreAgent 'modules/sre-agent.bicep' = if (deploySreAgent) {
     location: location
     tags: tags
     accessLevel: 'High'
+    appInsightsResourceId: appInsights.outputs.appInsightsId
     appInsightsAppId: appInsights.outputs.appId
     appInsightsConnectionString: appInsights.outputs.connectionString
     uniqueSuffix: uniqueSuffix
+    apiVersion: sreAgentApiVersion
   }
 }
 
@@ -309,5 +318,8 @@ output sreAgentPortalUrl string = deploySreAgent ? sreAgent!.outputs.agentPortal
 output sreAgentName string = deploySreAgent ? sreAgent!.outputs.agentName : ''
 output sreAgentManagedIdentityId string = deploySreAgent ? sreAgent!.outputs.managedIdentityId : ''
 output sreAgentManagedIdentityPrincipalId string = deploySreAgent ? sreAgent!.outputs.managedIdentityPrincipalId : ''
+output sreAgentApiVersionUsed string = deploySreAgent ? sreAgent!.outputs.apiVersionUsed : ''
+output sreAgentManagedResourceGroupId string = deploySreAgent ? sreAgent!.outputs.managedResourceGroupId : ''
+output sreAgentAppInsightsResourceId string = deploySreAgent ? sreAgent!.outputs.appInsightsResourceIdBound : ''
 output adxClusterUri string = deployDataExplorer ? dataExplorer!.outputs.clusterUri : ''
 output adxDatabaseName string = deployDataExplorer ? dataExplorer!.outputs.databaseName : ''

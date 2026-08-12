@@ -25,12 +25,16 @@ Before creating an SRE Agent, ensure you have:
 
 ### Automated via Bicep (Default)
 
-The SRE Agent is deployed automatically as part of `scripts/deploy.ps1` using the `Microsoft.App/agents@2025-05-01-preview` resource type. The deployment:
+The SRE Agent is deployed automatically as part of `scripts/deploy.ps1` using the `Microsoft.App/agents` resource type. `deploy.ps1` queries the target subscription's `Microsoft.App` resource-provider metadata (`az provider show`) and pins the deployment to the newest API version this repository's Bicep module has been validated against — currently `2026-01-01` (GA), falling back to `2025-05-01-preview` on subscriptions that haven't been rolled onto the GA version yet. If neither version is registered, `deploy.ps1` fails with an explicit error rather than silently deploying against an unvalidated schema.
 
-- Creates the SRE Agent resource
-- Creates a user-assigned managed identity
-- Assigns Log Analytics Reader, Reader, and Contributor roles
+The deployment:
+
+- Creates the SRE Agent resource with `knowledgeGraphConfiguration.managedResources` set to **exactly** this lab's resource group ID (never an empty list, never a different subscription/RG)
+- Binds `logConfiguration.applicationInsightsConfiguration` to this lab's Application Insights App ID and connection string
+- Keeps `actionConfiguration.mode` set to `Review`
+- Creates a user-assigned managed identity, scoped to **this resource group only** (least-scope RBAC — see below)
 - Grants the deploying user the **SRE Agent Administrator** role
+- Runs `scripts/bootstrap-sre-agent-knowledge.ps1` to upload `docs/sre-agent-knowledge.md` (see Step 3 — this used to be a manual step)
 
 To skip SRE Agent deployment, set `deploySreAgent = false` in `infra/bicep/main.bicepparam`.
 
@@ -49,6 +53,8 @@ You can also create the agent manually:
 
 5. Click **Review + Create**, then **Create**
 
+If you create the agent this way, you are responsible for setting `knowledgeGraphConfiguration.managedResources`, the Application Insights binding, and running `scripts/bootstrap-sre-agent-knowledge.ps1` yourself — none of the automation below applies to a portal-created agent.
+
 ### What Gets Created
 
 When you create an SRE Agent, Azure automatically provisions:
@@ -56,16 +62,9 @@ When you create an SRE Agent, Azure automatically provisions:
 - Log Analytics Workspace
 - Managed Identity for the agent
 
-## Step 2: Configure Agent Permissions
+## Step 2: Agent Permissions (automated, least-scope)
 
-The SRE Agent needs access to your Azure resources to diagnose and **remediate** issues.
-
-> **Note**: When deployed via Bicep (default), the agent's managed identity is automatically assigned Reader, Contributor, and Log Analytics Reader roles on the deployment resource group. The script below grants additional AKS-specific roles.
-
-### Grant Access to Demo Resources
-
-1. Get the SRE Agent's managed identity Object ID from the portal
-2. Run the RBAC configuration script:
+The SRE Agent needs access to your Azure resources to diagnose and **remediate** issues. When deployed via Bicep (default), the agent's managed identity is automatically assigned Reader, Contributor, and Log Analytics Reader roles **scoped to the deployment resource group only** — never subscription-wide. `scripts/configure-rbac.ps1` runs automatically from `deploy.ps1` to grant the additional AKS-specific roles below; you only need to run it manually if you skipped RBAC during deploy (`-SkipRbac`) or created the agent via the portal:
 
 ```powershell
 .\scripts\configure-rbac.ps1 `
@@ -75,12 +74,11 @@ The SRE Agent needs access to your Azure resources to diagnose and **remediate**
 
 ### Permissions Granted to SRE Agent
 
-The script assigns these roles to enable both **diagnosis AND remediation**:
+The script assigns these roles to enable both **diagnosis AND remediation** — all scoped to the lab resource group or a specific resource within it, never to the subscription:
 
 | Scope | Role | What It Allows |
 |-------|------|----------------|
 | **Resource Group** | Contributor | Read/write access to all resources |
-| **Subscription** | Reader | Broader context for diagnosis |
 | **AKS Cluster** | AKS Cluster Admin Role | kubectl access to cluster |
 | **AKS Cluster** | AKS RBAC Cluster Admin | Full Kubernetes RBAC permissions |
 | **AKS Cluster** | AKS Contributor Role | Scale nodes, update cluster config |
@@ -93,6 +91,8 @@ The script assigns these roles to enable both **diagnosis AND remediation**:
 > - Query and analyze logs
 > - Access/update Key Vault secrets
 > - Push/pull container images
+>
+> There is deliberately **no subscription-wide Reader shortcut** here — `scripts/validate-deployment.ps1` fails if it ever finds a subscription-scoped role assignment for the agent's identity.
 
 ### SRE Agent User Roles
 
@@ -110,22 +110,24 @@ Assign roles to users via Azure Portal:
 3. Click **Add role assignment**
 4. Select the appropriate role and assign to users/groups
 
-## Step 3: Connect Resources to SRE Agent
+## Step 3: Knowledge is bootstrapped automatically
 
-### Connect AKS Cluster
+`knowledgeGraphConfiguration.managedResources` (Step 1) and the Application Insights binding (Step 1) can be expressed declaratively in Bicep. Knowledge-file upload cannot — Azure SRE Agent only exposes it through data-plane REST endpoints (`/api/v1/agentmemory/*`), so `deploy.ps1` runs `scripts/bootstrap-sre-agent-knowledge.ps1` after the infrastructure deployment completes:
 
-1. In the SRE Agent portal, go to **Connected resources**
-2. Click **Add resource**
-3. Select your AKS cluster: `aks-srelab`
-4. Review permissions and confirm
+- Computes a SHA-256 hash of `docs/sre-agent-knowledge.md` and uploads it under a deterministic, hash-keyed document name.
+- An unchanged rerun detects the same hash already indexed and skips the upload — **no duplication**.
+- A changed file uploads a new hash-keyed document, waits for it to finish indexing, and only then removes the previous version — a failure mid-run never leaves the agent with zero current knowledge.
+- If the agent-memory API isn't available on a given agent's data-plane endpoint (probed explicitly via `GET /api/v1/agentmemory/status`), the script **fails with an explicit "unsupported API" error** — it never claims success and never asks for a manual portal upload.
 
-### Connect Other Resources
+To run it manually (for example, after `-SkipRbac`/standalone reruns, or once the knowledge file changes):
 
-You can also connect:
-- Log Analytics Workspace
-- Application Insights
-- Azure Monitor Workspace (Prometheus)
-- Managed Grafana
+```powershell
+.\scripts\bootstrap-sre-agent-knowledge.ps1 `
+    -ResourceGroupName "rg-srelab-eastus2" `
+    -AgentName "sre-srelab"
+```
+
+`scripts/validate-deployment.ps1` (Step 4) verifies the current knowledge version is present and indexed before the deployment is considered demo-ready.
 
 ## Step 4: Start Diagnosing!
 
@@ -240,6 +242,21 @@ Connect external tools via Model Context Protocol (MCP):
 
 **Solution:** Ensure `*.azuresre.ai` is allowed through your firewall/proxy
 
+### Knowledge Bootstrap Fails with "unsupported API"
+
+**Symptom:** `scripts/bootstrap-sre-agent-knowledge.ps1` (or `deploy.ps1`) fails with a message like "The agent memory API ... responded 404/405 ... this Preview capability is not available here."
+
+**Cause:** The agent's data-plane endpoint does not expose `/api/v1/agentmemory/*` yet. This is a genuine Preview capability gap, not a misconfiguration.
+
+**Solution:** There is no manual portal workaround that this repository endorses — the script fails loudly on purpose rather than claiming the knowledge base is loaded. Retry later, or check the [Azure SRE Agent Documentation](https://learn.microsoft.com/azure/sre-agent/) for the current rollout status of agent memory in your region/subscription.
+
+## Preview Limitations
+
+- **Control-plane API version.** `Microsoft.App/agents` is validated against `2026-01-01` (GA) and `2025-05-01-preview` only. `deploy.ps1` queries the subscription's registered API versions and fails deployment explicitly if neither is available — it never silently deploys against an unvalidated schema.
+- **Knowledge upload/indexing has no declarative (Bicep) form.** It is automated via `scripts/bootstrap-sre-agent-knowledge.ps1` against the documented data-plane REST endpoints (`/api/v1/agentmemory/upload`, `/status`, `/indexer-status`, `/document/{fileName}`). The exact multipart field name for `upload` is not published in the API reference beyond "multipart, max 100 MB total, 16 MB per file"; the script uses `file` as a reasonable default and surfaces the exact HTTP error from the server if that's rejected, rather than guessing silently.
+- **Data-plane tokens are never persisted.** `az account get-access-token --resource https://azuresre.dev` is called in-memory for the lifetime of the bootstrap/validation process only; nothing is written to disk, logs, or console output.
+- **No subscription-wide RBAC.** The agent's managed identity is only ever granted roles scoped to the lab resource group (or a specific resource within it). `scripts/validate-deployment.ps1` fails if it detects a subscription-scoped assignment for that identity.
+
 ## Cost Information
 
 SRE Agent billing is based on Azure AI Units (AAU):
@@ -254,5 +271,6 @@ See [docs/COSTS.md](COSTS.md) for full cost breakdown including AKS and other re
 ## Additional Resources
 
 - [Azure SRE Agent Documentation](https://learn.microsoft.com/azure/sre-agent/)
+- [Azure SRE Agent API Reference](https://learn.microsoft.com/azure/sre-agent/api-reference)
 - [SRE Agent FAQs](https://learn.microsoft.com/azure/sre-agent/faq)
 - [Supported Azure Services](https://learn.microsoft.com/azure/sre-agent/overview#supported-services)

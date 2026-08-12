@@ -392,6 +392,13 @@ function Resolve-DeletedKeyVaultConflict {
     return $false
 }
 
+# API versions this repository's Bicep module (infra/bicep/modules/sre-agent.bicep)
+# has been validated against, newest first. Get-SreAgentProviderStatus selects
+# the first one the target subscription actually registers so the deployment
+# is pinned to a specific, known-good schema rather than silently degrading
+# to whatever the provider's mutable "defaultApiVersion" happens to be.
+$script:SupportedSreAgentApiVersions = @('2026-01-01', '2025-05-01-preview')
+
 function Get-SreAgentProviderStatus {
     [CmdletBinding()]
     param()
@@ -399,10 +406,11 @@ function Get-SreAgentProviderStatus {
     $providerRaw = & az provider show --namespace Microsoft.App --output json 2>$null | Out-String
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($providerRaw)) {
         return [pscustomobject]@{
-            RegistrationState  = 'Unknown'
-            HasAgentsResource  = $false
-            SupportsPreviewApi = $false
-            DefaultApiVersion  = ''
+            RegistrationState = 'Unknown'
+            HasAgentsResource = $false
+            IsSupported       = $false
+            SelectedApiVersion = ''
+            AvailableApiVersions = @()
         }
     }
 
@@ -411,10 +419,11 @@ function Get-SreAgentProviderStatus {
     }
     catch {
         return [pscustomobject]@{
-            RegistrationState  = 'Unknown'
-            HasAgentsResource  = $false
-            SupportsPreviewApi = $false
-            DefaultApiVersion  = ''
+            RegistrationState = 'Unknown'
+            HasAgentsResource = $false
+            IsSupported       = $false
+            SelectedApiVersion = ''
+            AvailableApiVersions = @()
         }
     }
 
@@ -424,11 +433,16 @@ function Get-SreAgentProviderStatus {
         $apiVersions = @($agentsResource.apiVersions)
     }
 
+    # Pick the newest apiVersion that BOTH the subscription registers AND this
+    # module supports. Never fall back to an unvalidated apiVersion.
+    $selected = $script:SupportedSreAgentApiVersions | Where-Object { $apiVersions -contains $_ } | Select-Object -First 1
+
     return [pscustomobject]@{
-        RegistrationState  = $provider.registrationState
-        HasAgentsResource  = $null -ne $agentsResource
-        SupportsPreviewApi = $apiVersions -contains '2025-05-01-preview'
-        DefaultApiVersion  = if ($agentsResource -and $agentsResource.PSObject.Properties.Name -contains 'defaultApiVersion') { $agentsResource.defaultApiVersion } else { '' }
+        RegistrationState     = $provider.registrationState
+        HasAgentsResource     = $null -ne $agentsResource
+        IsSupported           = [bool]$selected
+        SelectedApiVersion    = if ($selected) { $selected } else { '' }
+        AvailableApiVersions  = $apiVersions
     }
 }
 
@@ -497,6 +511,7 @@ Write-Host "  📋 Subscription: $($account.name) ($($account.id))" -ForegroundC
 
 $deploySreAgent = -not $SkipSreAgent
 $sreAgentSkipReason = ''
+$sreAgentApiVersion = ''
 
 if ($deploySreAgent) {
     Write-Host "`n🤖 Checking Azure SRE Agent availability..." -ForegroundColor Yellow
@@ -508,15 +523,29 @@ if ($deploySreAgent) {
         $sreAgentProvider = Get-SreAgentProviderStatus
     }
 
-    if (-not $sreAgentProvider.HasAgentsResource -or -not $sreAgentProvider.SupportsPreviewApi) {
+    if (-not $sreAgentProvider.HasAgentsResource) {
+        # The Microsoft.App/agents resource type itself isn't registered for
+        # this subscription at all — SRE Agent (Preview) hasn't been enabled.
+        # This is a legitimate, expected condition on subscriptions without
+        # access to the feature, so skip gracefully rather than failing hard.
         $deploySreAgent = $false
-        $sreAgentSkipReason = 'Microsoft.App/agents@2025-05-01-preview is not available for this subscription.'
+        $sreAgentSkipReason = 'Microsoft.App/agents is not registered for this subscription (SRE Agent Preview access not enabled).'
         Write-Host "  ⚠️  $sreAgentSkipReason" -ForegroundColor Yellow
         Write-Host "      Continuing with core infrastructure deployment." -ForegroundColor Gray
     }
+    elseif (-not $sreAgentProvider.IsSupported) {
+        # The resource type IS registered, but none of the apiVersions this
+        # module has been validated against ($script:SupportedSreAgentApiVersions)
+        # are available. Fail clearly instead of silently deploying against an
+        # unvalidated schema.
+        $availableList = if ($sreAgentProvider.AvailableApiVersions.Count -gt 0) { $sreAgentProvider.AvailableApiVersions -join ', ' } else { '<none>' }
+        $supportedList = $script:SupportedSreAgentApiVersions -join ', '
+        Write-Error "Microsoft.App/agents is registered for this subscription, but none of the API versions this module supports ($supportedList) are available. Subscription offers: $availableList. Re-run with -SkipSreAgent to deploy core infrastructure only, or update infra/bicep/modules/sre-agent.bicep to support one of the available versions."
+        exit 1
+    }
     else {
-        $apiVersion = if ($sreAgentProvider.DefaultApiVersion) { $sreAgentProvider.DefaultApiVersion } else { '2025-05-01-preview' }
-        Write-Host "  ✅ Microsoft.App/agents is available (API: $apiVersion)" -ForegroundColor Green
+        $sreAgentApiVersion = $sreAgentProvider.SelectedApiVersion
+        Write-Host "  ✅ Microsoft.App/agents is available (pinning API: $sreAgentApiVersion)" -ForegroundColor Green
     }
 }
 else {
@@ -554,9 +583,17 @@ Write-Host "  • SRE Agent:       $(if ($deploySreAgent) { 'Enabled' } else { '
 if ($sreAgentSkipReason) {
     Write-Host "  • SRE Agent Note:  $sreAgentSkipReason" -ForegroundColor Gray
 }
+if ($sreAgentApiVersion) {
+    Write-Host "  • SRE Agent API:   $sreAgentApiVersion" -ForegroundColor White
+}
 
 # Validate template
 Write-Host "`n🔍 Validating Bicep template..." -ForegroundColor Yellow
+
+$sreAgentBicepParams = @("deploySreAgent=$deploySreAgentValue")
+if ($sreAgentApiVersion) {
+    $sreAgentBicepParams += "sreAgentApiVersion=$sreAgentApiVersion"
+}
 
 if ($WhatIf) {
     Write-Host "  Running what-if analysis..." -ForegroundColor Gray
@@ -564,7 +601,8 @@ if ($WhatIf) {
         'deployment', 'sub', 'what-if',
         '--location', $Location,
         '--template-file', $bicepFile,
-        '--parameters', "location=$Location", "workloadName=$WorkloadName", "deploySreAgent=$deploySreAgentValue",
+        '--parameters', "location=$Location", "workloadName=$WorkloadName"
+    ) + $sreAgentBicepParams + @(
         '--name', $deploymentName
     )
     $whatIfOutput = & az @whatIfArgs 2>&1 | Out-String
@@ -596,8 +634,8 @@ try {
         '--template-file', $bicepFile,
         '--parameters', $parametersFile,
         "location=$Location",
-        "workloadName=$WorkloadName",
-        "deploySreAgent=$deploySreAgentValue",
+        "workloadName=$WorkloadName"
+    ) + $sreAgentBicepParams + @(
         '--name', $deploymentName,
         '--only-show-errors',
         '--output', 'json'
@@ -760,6 +798,30 @@ if (-not $SkipRbac) {
     }
 }
 
+# Bootstrap SRE Agent knowledge (idempotent, content-hash keyed) if the agent was deployed
+$sreAgentKnowledgeReady = $true
+if ($outputs.sreAgentId.value) {
+    Write-Host "`n📚 Bootstrapping SRE Agent knowledge..." -ForegroundColor Yellow
+    $knowledgeScript = Join-Path $PSScriptRoot "bootstrap-sre-agent-knowledge.ps1"
+    if (Test-Path $knowledgeScript) {
+        & pwsh -NoLogo -NoProfile -File $knowledgeScript `
+            -ResourceGroupName $resourceGroupName `
+            -AgentName $outputs.sreAgentName.value `
+            -ApiVersion $outputs.sreAgentApiVersionUsed.value
+        if ($LASTEXITCODE -ne 0) {
+            $sreAgentKnowledgeReady = $false
+            Write-Host "  ❌ SRE Agent knowledge bootstrap failed. See output above for the explicit error." -ForegroundColor Red
+        }
+        else {
+            Write-Host "  ✅ SRE Agent knowledge is bootstrapped and indexed" -ForegroundColor Green
+        }
+    }
+    else {
+        $sreAgentKnowledgeReady = $false
+        Write-Host "  ❌ Knowledge bootstrap script not found: $knowledgeScript" -ForegroundColor Red
+    }
+}
+
 # Deploy application
 Write-Host "`n📦 Deploying demo application to AKS..." -ForegroundColor Yellow
 $k8sPath = Join-Path $PSScriptRoot "..\k8s\base\application.yaml"
@@ -874,6 +936,13 @@ else {
 if ($sreAgentSkipReason -and -not $outputs.sreAgentId.value) {
     Write-Host "`nℹ️  Azure SRE Agent was not deployed: $sreAgentSkipReason" -ForegroundColor Yellow
     Write-Host "   Re-run without -SkipSreAgent once Microsoft.App/agents is available in the subscription." -ForegroundColor Gray
+}
+
+if ($outputs.sreAgentId.value -and -not $sreAgentKnowledgeReady) {
+    Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
+    Write-Host "   The SRE Agent was created, but its knowledge base could not be bootstrapped or verified." -ForegroundColor Red
+    Write-Host "   Do not mark this deployment demo-ready until the knowledge bootstrap error above is resolved and re-run succeeds." -ForegroundColor Red
+    exit 1
 }
 
 # Final instructions

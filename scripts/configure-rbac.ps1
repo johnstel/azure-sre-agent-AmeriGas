@@ -173,21 +173,15 @@ if ($keyVault -and $CurrentUserPrincipalId) {
 if ($SreAgentPrincipalId) {
     Write-Host "`n  📌 SRE Agent Access:" -ForegroundColor Cyan
     
-    # SRE Agent needs Contributor on the resource group to diagnose AND remediate issues
+    # SRE Agent needs Contributor on the resource group to diagnose AND remediate issues.
+    # Scoped to the lab resource group only — deliberately NOT subscription-wide
+    # (least-scope RBAC; see docs/SRE-AGENT-SETUP.md).
     Set-RoleAssignment `
         -Scope "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName" `
         -RoleDefinition "Contributor" `
         -PrincipalId $SreAgentPrincipalId `
         -PrincipalType "ServicePrincipal" `
         -Description "Contributor for SRE Agent (read/write access to resources)"
-    
-    # Reader on subscription for broader context
-    Set-RoleAssignment `
-        -Scope "/subscriptions/$subscriptionId" `
-        -RoleDefinition "Reader" `
-        -PrincipalId $SreAgentPrincipalId `
-        -PrincipalType "ServicePrincipal" `
-        -Description "Reader for SRE Agent at subscription level"
     
     # AKS-specific roles for Kubernetes operations (restart pods, scale, etc.)
     if ($aksCluster) {

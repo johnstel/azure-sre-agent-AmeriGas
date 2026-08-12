@@ -13,7 +13,7 @@
 - [ ] Mission Control Copilot status shows "Ready" (green badge in header)
 - [ ] SRE Agent portal open at https://aka.ms/sreagent/portal
 - [ ] Browser tabs ready: Mission Control, SRE Agent Portal, Azure Portal (resource group)
-- [ ] Upload `docs/sre-agent-knowledge.md` as SRE Agent knowledge file
+- [ ] Knowledge is already loaded — `deploy.ps1` runs `scripts/bootstrap-sre-agent-knowledge.ps1` automatically; run `.\scripts\validate-deployment.ps1 -ResourceGroupName <rg>` to confirm the current `docs/sre-agent-knowledge.md` version is indexed before presenting
 - [ ] Confirm customer portal external IP is active (check Mission Control status card)
 - [ ] Verify Application Insights is receiving telemetry in Azure Portal → Application Insights → Live Metrics
 - [ ] Verify ADX PropaneLogs database has data: Azure Portal → Azure Data Explorer → PropaneLogs → query `ContainerLog | take 10`
@@ -350,7 +350,7 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 | Mission Control Copilot shows "Error" | Ensure GitHub Copilot license is active and VS Code Copilot extension is installed |
 | Copilot chat returns 503 | Copilot SDK failed to initialize — restart Mission Control and check terminal for errors |
 | Copilot takes a long time to respond | Multi-tool queries can take up to 180 seconds — the agent is chaining kubectl calls |
-| SRE Agent says "no data" | Ensure the knowledge file was uploaded and Log Analytics has had time to ingest data (allow 5–10 min after deploy) |
+| SRE Agent says "no data" | Run `.\scripts\validate-deployment.ps1 -ResourceGroupName <rg>` to confirm knowledge is indexed and Log Analytics has had time to ingest data (allow 5–10 min after deploy) |
 | App Insights shows no data | Wait 2–3 min after deploy; check that `deploy.ps1` injected the connection string: `kubectl get configmap propane-telemetry-config -n propane -o yaml` |
 | ADX PropaneLogs empty | Log Analytics data export may take 5–10 min to start flowing after initial deploy |
 | OTel Collector crashing | Check resource limits; verify the `otel-collector-config` ConfigMap is valid YAML: `kubectl describe configmap otel-collector-config -n propane` |
