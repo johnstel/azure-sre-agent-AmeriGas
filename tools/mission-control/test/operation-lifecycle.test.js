@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   createOperation,
   isTerminal,
+  markChildExited,
   transitionToTerminal,
   finishOperation,
   cancelOperation,
@@ -122,6 +123,91 @@ test('CANCEL RACE: a cancel request that loses the race to a process that alread
   assert.equal(op.status, 'completed', 'status must remain the real completed outcome, never overwritten to cancelled');
   assert.equal(op.exitCode, 0);
   assert.equal(op.endedAt, completedEndedAt);
+});
+
+test('EXIT-BEFORE-CANCEL RACE: once markChildExited() has fired (Node "exit" already observed) but before finishOperation() runs (waiting on "close"), a cancel request must be refused and the eventual completed/failed outcome must be preserved', () => {
+  // Simulates the exact ordering: the OS process has genuinely exited
+  // (child.on('exit') fired), so the true outcome is already determined,
+  // but the 'close' event (and therefore finishOperation()) hasn't
+  // landed yet. A DELETE arriving in this narrow window must not win.
+  const op = createOperation('deploy', 'Deploy');
+  assert.equal(op.status, 'running');
+
+  markChildExited(op);
+  assert.equal(op.status, 'running', 'marking the child exited must not itself change status — only finishOperation() finalizes');
+
+  const cancelApplied = cancelOperation(op);
+  assert.equal(cancelApplied, false, 'cancellation must be refused once the child has genuinely exited, even though status is still "running"');
+  assert.equal(op.status, 'running', 'refusing cancellation must not mutate status either');
+
+  // The pending 'close' event now fires, as it normally would moments later.
+  const finishApplied = finishOperation(op, 0);
+  assert.equal(finishApplied, true, 'the true outcome must still be recordable after a refused cancellation attempt');
+  assert.equal(op.status, 'completed', 'the real completed outcome must be preserved, never replaced by cancelled');
+});
+
+test('EXIT-BEFORE-CANCEL RACE: the same guard applies for a failing operation, not just a successful one', () => {
+  const op = createOperation('destroy', 'Destroy');
+  markChildExited(op);
+
+  assert.equal(cancelOperation(op), false);
+  assert.equal(finishOperation(op, 1), true);
+  assert.equal(op.status, 'failed');
+  assert.equal(op.exitCode, 1);
+});
+
+test('EXIT-BEFORE-CANCEL RACE (error variant): a spawn/runtime error that fires child.on("error") also marks the process exited before finishOperation() finalizes, so a racing cancel is refused the same way', () => {
+  // Mirrors server.js's child.on('error', ...) handler: markChildExited()
+  // is called first, then finishOperation(op, 1) finalizes.
+  const op = createOperation('deploy', 'Deploy');
+  markChildExited(op); // child.on('error', ...) observed a spawn/runtime failure
+  assert.equal(cancelOperation(op), false, 'a cancel racing an "error" event must be refused exactly like a racing "exit"/"close"');
+  assert.equal(finishOperation(op, 1), true);
+  assert.equal(op.status, 'failed');
+});
+
+test('CANCEL-BEFORE-EXIT (the normal case) is unaffected: cancelOperation() succeeds while childExited is still false, and the child exiting afterward (from the SIGTERM we sent) is correctly a no-op', () => {
+  const op = createOperation('deploy', 'Deploy');
+  op.process = { kill: () => {} };
+
+  assert.equal(op.childExited, false);
+  assert.equal(cancelOperation(op), true, 'cancellation must succeed normally when the process has not exited yet');
+  assert.equal(op.status, 'cancelled');
+
+  // The SIGTERM we just sent causes the child to exit shortly afterward —
+  // this arrives strictly after cancelOperation() already won.
+  markChildExited(op);
+  assert.equal(finishOperation(op, 143), false, 'the SIGTERM-induced exit must not overwrite the already-recorded cancellation');
+  assert.equal(op.status, 'cancelled');
+});
+
+test('markChildExited on a null/undefined op is a safe no-op', () => {
+  assert.doesNotThrow(() => markChildExited(null));
+  assert.doesNotThrow(() => markChildExited(undefined));
+});
+
+test('finishOperation persists its terminal summary line in op.log (not just to live subscribers), so a client that only polls GET /api/operations/:id — or an EventSource that reconnects afterward — still sees it', () => {
+  const op = createOperation('validate', 'Validate rg');
+  appendLog(op, 'stdout', 'doing work');
+  assert.equal(op.log.length, 1);
+
+  finishOperation(op, 1);
+
+  assert.equal(op.log.length, 2, 'the terminal summary line must be appended to op.log exactly once');
+  const terminalEntry = op.log[1];
+  assert.equal(terminalEntry.stream, 'system');
+  assert.match(terminalEntry.text, /Operation failed \(exit 1\)/);
+});
+
+test('finishOperation delivers the terminal summary line to a live subscriber exactly once (via the persisted-log broadcast), not duplicated by a separate direct write', () => {
+  const op = createOperation('deploy', 'Deploy');
+  const sub = fakeSubscriber();
+  op.subscribers.add(sub);
+
+  finishOperation(op, 0);
+
+  const systemLineWrites = sub.writes.filter((w) => w.includes('Operation completed'));
+  assert.equal(systemLineWrites.length, 1, 'the terminal summary line must reach a live subscriber exactly once');
 });
 
 test('CANCEL RACE: cancelling an already-failed operation is a truthful no-op', () => {

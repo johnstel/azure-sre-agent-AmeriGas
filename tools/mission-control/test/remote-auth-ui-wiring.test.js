@@ -64,12 +64,24 @@ test('app.js never assigns the token input value to textContent or any other DOM
   assert.doesNotMatch(js, /console\.(log|warn|error|info|debug)\([^)]*token/i);
 });
 
-test('exportIncident never references the remote/CSRF token when constructing the export URL, and window.open cannot leak headers anyway', () => {
+test('exportIncident delegates to the standalone, testable incident-export module via the authenticated apiClient (never window.open/plain navigation, which cannot attach the auth header) and never places a token in the URL/DOM', () => {
   const js = readPublic('app.js');
-  const exportFnMatch = js.match(/function exportIncident\([^)]*\)\s*{[^}]*}/s);
+  const exportFnMatch = js.match(/async function exportIncident\([^)]*\)\s*\{[\s\S]*?\n\}/);
   assert.ok(exportFnMatch, 'exportIncident function must exist');
-  assert.doesNotMatch(exportFnMatch[0], /getRemoteToken|remoteToken|csrf/i);
-  assert.match(exportFnMatch[0], /window\.open/);
+  const fnBody = exportFnMatch[0];
+  assert.doesNotMatch(fnBody, /window\.open/, 'window.open cannot attach the X-Mission-Control-Token header, so it must not be used for exports');
+  assert.match(fnBody, /MissionControlIncidentExport\.downloadIncidentExport/, 'exports must delegate to the standalone, unit-tested download module');
+  assert.match(fnBody, /request:\s*\(path\)\s*=>\s*apiClient\.request\(path\)/, 'the download must be driven through the shared, authenticated apiClient so the auth header/401-prompt flow applies');
+  assert.doesNotMatch(fnBody, /getRemoteToken|remoteToken|csrf/i, 'the token must never be referenced directly when constructing the export request/URL');
+});
+
+test('index.html loads incident-export.js after api-client.js and before app.js', () => {
+  const html = readPublic('index.html');
+  const apiClientIndex = html.indexOf('/api-client.js');
+  const exportIndex = html.indexOf('/incident-export.js');
+  const appIndex = html.indexOf('/app.js');
+  assert.ok(apiClientIndex > -1 && exportIndex > -1 && appIndex > -1);
+  assert.ok(apiClientIndex < exportIndex && exportIndex < appIndex);
 });
 
 test('README documents the remote token entry flow and explicitly rules out localStorage/query-string usage', () => {

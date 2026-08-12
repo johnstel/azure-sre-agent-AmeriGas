@@ -16,6 +16,21 @@ const crypto = require('crypto');
  * symmetrically, prevents a cancel request that loses a race against a
  * process that already completed/failed from clobbering that real
  * outcome.
+ *
+ * A subtler race: Node's child_process emits 'exit' as soon as the
+ * underlying OS process has actually terminated, but 'close' (the event
+ * finishOperation() is driven from, so that stdout/stderr are fully
+ * flushed into the log first) can fire a tick or more later. In that
+ * narrow window the process has truly already exited, but op.status is
+ * still 'running' — a cancel request arriving in exactly that window
+ * must not be allowed to win and record 'cancelled', because the real
+ * outcome (completed/failed) is already determined and about to be
+ * recorded once 'close' fires. markChildExited(op) records that the
+ * process has genuinely exited, and cancelOperation() refuses to
+ * transition once that flag is set — "exit-before-cancel" always
+ * preserves the true completed/failed outcome, while "cancel-before-exit"
+ * (the normal case: we call cancelOperation() and *then* kill the
+ * process, which only exits afterward) is unaffected.
  */
 
 function createOperation(type, label, { now = () => new Date().toISOString() } = {}) {
@@ -30,11 +45,23 @@ function createOperation(type, label, { now = () => new Date().toISOString() } =
     log: [],
     subscribers: new Set(),
     process: null,
+    childExited: false,
   };
 }
 
 function isTerminal(op) {
   return Boolean(op) && op.status !== 'running';
+}
+
+/**
+ * Records that the underlying child process has genuinely exited (Node's
+ * 'exit' or 'error' event on the ChildProcess), independent of whether
+ * 'close' — and therefore finishOperation() — has fired yet. This is the
+ * authoritative signal cancelOperation() checks to refuse a
+ * too-late cancellation attempt; see the module doc comment above.
+ */
+function markChildExited(op) {
+  if (op) op.childExited = true;
 }
 
 /**
@@ -71,8 +98,18 @@ function finishOperation(op, exitCode, opts = {}) {
   const status = exitCode === 0 ? 'completed' : 'failed';
   if (!transitionToTerminal(op, status, { exitCode, ...opts })) return false;
   op.process = null;
+  // Persist the terminal summary line in op.log (via appendLog, which
+  // also broadcasts it to any currently-subscribed live SSE clients)
+  // instead of writing it directly to subscribers only. Writing it only
+  // to live subscribers made it invisible to a client that only ever
+  // polls GET /api/operations/:id (its `since` cursor reads exclusively
+  // from op.log), and to any EventSource that reconnects after this
+  // point (the stream endpoint replays op.log as backlog). Persisting it
+  // here means both transports observe the exact same log with the same
+  // cursor semantics, and a live SSE subscriber still sees it exactly
+  // once (via this appendLog call), not duplicated.
+  appendLog(op, 'system', `\n── Operation ${op.status} (exit ${exitCode}) ──`, { now: () => op.endedAt });
   for (const res of op.subscribers) {
-    res.write(`data: ${JSON.stringify({ ts: op.endedAt, stream: 'system', text: `\n── Operation ${op.status} (exit ${exitCode}) ──` })}\n\n`);
     res.write(`event: done\ndata: ${JSON.stringify({ status: op.status, exitCode })}\n\n`);
     res.end();
   }
@@ -87,8 +124,17 @@ function finishOperation(op, exitCode, opts = {}) {
  * the cancel request was processed) — the caller should treat a `false`
  * return as "already finished", not as an error, and must not overwrite
  * the real outcome with 'cancelled'.
+ *
+ * Also returns false — again leaving `op` completely untouched — if
+ * markChildExited(op) has already been called for this operation. That
+ * means the underlying process has genuinely already exited (even though
+ * 'close' — and finishOperation() — may not have fired yet), so the true
+ * completed/failed outcome is already determined and about to be
+ * recorded; a cancellation request arriving in that narrow window must
+ * not be allowed to record 'cancelled' instead.
  */
 function cancelOperation(op, opts = {}) {
+  if (!op || op.childExited) return false;
   if (!transitionToTerminal(op, 'cancelled', opts)) return false;
   op.process = null;
   for (const res of op.subscribers) {
@@ -99,4 +145,4 @@ function cancelOperation(op, opts = {}) {
   return true;
 }
 
-module.exports = { createOperation, isTerminal, transitionToTerminal, appendLog, finishOperation, cancelOperation };
+module.exports = { createOperation, isTerminal, markChildExited, transitionToTerminal, appendLog, finishOperation, cancelOperation };

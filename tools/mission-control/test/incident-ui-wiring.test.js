@@ -58,7 +58,9 @@ test('app.js fetches incidents through the shared api() helper (CSRF/auth wiring
   assert.match(js, /api\('incidents\/' \+ encodeURIComponent/);
 });
 
-test('incident export always opens the redacted server-generated export endpoint, never constructs content client-side', () => {
+test('incident export always uses the redacted server-generated export endpoint, never constructs content client-side', () => {
   const js = readPublic('app.js');
-  assert.match(js, /\/api\/incidents\/' \+ encodeURIComponent\(currentIncidentCorrelationId\) \+ '\/export\.' \+ format/);
+  const exportFnMatch = js.match(/async function exportIncident\([^)]*\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(exportFnMatch, 'exportIncident function must exist');
+  assert.match(exportFnMatch[0], /MissionControlIncidentExport\.downloadIncidentExport/, 'exportIncident must delegate to the download module, which builds the incidents/<id>/export.<format> path server-side redaction relies on');
 });

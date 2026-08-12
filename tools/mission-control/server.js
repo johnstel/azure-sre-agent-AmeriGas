@@ -253,7 +253,14 @@ function spawnPwsh(op, scriptPath, scriptArgs) {
   op.process = child;
   child.stdout.on('data', (buf) => appendLog(op, 'stdout', buf.toString()));
   child.stderr.on('data', (buf) => appendLog(op, 'stderr', buf.toString()));
-  child.on('error', (err) => { appendLog(op, 'stderr', `Process error: ${err.message}`); finishOperation(op, 1); });
+  // 'exit' fires as soon as the OS process has genuinely terminated,
+  // strictly before 'close' (which waits for stdio streams to flush and
+  // is what actually finalizes the operation below). Recording that here
+  // — rather than only at 'close' — is what lets the DELETE handler
+  // truthfully refuse a cancellation that arrives in the narrow window
+  // after the process has already exited but before 'close' has fired.
+  child.on('exit', () => operationLifecycle.markChildExited(op));
+  child.on('error', (err) => { operationLifecycle.markChildExited(op); appendLog(op, 'stderr', `Process error: ${err.message}`); finishOperation(op, 1); });
   child.on('close', (code) => finishOperation(op, code ?? 1));
   return op;
 }
@@ -467,12 +474,20 @@ app.delete('/api/operations/:id', (req, res) => {
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
   if (op.status !== 'running') return res.json({ message: 'Already finished' });
+  if (op.childExited) {
+    // The underlying child process has already genuinely exited (Node's
+    // 'exit'/'error' event already fired) even though 'close' — and
+    // therefore the true completed/failed finalization — hasn't landed
+    // yet. Don't kill an already-dead process or append a misleading
+    // "Cancelled by user" line; the real outcome is already determined
+    // and about to be recorded truthfully.
+    return res.json({ message: 'Already finished' });
+  }
   if (op.process) { op.process.kill('SIGTERM'); appendLog(op, 'system', '\n── Cancelled by user ──'); }
-  // Guarded: if the operation reached a terminal state on its own between
-  // the check above and here (e.g. the process legitimately completed a
-  // moment before this request was processed), this is a truthful no-op
-  // rather than overwriting a real completed/failed outcome with
-  // 'cancelled'.
+  // Guarded: if the operation reached a terminal state (or its process
+  // exited) on its own between the checks above and here, this is a
+  // truthful no-op rather than overwriting a real completed/failed
+  // outcome with 'cancelled'.
   if (!operationLifecycle.cancelOperation(op)) return res.json({ message: 'Already finished' });
   res.json({ message: 'Cancelled' });
 });

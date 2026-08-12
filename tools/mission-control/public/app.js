@@ -464,10 +464,22 @@ async function onSelectRecentIncident(correlationId) {
   }
 }
 
-function exportIncident(format) {
-  if (!currentIncidentCorrelationId) return;
-  const url = '/api/incidents/' + encodeURIComponent(currentIncidentCorrelationId) + '/export.' + format;
-  window.open(url, '_blank', 'noopener,noreferrer');
+/**
+ * Downloads a redacted incident evidence-pack export via the shared,
+ * authenticated apiClient instead of window.open()/plain navigation
+ * (which cannot attach the X-Mission-Control-Token header, and always
+ * fails once remote access is enabled). The actual download logic
+ * (fetch → Blob → object-URL download → revoke, plus error handling)
+ * lives in the standalone, dependency-injected incident-export.js module
+ * so it can be unit tested without a real browser DOM.
+ */
+async function exportIncident(format) {
+  return window.MissionControlIncidentExport.downloadIncidentExport({
+    request: (path) => apiClient.request(path),
+    correlationId: currentIncidentCorrelationId,
+    format,
+    onError: (message) => toast(message, 'error'),
+  });
 }
 
 /* ── Init ──────────────────────────────────────────────── */
