@@ -156,6 +156,8 @@ kubectl apply -f k8s/base/application.yaml
 
 **7. Show recovery** — pods come back to green within 30–60 seconds. Cage inventory resumes updating. The Incident Evidence Timeline panel records the proposed/executed fix, a post-action assertion re-checking the scenario's health signal, and the recovery milestone — and only then reports a measured time-to-recover. If the assertion doesn't confirm recovery, the panel truthfully shows "partial recovery," never a fabricated success.
 
+> **Presenting the native flow instead:** Steps 1–7 above use Mission Control Copilot as an operator-driven walkthrough. If you deployed the **demo profile** (`.\scripts\deploy.ps1 -Location eastus2 -Demo`), this exact scenario is also wired to a genuine native Azure SRE Agent response plan — applying the scenario alone (no chat prompt) triggers a real Azure Monitor alert, which the SRE Agent investigates and proposes one approved remediation for in its own portal. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for that flow's script and timing, and present whichever matches your audience: Mission Control for a fast, narrated walkthrough, or the native SRE Agent portal thread for proof of the fully automated platform capability.
+
 ---
 
 ### Scenario B: OOMKilled — Tank Monitor Memory Exhaustion

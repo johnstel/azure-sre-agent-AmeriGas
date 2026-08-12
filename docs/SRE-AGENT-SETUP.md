@@ -129,6 +129,16 @@ To run it manually (for example, after `-SkipRbac`/standalone reruns, or once th
 
 `scripts/validate-deployment.ps1` (Step 4) verifies the current knowledge version is present and indexed before the deployment is considered demo-ready.
 
+## Step 3.5: Native alert-to-approved-remediation response plan (demo profile only, issue #19)
+
+For a fully automated, presenter-hands-off demo of the native diagnose → propose → approve → execute → verify flow, deploy the **demo profile** instead of the standard profile:
+
+```powershell
+.\scripts\deploy.ps1 -Location eastus2 -Demo
+```
+
+This enables a dedicated MongoDB-down alert, connects Azure Monitor as the agent's incident management platform, and bootstraps a real Azure SRE Agent **response plan** (custom agent + incident filter, Review autonomy) that investigates and proposes exactly one approved remediation when the alert fires — with no chat prompt required. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for the full flow, bounded alert timing, rehearsal instructions (approve/deny/expiry), and documented Preview schema limitations. The standard profile (`main.bicepparam`, the default) is completely unaffected by this — `deployDemoResponsePlan` defaults to `false` and is never enabled there.
+
 ## Step 4: Start Diagnosing!
 
 Once connected, you can interact with SRE Agent using natural language:
@@ -256,6 +266,7 @@ Connect external tools via Model Context Protocol (MCP):
 - **Knowledge upload/indexing has no declarative (Bicep) form.** It is automated via `scripts/bootstrap-sre-agent-knowledge.ps1` against the documented data-plane REST endpoints (`/api/v1/agentmemory/upload`, `/status`, `/indexer-status`, `/document/{fileName}`). The exact multipart field name for `upload` is not published in the API reference beyond "multipart, max 100 MB total, 16 MB per file"; the script uses `file` as a reasonable default and surfaces the exact HTTP error from the server if that's rejected, rather than guessing silently.
 - **Data-plane tokens are never persisted.** `az account get-access-token --resource https://azuresre.dev` is called in-memory for the lifetime of the bootstrap/validation process only; nothing is written to disk, logs, or console output.
 - **No subscription-wide RBAC.** The agent's managed identity is only ever granted roles scoped to the lab resource group (or a specific resource within it). `scripts/validate-deployment.ps1` fails if it detects a subscription-scoped assignment for that identity.
+- **Response-plan sub-resource schema is not published (issue #19, demo profile only).** `Microsoft.App/agents/subagents` and `.../incidentFilters` use the same base64-encoded envelope convention as other sub-resources, but the exact JSON keys inside are not documented beyond the portal UI field names. `scripts/bootstrap-sre-agent-response-plan.ps1` never claims success from an HTTP 2xx alone — it round-trip verifies every write. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for the full explanation.
 
 ## Cost Information
 

@@ -55,7 +55,11 @@ param(
     [switch]$WhatIf,
 
     [Parameter()]
-    [switch]$Yes
+    [switch]$Yes,
+
+    [Parameter()]
+    [Alias('Demo')]
+    [switch]$DeployDemoResponsePlan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -572,13 +576,24 @@ else {
 $resourceGroupName = "rg-$WorkloadName-$Location"
 $deploymentName = "sre-demo-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $bicepFile = Join-Path $PSScriptRoot "..\infra\bicep\main.bicep"
-$parametersFile = Join-Path $PSScriptRoot "..\infra\bicep\main.bicepparam"
+$parametersFile = if ($DeployDemoResponsePlan) {
+    Join-Path $PSScriptRoot "..\infra\bicep\main.demo.bicepparam"
+}
+else {
+    Join-Path $PSScriptRoot "..\infra\bicep\main.bicepparam"
+}
+
+if ($DeployDemoResponsePlan -and $SkipSreAgent) {
+    Write-Error "-DeployDemoResponsePlan (issue #19 alert-to-approved-remediation response plan) requires the SRE Agent to be deployed. Remove -SkipSreAgent or omit -DeployDemoResponsePlan."
+    exit 1
+}
 
 Write-Host "`n📦 Deployment Configuration:" -ForegroundColor Cyan
 Write-Host "  • Location:        $Location" -ForegroundColor White
 Write-Host "  • Workload Name:   $WorkloadName" -ForegroundColor White
 Write-Host "  • Resource Group:  $resourceGroupName" -ForegroundColor White
 Write-Host "  • Deployment Name: $deploymentName" -ForegroundColor White
+Write-Host "  • Profile:         $(if ($DeployDemoResponsePlan) { 'Demo (main.demo.bicepparam) — response plan enabled' } else { 'Standard (main.bicepparam)' })" -ForegroundColor White
 Write-Host "  • SRE Agent:       $(if ($deploySreAgent) { 'Enabled' } else { 'Disabled' })" -ForegroundColor White
 if ($sreAgentSkipReason) {
     Write-Host "  • SRE Agent Note:  $sreAgentSkipReason" -ForegroundColor Gray
@@ -593,6 +608,13 @@ Write-Host "`n🔍 Validating Bicep template..." -ForegroundColor Yellow
 $sreAgentBicepParams = @("deploySreAgent=$deploySreAgentValue")
 if ($sreAgentApiVersion) {
     $sreAgentBicepParams += "sreAgentApiVersion=$sreAgentApiVersion"
+}
+if ($DeployDemoResponsePlan) {
+    # Explicit even though main.demo.bicepparam already sets these — belt
+    # and suspenders so this behavior can never silently depend only on
+    # which parameters file happens to be selected above.
+    $sreAgentBicepParams += "deployDemoResponsePlan=true"
+    $sreAgentBicepParams += "deployAlerts=true"
 }
 
 if ($WhatIf) {
@@ -822,6 +844,41 @@ if ($outputs.sreAgentId.value) {
     }
 }
 
+# Bootstrap the demo alert-to-approved-remediation response plan (issue #19)
+# — only when the demo profile is active and the agent was actually deployed.
+$sreAgentResponsePlanReady = $true
+if ($DeployDemoResponsePlan -and $outputs.sreAgentId.value) {
+    Write-Host "`n🧭 Bootstrapping SRE Agent response plan (MongoDB-down demo scenario)..." -ForegroundColor Yellow
+    $responsePlanScript = Join-Path $PSScriptRoot "bootstrap-sre-agent-response-plan.ps1"
+    if (Test-Path $responsePlanScript) {
+        $responsePlanParams = @(
+            '-ResourceGroupName', $resourceGroupName,
+            '-AgentName', $outputs.sreAgentName.value,
+            '-AksClusterName', $outputs.aksClusterName.value,
+            '-ApiVersion', $outputs.sreAgentApiVersionUsed.value
+        )
+        if ($outputs.mongoDbDownDemoAlertTitle.value) {
+            $responsePlanParams += @('-AlertTitle', $outputs.mongoDbDownDemoAlertTitle.value)
+        }
+        if ($null -ne $outputs.mongoDbDownDemoAlertSeverity.value -and [int]$outputs.mongoDbDownDemoAlertSeverity.value -ge 0) {
+            $responsePlanParams += @('-AlertSeverity', [string]$outputs.mongoDbDownDemoAlertSeverity.value)
+        }
+
+        & pwsh -NoLogo -NoProfile -File $responsePlanScript @responsePlanParams
+        if ($LASTEXITCODE -ne 0) {
+            $sreAgentResponsePlanReady = $false
+            Write-Host "  ❌ SRE Agent response plan bootstrap failed. See output above for the explicit error." -ForegroundColor Red
+        }
+        else {
+            Write-Host "  ✅ SRE Agent response plan is configured (Review autonomy)" -ForegroundColor Green
+        }
+    }
+    else {
+        $sreAgentResponsePlanReady = $false
+        Write-Host "  ❌ Response plan bootstrap script not found: $responsePlanScript" -ForegroundColor Red
+    }
+}
+
 # Deploy application
 Write-Host "`n📦 Deploying demo application to AKS..." -ForegroundColor Yellow
 $k8sPath = Join-Path $PSScriptRoot "..\k8s\base\application.yaml"
@@ -942,6 +999,13 @@ if ($outputs.sreAgentId.value -and -not $sreAgentKnowledgeReady) {
     Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
     Write-Host "   The SRE Agent was created, but its knowledge base could not be bootstrapped or verified." -ForegroundColor Red
     Write-Host "   Do not mark this deployment demo-ready until the knowledge bootstrap error above is resolved and re-run succeeds." -ForegroundColor Red
+    exit 1
+}
+
+if ($DeployDemoResponsePlan -and $outputs.sreAgentId.value -and -not $sreAgentResponsePlanReady) {
+    Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
+    Write-Host "   The SRE Agent was created, but its alert-to-approved-remediation response plan could not be bootstrapped or verified." -ForegroundColor Red
+    Write-Host "   Do not mark this deployment demo-ready until the response plan bootstrap error above is resolved and re-run succeeds." -ForegroundColor Red
     exit 1
 }
 

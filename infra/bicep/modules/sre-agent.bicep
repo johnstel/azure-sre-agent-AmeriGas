@@ -47,6 +47,9 @@ param uniqueSuffix string
 ])
 param apiVersion string = '2026-01-01'
 
+@description('Declaratively connect Azure Monitor as the incident management platform (properties.incidentManagementConfiguration.type = AzMonitor), per the documented AgentProperties schema (issue #19). Off by default; the demo profile turns this on. Per Microsoft docs, Azure Monitor also auto-connects on agent creation regardless of this flag — this makes the intent explicit and idempotent in source control rather than relying on that implicit behavior.')
+param enableAzureMonitorIncidents bool = false
+
 // =============================================================================
 // VARIABLES
 // =============================================================================
@@ -95,6 +98,14 @@ var agentIdentityConfig = {
   }
 }
 
+// incidentManagementConfiguration.type is a documented AgentProperties field
+// (Microsoft.App/agents ARM template reference: 'PagerDuty' | 'AzMonitor' |
+// 'ServiceNow' | 'None'). Kept as a plain object (rather than swapping the
+// entire agentProperties object via union/conditional) so every other key —
+// knowledgeGraphConfiguration, actionConfiguration, logConfiguration — stays
+// a directly-resolvable literal in the compiled template regardless of this
+// parameter's value; only the incidentManagementConfiguration property
+// itself is conditional.
 var agentProperties = {
   knowledgeGraphConfiguration: {
     identity: managedIdentity.id
@@ -113,6 +124,11 @@ var agentProperties = {
       connectionString: appInsightsConnectionString
     }
   }
+  incidentManagementConfiguration: enableAzureMonitorIncidents
+    ? {
+        type: 'AzMonitor'
+      }
+    : null
 }
 
 // =============================================================================
@@ -208,3 +224,4 @@ output managedResourceGroupId string = managedResourceGroupId
 output appInsightsResourceIdBound string = appInsightsResourceId
 output accessLevel string = accessLevel
 output assignedRoleDefinitionIds array = roleDefinitions[accessLevel]
+output incidentManagementConfigured bool = enableAzureMonitorIncidents

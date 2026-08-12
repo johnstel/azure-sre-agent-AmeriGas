@@ -15,7 +15,7 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | Refill Order Backlog | `refill-order-backlog.yaml` | Shared | RabbitMQ refill backlog grows while producers stay healthy and a poisoned refill event is retried before landing in the DLQ | Queue age, DLQ evidence, paused consumer correlation |
 | Network Block | `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policy analysis |
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
-| MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause |
+| MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause; native alert-to-approved-remediation response plan in the demo profile (see [sre-agent-response-plans/README.md](sre-agent-response-plans/README.md)) |
 | Service Mismatch | `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
 
 ## Scenario Details
@@ -394,7 +394,7 @@ kubectl get pods -n propane -l app=order-service
 kubectl exec -n propane deploy/rabbitmq -- rabbitmqctl list_queues
 ```
 
-**SRE Agent prompts:**
+**SRE Agent prompts (manual/chat-driven — standard profile):**
 - "Tank readings are being accepted but never processed. What's wrong?"
 - "Why is order-service failing health checks?"
 - "Trace the dependency chain — what broke first?"
@@ -404,6 +404,16 @@ kubectl exec -n propane deploy/rabbitmq -- rabbitmqctl list_queues
 ```bash
 kubectl apply -f k8s/base/application.yaml
 ```
+
+**Native alert-to-approved-remediation response plan (demo profile, issue #19):**
+
+This is the only scenario wired to a native Azure SRE Agent response plan — a genuine Azure Monitor alert routed to a custom agent, not Mission Control Copilot and not a generic webhook. Deploy with the demo profile (`.\scripts\deploy.ps1 -Location eastus2 -Demo`, or `infra/bicep/main.demo.bicepparam` directly) to enable it. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for the full flow, bounded alert timing, and the three rehearsal variants (approve / deny / expiry). With the demo profile active:
+
+1. Applying `k8s/scenarios/mongodb-down.yaml` is the only step required — no chat prompt needed.
+2. A dedicated Azure Monitor alert (`AmeriGas Propane Demo - MongoDB Down`, severity 1) fires within a documented bounded time (~10 minutes: PT1M evaluation + Log Analytics ingestion latency).
+3. The alert routes to the `mongodb-down-responder` custom agent via the `mongodb-down-response-plan` response plan (Review autonomy).
+4. The agent gathers Kubernetes + Application Insights/Log Analytics evidence, proposes exactly one action (`az aks command invoke` scaling `propane/mongodb` back to 1 replica), and waits for an SRE Agent Administrator to approve it.
+5. Approval executes the action once; denial or expiry leaves the environment unchanged. The agent verifies recovery and closes out the thread.
 
 ---
 

@@ -48,6 +48,11 @@ $ErrorActionPreference = 'Continue'
 # bootstrap since only the function definitions are needed.
 . (Join-Path $PSScriptRoot "bootstrap-sre-agent-knowledge.ps1") -ResourceGroupName $ResourceGroupName -AgentName '__validate-deployment-dot-source__' -KnowledgeFilePath $KnowledgeFilePath
 
+# Reuse the response-plan bootstrap functions (control-plane sub-resource
+# read/decode, quickstart-conflict detection) for the demo response-plan
+# validation section below — same dot-sourcing pattern as above.
+. (Join-Path $PSScriptRoot "bootstrap-sre-agent-response-plan.ps1") -ResourceGroupName $ResourceGroupName -AgentName '__validate-deployment-dot-source__' -AksClusterName '__validate-deployment-dot-source__'
+
 # Colors and formatting
 function Write-Check {
     param([string]$Name, [bool]$Passed, [string]$Message = "")
@@ -341,6 +346,150 @@ if ($sreAgentResourceSummary) {
         }
         else {
             Write-Host "  ⚠️  Knowledge file not found at $KnowledgeFilePath — skipping knowledge readiness checks" -ForegroundColor Yellow
+        }
+
+        # --- Demo alert-to-approved-remediation response plan (issue #19) ------
+        # Auto-detected: only runs when the dedicated demo alert is present, so
+        # a standard-profile deployment (which never creates this alert) is
+        # not penalized for lacking demo-only wiring.
+        $mongoDbDemoAlertResource = $resources | Where-Object { $_.type -eq 'Microsoft.Insights/scheduledQueryRules' -and $_.name -match '-demo-mongodb-down$' } | Select-Object -First 1
+
+        if ($mongoDbDemoAlertResource) {
+            Write-Section "Demo Response Plan — MongoDB-Down Alert-to-Approved-Remediation (issue #19)"
+
+            $mongoDbDemoAlertDetails = az resource show --ids $mongoDbDemoAlertResource.id --api-version 2023-12-01 --output json 2>$null | ConvertFrom-Json
+            $totalChecks++
+            $alertEnabled = $mongoDbDemoAlertDetails -and $mongoDbDemoAlertDetails.properties.enabled -eq $true
+            if (Write-Check "Demo MongoDB-down alert is enabled" $alertEnabled "Title: $($mongoDbDemoAlertDetails.properties.displayName) / Severity: $($mongoDbDemoAlertDetails.properties.severity)") {
+                $passedChecks++
+            }
+
+            $alertTitle = if ($mongoDbDemoAlertDetails) { [string]$mongoDbDemoAlertDetails.properties.displayName } else { $null }
+            $alertSeverity = if ($mongoDbDemoAlertDetails) { [int]$mongoDbDemoAlertDetails.properties.severity } else { -1 }
+
+            $totalChecks++
+            $evalBoundOk = $mongoDbDemoAlertDetails -and $mongoDbDemoAlertDetails.properties.evaluationFrequency -eq 'PT1M' -and $mongoDbDemoAlertDetails.properties.windowSize -eq 'PT5M'
+            if (Write-Check "Demo alert has the documented bounded evaluation window (PT1M/PT5M)" $evalBoundOk) {
+                $passedChecks++
+            }
+
+            if ($sreAgentArm) {
+                # --- incidentManagementConfiguration = AzMonitor --------------------
+                $incidentType = $null
+                if ($sreAgentArm.properties.PSObject.Properties.Name -contains 'incidentManagementConfiguration') {
+                    $incidentType = $sreAgentArm.properties.incidentManagementConfiguration.type
+                }
+                $totalChecks++
+                if (Write-Check "Azure Monitor is connected as the incident management platform" ($incidentType -eq 'AzMonitor') "Type: $incidentType") {
+                    $passedChecks++
+                }
+
+                try {
+                    $apiSupported = Test-ResponsePlanApiSupported -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion
+
+                    $totalChecks++
+                    if (Write-Check "Response plan sub-resource API (subagents/incidentFilters) is available" $apiSupported) {
+                        $passedChecks++
+                    }
+
+                    if ($apiSupported) {
+                        $customAgentResult = Invoke-SubResourceRequest -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion -Method GET -SubResourceType 'subagents' -Name $script:CustomAgentName
+                        $totalChecks++
+                        if (Write-Check "Custom agent '$($script:CustomAgentName)' exists" $customAgentResult.Success) {
+                            $passedChecks++
+                        }
+
+                        $filterResult = Invoke-SubResourceRequest -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion -Method GET -SubResourceType 'incidentFilters' -Name $script:ResponsePlanName
+                        $totalChecks++
+                        if (Write-Check "Response plan '$($script:ResponsePlanName)' exists" $filterResult.Success) {
+                            $passedChecks++
+                        }
+
+                        if ($filterResult.Success) {
+                            $decodedFilter = ConvertFrom-SubResourceEnvelope -Resource $filterResult.Content
+
+                            $totalChecks++
+                            if (Write-Check "Response plan autonomy is Review (never Autonomous)" ($decodedFilter -and $decodedFilter.autonomyLevel -eq 'Review') "Autonomy: $($decodedFilter.autonomyLevel)") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $severityMatches = $decodedFilter -and (@($decodedFilter.severity) -contains $alertSeverity)
+                            if (Write-Check "Response plan severity filter matches the demo alert's severity ($alertSeverity)" $severityMatches "Filter severity: $(@($decodedFilter.severity) -join ', ')") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $titleMatches = $decodedFilter -and $decodedFilter.titleContains -eq $alertTitle
+                            if (Write-Check "Response plan title filter matches the demo alert's exact title" $titleMatches "Filter title: '$($decodedFilter.titleContains)' / Alert title: '$alertTitle'") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $customAgentBound = $decodedFilter -and $decodedFilter.customAgent -eq $script:CustomAgentName
+                            if (Write-Check "Response plan routes to the '$($script:CustomAgentName)' custom agent" $customAgentBound) {
+                                $passedChecks++
+                            }
+                        }
+
+                        # --- No conflicting quickstart plan ------------------------------
+                        try {
+                            $conflicts = @(Find-ConflictingQuickstartResponsePlans -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion -OwnResponsePlanName $script:ResponsePlanName)
+                            $totalChecks++
+                            if (Write-Check "No conflicting quickstart response plan is active" ($conflicts.Count -eq 0) "$($conflicts -join ', ')") {
+                                $passedChecks++
+                            }
+                        }
+                        catch {
+                            $totalChecks++
+                            Write-Check "No conflicting quickstart response plan is active" $false "Error checking for quickstart plans: $_" | Out-Null
+                        }
+                    }
+                }
+                catch {
+                    $totalChecks++
+                    Write-Check "Response plan sub-resource API (subagents/incidentFilters) is available" $false "Error probing control plane: $_" | Out-Null
+                }
+
+                # --- Least-scope RBAC for the exact remediation (AKS-resource-scoped only) --
+                $aksResourceId = if ($aks) { $aks.id } else { $null }
+                if ($aksResourceId -and $agentPrincipalId) {
+                    $aksScopeAssignments = @(az role assignment list --assignee $agentPrincipalId --scope $aksResourceId --output json 2>$null | ConvertFrom-Json)
+                    $mongoDbRoleAssignments = @($aksScopeAssignments | Where-Object { $_.roleDefinitionName -match '(?i)MongoDB Remediation' -or $_.roleDefinitionName -match '(?i)MongoDB' })
+
+                    $totalChecks++
+                    if (Write-Check "SRE Agent identity has a MongoDB-remediation role scoped to the AKS resource" ($mongoDbRoleAssignments.Count -gt 0)) {
+                        $passedChecks++
+                    }
+
+                    if ($mongoDbRoleAssignments.Count -gt 0) {
+                        $mongoDbRoleDef = az role definition list --name $mongoDbRoleAssignments[0].roleDefinitionName --output json 2>$null | ConvertFrom-Json | Select-Object -First 1
+                        if ($mongoDbRoleDef) {
+                            $actualActions = @($mongoDbRoleDef.permissions[0].actions | Sort-Object)
+                            $expectedActions = @(
+                                'Microsoft.ContainerService/managedClusters/commandResults/read'
+                                'Microsoft.ContainerService/managedClusters/read'
+                                'Microsoft.ContainerService/managedClusters/runCommand/action'
+                            ) | Sort-Object
+                            $actionsExactMatch = (Compare-Object -ReferenceObject $expectedActions -DifferenceObject $actualActions -SyncWindow 0 | Measure-Object).Count -eq 0
+
+                            $totalChecks++
+                            if (Write-Check "MongoDB-remediation role grants EXACTLY the three az aks command invoke actions" $actionsExactMatch "$($actualActions -join ', ')") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $scopesOk = (@($mongoDbRoleDef.assignableScopes).Count -eq 1) -and ($mongoDbRoleDef.assignableScopes[0] -ieq $aksResourceId)
+                            if (Write-Check "MongoDB-remediation role's assignableScopes is EXACTLY the AKS cluster resource (not the resource group)" $scopesOk "$($mongoDbRoleDef.assignableScopes -join ', ')") {
+                                $passedChecks++
+                            }
+                        }
+                    }
+                }
+                else {
+                    Write-Host "  ⚠️  AKS cluster or SRE Agent principal ID not resolved — skipping demo RBAC scope checks" -ForegroundColor Yellow
+                }
+            }
         }
     }
 }

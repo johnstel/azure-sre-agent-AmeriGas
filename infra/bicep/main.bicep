@@ -58,6 +58,9 @@ param incidentWebhookServiceUri string = ''
 @description('Optional action group resource IDs to notify when alerts fire')
 param alertActionGroupIds array = []
 
+@description('Deploy the dedicated demo alert-to-approved-remediation response plan wiring for the MongoDB-down scenario (issue #19): the demo MongoDB-down alert, incidentManagementConfiguration=AzMonitor, and the least-scope custom RBAC role for `az aks command invoke`. Off by default — the standard profile (main.bicepparam) never enables this; only main.demo.bicepparam does. Requires deployAlerts=true and deploySreAgent=true.')
+param deployDemoResponsePlan bool = false
+
 @description('AKS Kubernetes version')
 param kubernetesVersion string = '1.32'
 
@@ -229,6 +232,23 @@ module sreAgent 'modules/sre-agent.bicep' = if (deploySreAgent) {
     appInsightsConnectionString: appInsights.outputs.connectionString
     uniqueSuffix: uniqueSuffix
     apiVersion: sreAgentApiVersion
+    enableAzureMonitorIncidents: deployDemoResponsePlan
+  }
+}
+
+// Least-scope custom RBAC for the demo response plan's exact remediation
+// (issue #19) — additive to sreAgent's resource-group Contributor, scoped to
+// only the AKS cluster resource, granting only the actions `az aks command
+// invoke` requires. Deployed only when both the SRE Agent and the demo
+// response plan are enabled.
+module sreAgentDemoRbac 'modules/sre-agent-demo-rbac.bicep' = if (deploySreAgent && deployDemoResponsePlan) {
+  scope: resourceGroup
+  name: 'deploy-sre-agent-demo-rbac'
+  params: {
+    aksId: aks.outputs.aksId
+    sreAgentPrincipalId: sreAgent!.outputs.managedIdentityPrincipalId
+    uniqueSuffix: uniqueSuffix
+    workloadName: workloadName
   }
 }
 
@@ -274,7 +294,7 @@ var effectiveAlertActionGroupIds = deployActionGroup
   ? concat(alertActionGroupIds, [defaultActionGroup!.outputs.actionGroupId])
   : alertActionGroupIds
 
-module alerts 'modules/alerts.bicep' = if (deployAlerts) {
+module alerts 'modules/alerts.bicep' = if (deployAlerts || deployDemoResponsePlan) {
   scope: resourceGroup
   name: 'deploy-alerts'
   params: {
@@ -284,6 +304,8 @@ module alerts 'modules/alerts.bicep' = if (deployAlerts) {
     logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
     appNamespace: 'propane'
     actionGroupIds: effectiveAlertActionGroupIds
+    deployStandardAlerts: deployAlerts
+    deployMongoDbDownDemoAlert: deployDemoResponsePlan
   }
 }
 
@@ -313,6 +335,9 @@ output podRestartAlertId string = deployAlerts ? alerts!.outputs.podRestartAlert
 output http5xxAlertId string = deployAlerts ? alerts!.outputs.http5xxAlertId : ''
 output podFailureAlertId string = deployAlerts ? alerts!.outputs.podFailureAlertId : ''
 output crashLoopOomAlertId string = deployAlerts ? alerts!.outputs.crashLoopOomAlertId : ''
+output mongoDbDownDemoAlertId string = deployDemoResponsePlan ? alerts!.outputs.mongoDbDownDemoAlertId : ''
+output mongoDbDownDemoAlertTitle string = deployDemoResponsePlan ? alerts!.outputs.mongoDbDownDemoAlertTitleUsed : ''
+output mongoDbDownDemoAlertSeverity int = deployDemoResponsePlan ? alerts!.outputs.mongoDbDownDemoAlertSeverityUsed : -1
 output sreAgentId string = deploySreAgent ? sreAgent!.outputs.agentId : ''
 output sreAgentPortalUrl string = deploySreAgent ? sreAgent!.outputs.agentPortalUrl : ''
 output sreAgentName string = deploySreAgent ? sreAgent!.outputs.agentName : ''
@@ -323,5 +348,8 @@ output sreAgentManagedResourceGroupId string = deploySreAgent ? sreAgent!.output
 output sreAgentAppInsightsResourceId string = deploySreAgent ? sreAgent!.outputs.appInsightsResourceIdBound : ''
 output sreAgentAccessLevel string = deploySreAgent ? sreAgent!.outputs.accessLevel : ''
 output sreAgentAssignedRoleDefinitionIds array = deploySreAgent ? sreAgent!.outputs.assignedRoleDefinitionIds : []
+output sreAgentIncidentManagementConfigured bool = deploySreAgent ? sreAgent!.outputs.incidentManagementConfigured : false
+output sreAgentDemoRbacRoleDefinitionId string = (deploySreAgent && deployDemoResponsePlan) ? sreAgentDemoRbac!.outputs.roleDefinitionId : ''
+output sreAgentDemoRbacScopedActions array = (deploySreAgent && deployDemoResponsePlan) ? sreAgentDemoRbac!.outputs.scopedActions : []
 output adxClusterUri string = deployDataExplorer ? dataExplorer!.outputs.clusterUri : ''
 output adxDatabaseName string = deployDataExplorer ? dataExplorer!.outputs.databaseName : ''
