@@ -96,11 +96,10 @@ The Mission Control dashboard (`tools/mission-control/`) includes a built-in **G
 
 ### Azure SRE Agent (Cloud)
 
-After deployment:
+`scripts/deploy.ps1` bootstraps the agent end-to-end — no manual "connect resources" or "upload knowledge" step needed:
 
 1. **Open the SRE Agent Portal** — visit [aka.ms/sreagent/portal](https://aka.ms/sreagent/portal)
-2. **Connect it to your resources** (AKS, Log Analytics)
-3. **Ask it to diagnose**:
+2. **Ask it to diagnose** (the agent is already scoped to this lab's resource group, bound to its Application Insights telemetry, and loaded with `docs/sre-agent-knowledge.md`):
    - "Why are pods crashing in the propane namespace?"
    - "Tank level data isn't being processed — what's wrong?"
    - "What's causing high CPU on the demand forecast pods?"
