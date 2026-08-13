@@ -65,6 +65,43 @@ function createReadinessCheck({ id, category, status, blocking, evidence, remedi
   };
 }
 
+function toBoolean(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  return Boolean(value);
+}
+
+function resolveRequirementFlag(profileRequirement, explicitValue) {
+  if (explicitValue === undefined || explicitValue === null) {
+    return Boolean(profileRequirement);
+  }
+  const parsed = toBoolean(explicitValue, Boolean(profileRequirement));
+  if (profileRequirement) {
+    return true;
+  }
+  return parsed;
+}
+
+function resolveProfileRequirements(profileName = 'default', explicit = {}) {
+  const profile = String(profileName || 'default').trim().toLowerCase() || 'default';
+  const normalized = profile.replace(/[^a-z0-9]+/g, '-');
+
+  const explicitMission = explicit.requireMissionControl;
+  const explicitNative = explicit.requireNativeSreAgent;
+
+  const baseMissionRequirement = !['optional', 'advisory', 'local-only', 'demo-lite', 'no-mission-control', 'mission-control-disabled'].includes(normalized);
+  const baseNativeRequirement = normalized.includes('native') || normalized.includes('sre') || normalized.includes('full') || normalized.includes('review');
+
+  return {
+    requireMissionControl: resolveRequirementFlag(baseMissionRequirement, explicitMission),
+    requireNativeSreAgent: resolveRequirementFlag(baseNativeRequirement, explicitNative),
+  };
+}
+
 function normalizeRequest(input = {}) {
   const raw = input || {};
   const subscriptionId = String(raw.subscriptionId || raw.subscription || '').trim();
@@ -72,8 +109,12 @@ function normalizeRequest(input = {}) {
   const profile = String(raw.profile || raw.profileName || 'default').trim() || 'default';
   const runId = String(raw.runId || raw.run_id || 'mission-control').trim() || 'mission-control';
   const timeoutMs = Number(raw.timeoutMs ?? raw.timeout ?? DEFAULT_TIMEOUT_MS);
-  const requireMissionControl = Boolean(raw.requireMissionControl ?? true);
-  const requireNativeSreAgent = Boolean(raw.requireNativeSreAgent ?? false);
+  const requirements = resolveProfileRequirements(profile, {
+    requireMissionControl: raw.requireMissionControl,
+    requireNativeSreAgent: raw.requireNativeSreAgent,
+  });
+  const requireMissionControl = resolveRequirementFlag(requirements.requireMissionControl, raw.requireMissionControl);
+  const requireNativeSreAgent = resolveRequirementFlag(requirements.requireNativeSreAgent, raw.requireNativeSreAgent);
   const mockScenario = String(raw.mockScenario || raw.mock || '').trim().toLowerCase();
 
   const errors = [];
@@ -229,6 +270,33 @@ function buildFailureCheck(id, category, message, remediation, durationMs = 0) {
   });
 }
 
+function normalizeRuntimeComponent(status, fallback = {}) {
+  if (status === undefined || status === null || status === false) {
+    return { available: false, fresh: false, status: 'unavailable', details: fallback };
+  }
+  if (typeof status === 'boolean') {
+    return { available: status, fresh: status, status: status ? 'ready' : 'unavailable', details: fallback };
+  }
+  if (typeof status === 'string') {
+    const value = status.trim().toLowerCase();
+    return {
+      available: ['ready', 'healthy', 'available', 'running', 'connected', 'pass', 'pass-fresh'].includes(value),
+      fresh: !['stale', 'expired', 'unavailable', 'advisory', 'missing'].includes(value),
+      status: value,
+      details: fallback,
+    };
+  }
+  const details = status && typeof status === 'object' ? status : fallback;
+  const available = details.available === true || details.ready === true || details.pass === true || details.enabled === true || details.status === 'ready' || details.status === 'healthy';
+  const fresh = details.fresh !== false && details.stale !== true && details.status !== 'stale' && details.status !== 'expired' && details.status !== 'unavailable' && details.status !== 'advisory';
+  return {
+    available,
+    fresh,
+    status: typeof details.status === 'string' ? details.status : available ? 'ready' : 'unavailable',
+    details,
+  };
+}
+
 async function runCommand(runtime, label, command, args, timeoutMs) {
   if (runtime && typeof runtime.executor === 'function') {
     const output = await runtime.executor(label, command, args, timeoutMs);
@@ -243,6 +311,29 @@ async function runCommand(runtime, label, command, args, timeoutMs) {
   }
 
   return execFileAsync(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+}
+
+async function evaluateNativeSreAgentCheck(normalizedInput, runtime = {}) {
+  const timeoutMs = Math.min(Number(normalizedInput && normalizedInput.timeoutMs) || DEFAULT_TIMEOUT_MS, 30000);
+  try {
+    const agents = await runCommand(runtime, 'native-sre-agent', 'az', ['resource', 'list', '--resource-group', normalizedInput.resourceGroupName, '--resource-type', 'Microsoft.App/agents', '-o', 'json'], timeoutMs);
+    const items = JSON.parse(agents.stdout || '[]');
+    const list = Array.isArray(items) ? items : [];
+    const agent = list.find((item) => item && (item.type === 'Microsoft.App/agents' || String(item.type || '').includes('Microsoft.App/agents')));
+    if (!agent) {
+      return { available: false, fresh: false, status: 'missing', details: { message: 'No native Azure SRE Agent was found in the configured resource group.' } };
+    }
+    const provisioningState = String(agent.properties?.provisioningState || agent.provisioningState || 'Unknown');
+    const pass = ['succeeded', 'running', 'ready', 'success', 'healthy'].includes(provisioningState.trim().toLowerCase());
+    return {
+      available: pass,
+      fresh: pass,
+      status: pass ? 'ready' : (provisioningState || 'missing'),
+      details: { resourceId: agent.id || null, name: agent.name || null, provisioningState },
+    };
+  } catch (error) {
+    return { available: false, fresh: false, status: 'unavailable', details: { message: error && error.message ? error.message : 'Native Azure SRE Agent identity check failed.' } };
+  }
 }
 
 async function evaluateReadiness(input = {}, runtime = {}) {
@@ -418,6 +509,69 @@ async function evaluateReadiness(input = {}, runtime = {}) {
     checks.push(buildFailureCheck('collector-telemetry', 'telemetry', error && error.message ? error.message : 'Telemetry validation failed.', 'Confirm the collector pod is healthy and the telemetry pipeline is reporting before the demo starts.', 60));
   }
 
+  const missionControlRuntime = normalizeRuntimeComponent(
+    runtime.missionControl ?? runtime.missionControlStatus ??
+      (normalized.value.requireMissionControl
+        ? { available: true, fresh: true, status: 'ready', details: { source: 'default-runtime' } }
+        : { available: false, fresh: false, status: 'advisory', details: { source: 'default-runtime' } })
+  );
+  const nativeSreAgentRuntime = normalizeRuntimeComponent(
+    runtime.nativeSreAgent ?? runtime.nativeSreAgentStatus ??
+      (normalized.value.requireNativeSreAgent ? await evaluateNativeSreAgentCheck(normalized.value, runtime) : { available: false, fresh: false, status: 'advisory', details: { source: 'default-runtime' } })
+  );
+
+  if (normalized.value.requireMissionControl) {
+    if (!missionControlRuntime.available || !missionControlRuntime.fresh) {
+      checks.push(buildFailureCheck('mission-control-required', 'mission-control', missionControlRuntime.details && (missionControlRuntime.details.message || missionControlRuntime.details.reason) ? String(missionControlRuntime.details.message || missionControlRuntime.details.reason) : 'Mission Control is required for this readiness profile and was unavailable or stale.', 'Enable Mission Control Copilot and refresh the live evidence before the demo is marked ready.', 25));
+    } else {
+      checks.push(createReadinessCheck({
+        id: 'mission-control-required',
+        category: 'mission-control',
+        status: 'pass',
+        blocking: true,
+        evidence: { available: true, fresh: true, status: missionControlRuntime.status || 'ready' },
+        remediation: 'Mission Control remains available and fresh for the current demo run.',
+        durationMs: 25,
+      }));
+    }
+  } else {
+    checks.push(createReadinessCheck({
+      id: 'mission-control-optional',
+      category: 'mission-control',
+      status: missionControlRuntime.available ? 'pass' : 'warn',
+      blocking: false,
+      evidence: { available: Boolean(missionControlRuntime.available), fresh: Boolean(missionControlRuntime.fresh), status: missionControlRuntime.status || 'advisory' },
+      remediation: 'Mission Control is optional for this profile and should be treated as advisory only.',
+      durationMs: 25,
+    }));
+  }
+
+  if (normalized.value.requireNativeSreAgent) {
+    if (!nativeSreAgentRuntime.available || !nativeSreAgentRuntime.fresh) {
+      checks.push(buildFailureCheck('native-sre-agent-required', 'native-sre-agent', nativeSreAgentRuntime.details && (nativeSreAgentRuntime.details.message || nativeSreAgentRuntime.details.reason) ? String(nativeSreAgentRuntime.details.message || nativeSreAgentRuntime.details.reason) : 'Native Azure SRE Agent evidence is required for this readiness profile and was unavailable or stale.', 'Deploy or link the exact native Azure SRE Agent managed scope and fresh evidence before the demo is marked ready.', 25));
+    } else {
+      checks.push(createReadinessCheck({
+        id: 'native-sre-agent-required',
+        category: 'native-sre-agent',
+        status: 'pass',
+        blocking: true,
+        evidence: { available: true, fresh: true, status: nativeSreAgentRuntime.status || 'ready' },
+        remediation: 'The native Azure SRE Agent remains available and freshly aligned with the current demo run.',
+        durationMs: 25,
+      }));
+    }
+  } else {
+    checks.push(createReadinessCheck({
+      id: 'native-sre-agent-optional',
+      category: 'native-sre-agent',
+      status: nativeSreAgentRuntime.available ? 'pass' : 'warn',
+      blocking: false,
+      evidence: { available: Boolean(nativeSreAgentRuntime.available), fresh: Boolean(nativeSreAgentRuntime.fresh), status: nativeSreAgentRuntime.status || 'advisory' },
+      remediation: 'Native Azure SRE Agent evidence is optional for this profile and should be treated as advisory only.',
+      durationMs: 25,
+    }));
+  }
+
   const blockingFailures = checks.filter((check) => check.blocking && check.status === 'fail');
   const blockingWarnings = checks.filter((check) => check.blocking && check.status === 'warn');
   const status = blockingFailures.length === 0 && blockingWarnings.length === 0 ? 'ready' : 'blocked';
@@ -504,15 +658,35 @@ function parseCliArgs(argv = []) {
         flags.mock = String(argv[index + 1] || '').trim().toLowerCase();
         index += 1;
         break;
-      case '--no-mission-control':
-        flags.requireMissionControl = false;
+      case '--require-mission-control':
+        flags.requireMissionControl = true;
+        if (argv[index + 1] && ['true', 'false', '0', '1'].includes(String(argv[index + 1]).trim().toLowerCase())) {
+          flags.requireMissionControl = String(argv[index + 1]).trim().toLowerCase() !== 'false' && String(argv[index + 1]).trim().toLowerCase() !== '0';
+          index += 1;
+        }
         break;
       case '--require-native-sre-agent':
         flags.requireNativeSreAgent = true;
+        if (argv[index + 1] && ['true', 'false', '0', '1'].includes(String(argv[index + 1]).trim().toLowerCase())) {
+          flags.requireNativeSreAgent = String(argv[index + 1]).trim().toLowerCase() !== 'false' && String(argv[index + 1]).trim().toLowerCase() !== '0';
+          index += 1;
+        }
+        break;
+      case '--optional-mission-control':
+      case '--no-mission-control':
+        // Compatibility aliases only. They cannot weaken a profile that already
+        // requires Mission Control; the server profile remains authoritative.
+        flags.requireMissionControl = false;
+        break;
+      case '--optional-native-sre-agent':
+      case '--no-native-sre-agent':
+        // Compatibility aliases only. They cannot weaken a profile that already
+        // requires the native Azure SRE Agent check.
+        flags.requireNativeSreAgent = false;
         break;
       case '--help':
       case '-h':
-        throw new Error('Usage: node demo-readiness.js --subscription-id <sub> --resource-group <rg> [--profile demo] [--mock healthy|blocked|timeout|malformed|redaction] [--json]');
+        throw new Error('Usage: node demo-readiness.js --subscription-id <sub> --resource-group <rg> [--profile demo] [--require-mission-control] [--require-native-sre-agent] [--mock healthy|blocked|timeout|malformed|redaction] [--json]');
       default:
         if (arg.startsWith('--')) {
           throw new Error(`Unknown readiness argument: ${arg}`);
@@ -520,6 +694,13 @@ function parseCliArgs(argv = []) {
         break;
     }
   }
+
+  const profileRequirements = resolveProfileRequirements(input.profile, {
+    requireMissionControl: flags.requireMissionControl,
+    requireNativeSreAgent: flags.requireNativeSreAgent,
+  });
+  flags.requireMissionControl = profileRequirements.requireMissionControl;
+  flags.requireNativeSreAgent = profileRequirements.requireNativeSreAgent;
 
   return { input, flags };
 }
@@ -549,9 +730,12 @@ module.exports = {
   buildStableId,
   createReadinessCheck,
   normalizeRequest,
+  resolveProfileRequirements,
+  resolveRequirementFlag,
   parseCliArgs,
   formatHumanOutput,
   evaluateReadiness,
+  evaluateNativeSreAgentCheck,
   cliMain,
 };
 

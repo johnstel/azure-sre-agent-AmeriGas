@@ -71,7 +71,7 @@ test('parseCliArgs accepts strict inputs with JSON mode set', () => {
     '--profile', 'demo',
     '--timeout-ms', '75000',
     '--json',
-    '--no-mission-control',
+    '--optional-mission-control',
   ]);
 
   assert.equal(parsed.input.subscriptionId, 'sub-123');
@@ -79,7 +79,26 @@ test('parseCliArgs accepts strict inputs with JSON mode set', () => {
   assert.equal(parsed.input.profile, 'demo');
   assert.equal(parsed.input.timeoutMs, 75000);
   assert.equal(parsed.flags.json, true);
-  assert.equal(parsed.flags.requireMissionControl, false);
+  assert.equal(parsed.flags.requireMissionControl, true);
+  assert.equal(parsed.flags.requireNativeSreAgent, false);
+});
+
+test('evaluateReadiness enforces required Mission Control and SRE Agent when enabled', async () => {
+  const result = await evaluateReadiness({
+    subscriptionId: 'sub-required',
+    resourceGroupName: 'rg-required',
+    profile: 'demo',
+    timeoutMs: 90000,
+    requireMissionControl: true,
+    requireNativeSreAgent: true,
+  }, {
+    missionControl: { available: false, fresh: false, status: 'unavailable', details: { message: 'Mission Control missing' } },
+    nativeSreAgent: { available: false, fresh: false, status: 'unavailable', details: { reason: 'native agent missing' } },
+  });
+
+  assert.equal(result.status, 'blocked');
+  assert.ok(result.blockers.includes('mission-control-required'));
+  assert.ok(result.blockers.includes('native-sre-agent-required'));
 });
 
 test('demo-readiness CLI emits JSON and exits non-zero when blocked', () => {
