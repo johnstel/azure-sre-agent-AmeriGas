@@ -1,8 +1,8 @@
-# Azure SRE Agent AmeriGas Propane Demo Lab - Copilot Instructions
+# Azure SRE Agent ZavaGas Propane Demo Lab - Copilot Instructions
 
 ## Project Overview
 
-This repository contains a fully automated Azure SRE Agent demo lab environment themed as an **AmeriGas Propane Distribution Platform**. It deploys:
+This repository contains a fully automated Azure SRE Agent demo lab environment themed as a **ZavaGas Propane Distribution Platform**. ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration. It deploys:
 
 - **Azure Kubernetes Service (AKS)** with a multi-pod propane distribution platform
 - **Azure Container Registry** for container images
@@ -17,10 +17,10 @@ The platform simulates a retail propane distributor with propane distribution an
 This platform supports **two distinct propane business domains**. Every simulator, service, UI section, metric, event, and breakable scenario belongs to exactly one domain (or is explicitly Shared). Never mix vocabulary across domains — see `docs/sre-agent-knowledge.md` for the full model.
 
 - **Bulk Tank** — residential/commercial bulk propane tanks & deliveries. Vocabulary: gallons, tank percentage, consumption, refill recommendation, delivery scheduling. Owned by `tank-monitor`, `usage-simulator`, and the Customer Portal "My Bulk Tank" section.
-- **Cylinder Exchange** — retail cylinder exchange cages at partner stores. Vocabulary: full/empty/reserved cylinder counts, cage replenishment, exchange-location terminology. Owned by `dispatch-console` (Retail Cage Operations Center) and the Customer Portal "Nearby Exchange Locations" section.
+- **Cylinder Exchange** — retail cylinder exchange cages at fictional demo partner stores drawn from the shared catalog (`tools/mission-control/data/partner-catalog.json` — e.g. Contoso, Fabrikam, Adventure Works, Northwind Traders — in fictional Zava-East/Zava-Central/Zava-North regions). Vocabulary: full/empty/reserved cylinder counts, cage replenishment, exchange-location terminology. Owned by `dispatch-console` (Retail Cage Operations Center) and the Customer Portal "Nearby Exchange Locations" section.
 - **Shared** — `inventory-service`, `order-service`, `order-worker`, `rabbitmq`, `mongodb`, `otel-collector` serve both domains.
 
-## AmeriGas Propane Architecture
+## ZavaGas Propane Architecture
 
 | Service | Role | Domain | Technology |
 |---------|------|--------|------------|
@@ -80,7 +80,7 @@ For general diagnosis:
 
 Located in `k8s/scenarios/`:
 
-| File | Domain | AmeriGas Narrative | SRE Agent Can Diagnose |
+| File | Domain | ZavaGas Narrative | SRE Agent Can Diagnose |
 |------|--------|-------------------|----------------------|
 | `oom-killed.yaml` | Bulk Tank | Tank monitor overwhelmed by winter peak readings | OOMKilled events, memory limits |
 | `crash-loop.yaml` | Shared | Inventory service crash — invalid pricing config | CrashLoopBackOff, exit codes |
@@ -154,3 +154,4 @@ kubectl apply -f k8s/base/application.yaml
 4. **For docs**: Keep formatting consistent, include code examples
 5. **For new scenarios**: Add to `k8s/scenarios/` and update `docs/BREAKABLE-SCENARIOS.md`
 6. **For domain vocabulary**: Never mix Bulk Tank terms (gallons, tank percentage) with Cylinder Exchange terms (full/empty/reserved cylinder counts, cage) in the same UI section or metric. Tag new content with an explicit `Domain:` marker and run `scripts/validate-domain-terminology.ps1` before committing.
+7. **For brand/fictional-data content**: Never introduce a real retailer, real location, or real-company factual claim. Use only `ZavaGas` and the shared fictional partner catalog (`tools/mission-control/data/partner-catalog.json`). See `docs/BRAND-POLICY.md` and run `scripts/audit-brand-policy.ps1` before committing.
