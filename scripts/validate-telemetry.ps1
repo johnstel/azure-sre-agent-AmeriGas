@@ -194,7 +194,7 @@ function Start-TelemetryProbe {
         }
         note                = "Observed controlled HTTP failure; transaction.id=$TransactionId"
         type                = 'Warning'
-        reportingController = 'amerigas.telemetry.validation'
+        reportingController = 'zavagas.telemetry.validation'
         reportingInstance   = 'validate-telemetry'
     }
     $event | ConvertTo-Json -Depth 10 -Compress | kubectl create -f - | Out-Null

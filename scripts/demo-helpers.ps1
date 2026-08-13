@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AmeriGas Propane SRE Demo Lab - PowerShell helper functions.
+    ZavaGas Propane SRE Demo Lab - PowerShell helper functions.
 
 .DESCRIPTION
     Dot-source this script to load all demo shortcut commands into your
@@ -148,7 +148,7 @@ function ensure-credentials {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  🔐 Creating demo RabbitMQ credentials secret..." -ForegroundColor Yellow
         Write-Host "     ⚠️  Using default DEMO credentials. Run deploy.ps1 for randomized credentials." -ForegroundColor Gray
-        $demoUser = 'amerigas-rmq'
+        $demoUser = 'zavagas-rmq'
         $demoPass = 'Amg!P3#rMQ@xDm09'
         $demoUserEscaped = [System.Uri]::EscapeDataString($demoUser)
         $demoPassEscaped = [System.Uri]::EscapeDataString($demoPass)
@@ -219,7 +219,7 @@ function menu {
     Write-Host @"
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                    AmeriGas Propane SRE Demo Lab                             ║
+║                    ZavaGas Propane SRE Demo Lab                              ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Commands:                                                                   ║
 ║    az login --use-device-code  - Login to Azure                              ║

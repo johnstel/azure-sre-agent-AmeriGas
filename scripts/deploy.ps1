@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Deploys the Azure SRE Agent AmeriGas Propane Demo Lab infrastructure using Bicep.
+    Deploys the Azure SRE Agent ZavaGas Propane Demo Lab infrastructure using Bicep.
 
 .DESCRIPTION
     This script deploys all Azure infrastructure needed for the SRE Agent demo,
@@ -31,7 +31,7 @@
     .\deploy.ps1 -Location eastus2 -WhatIf
 
 .NOTES
-    Author: Azure SRE Agent AmeriGas Propane Demo Lab
+    Author: Azure SRE Agent ZavaGas Propane Demo Lab
     Prerequisites: Azure CLI, Bicep CLI
 #>
 
@@ -457,7 +457,7 @@ function Get-SreAgentProviderStatus {
 Write-Host @"
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                   AmeriGas Propane SRE Demo Lab Deployment                    ║
+║                   ZavaGas Propane SRE Demo Lab Deployment                    ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  This script deploys:                                                        ║
 ║  • Azure Kubernetes Service (AKS) with propane distribution platform        ║
@@ -950,7 +950,7 @@ if (Test-Path $k8sPath) {
 
     # Generate and apply RabbitMQ credentials as a Kubernetes Secret
     Write-Host "`n🔐 Generating RabbitMQ credentials..." -ForegroundColor Yellow
-    $rabbitMqUser     = 'amerigas-rmq'
+    $rabbitMqUser     = 'zavagas-rmq'
     $rabbitMqPassword = New-RandomPassword -Length 24
     $rabbitMqUserEscaped = [System.Uri]::EscapeDataString($rabbitMqUser)
     $rabbitMqPasswordEscaped = [System.Uri]::EscapeDataString($rabbitMqPassword)
@@ -980,6 +980,25 @@ if (Test-Path $k8sPath) {
         --dry-run=client -o yaml | kubectl apply -f -
     if ($LASTEXITCODE -ne 0) {
         throw "Could not create the telemetry probe ConfigMap."
+    }
+
+    # The shared, fictional ZavaGas Cylinder Exchange partner/site catalog is
+    # the single source of truth for both the customer portal and the
+    # dispatch console (Retail Cage Operations Center). It is generated from
+    # the repo-owned tools/mission-control/data/partner-catalog.json, the
+    # same pattern used above for the telemetry probe ConfigMap, so there is
+    # never a duplicated hardcoded copy in the Kubernetes manifest.
+    $partnerCatalogPath = Join-Path $PSScriptRoot "../tools/mission-control/data/partner-catalog.json"
+    if (-not (Test-Path -LiteralPath $partnerCatalogPath -PathType Leaf)) {
+        throw "Shared partner catalog not found at: $partnerCatalogPath"
+    }
+
+    kubectl create configmap partner-catalog-config `
+        --namespace propane `
+        "--from-file=partner-catalog.json=$partnerCatalogPath" `
+        --dry-run=client -o yaml | kubectl apply -f -
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create the partner catalog ConfigMap."
     }
 
     # Store the connection string only in a Kubernetes Secret. The generated

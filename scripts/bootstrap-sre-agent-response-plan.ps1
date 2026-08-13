@@ -134,7 +134,7 @@ param(
     [string]$ApiVersion = '2026-01-01',
 
     [Parameter()]
-    [string]$AlertTitle = 'AmeriGas Propane Demo - MongoDB Down',
+    [string]$AlertTitle = 'ZavaGas Propane Demo - MongoDB Down',
 
     [Parameter()]
     [ValidateRange(0, 4)]
@@ -507,7 +507,7 @@ function New-CustomAgentDataPlaneSpec {
     return [ordered]@{
         name                = $Name
         system_prompt       = $RenderedInstructions
-        handoff_description = 'Handles the AmeriGas MongoDB-down demo scenario (issue #19): confirms the mongodb Deployment in namespace propane is scaled to 0, proposes scaling it back to 1 replica via az aks command invoke, executes only after approval, and verifies recovery.'
+        handoff_description = 'Handles the ZavaGas MongoDB-down demo scenario (issue #19): confirms the mongodb Deployment in namespace propane is scaled to 0, proposes scaling it back to 1 replica via az aks command invoke, executes only after approval, and verifies recovery.'
         tools               = @('azure_cli')
         connectors          = @()
         handoffs            = @()
