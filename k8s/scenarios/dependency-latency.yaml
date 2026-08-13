@@ -1,0 +1,55 @@
+# =============================================================================
+# SCENARIO: Dependency Latency - Gradual Order Pricing-Lookup Slowdown
+# Domain: Shared
+# =============================================================================
+# Issue #22. All targeted pods (order-pricing-dependency,
+# order-checkout-probe, order-service, customer-portal, dispatch-console)
+# remain Running/Ready throughout — this is a genuinely latency-led
+# incident, not a crash or scheduling failure. It works by overriding the
+# SAME `order-pricing-dependency-config` ConfigMap that k8s/base/
+# application.yaml defines with low, fixed-delay values, replacing it with
+# a ramped configuration that raises the synthetic pricing-lookup
+# dependency's delay from 45ms toward 950ms over ~75 seconds. The
+# order-pricing-dependency pod polls its mounted config on every request, so
+# no restart is required, and its /healthz readiness/liveness probes are
+# never subject to the injected delay — only the /v1/pricing-lookup
+# business route is affected.
+#
+# Because k8s/scenarios/*.yaml resources are deleted by kind+name during
+# `Reset-DemoBaseline` and k8s/base/application.yaml is then reapplied (see
+# tools/mission-control/scenario-lifecycle.js), resetting this scenario
+# restores the original low-delay ConfigMap automatically — no scenario-only
+# Deployment is left behind to clean up.
+#
+# HOW TO BREAK:
+# kubectl apply -f k8s/scenarios/dependency-latency.yaml
+#
+# HOW TO FIX:
+# kubectl delete configmap order-pricing-dependency-config -n propane --ignore-not-found
+# kubectl apply -f k8s/base/application.yaml
+# =============================================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-pricing-dependency-config
+  namespace: propane
+  labels:
+    app: order-pricing-dependency
+    scenario: dependency-latency
+    sre-demo: breakable
+    domain: shared
+data:
+  delay_mode: "ramp"
+  fixed_delay_ms: "45"
+  jitter_spread_ms: "25"
+  error_rate_bp: "40"
+  slo_p95_threshold_ms: "500"
+  error_rate_ceiling_bp: "200"
+  ramp_from_ms: "45"
+  ramp_to_ms: "950"
+  ramp_duration_seconds: "75"
+  config_version: "incident-v2"
+  config_change_reason: "Emergency change: pricing-lookup dependency timeout raised from 45ms to 950ms in order-pricing-dependency-config to accommodate a vendor rate-limit workaround."
+  config_changed_by: "platform-ops-oncall"
+  config_changed_at: "2025-06-03T14:12:00Z"
