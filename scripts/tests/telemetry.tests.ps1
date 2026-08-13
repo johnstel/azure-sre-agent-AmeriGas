@@ -38,6 +38,19 @@ Describe 'OpenTelemetry Collector configuration' {
         foreach ($attribute in @('service.name', 'service.namespace', 'deployment.environment', 'scenario.id', 'run.correlation_id', 'transaction.id')) {
             $probe | Should -Match ([regex]::Escape($attribute))
         }
+        $probe | Should -Match "PROBE_SERVICE_NAME = 'telemetry-probe'"
+        $probe | Should -Match "'peer.service': target.service"
+        $probe | Should -Match "'span.role': 'observed-http-client'"
+        $probe | Should -Not -Match 'resource\(target\.service\)'
+    }
+
+    It 'uses a deterministic repo-owned controlled failure endpoint' {
+        $probe = Get-Content -LiteralPath $script:ProbePath -Raw
+        $probe | Should -Match "service: 'order-pricing-dependency'"
+        $probe | Should -Match "url: 'http://order-pricing-dependency:4000/controlled-failure'"
+        $script:Manifest | Should -Match "req\.method === 'GET' && req\.url === '/controlled-failure'"
+        $script:Manifest | Should -Match "status_code: 503"
+        $script:Manifest | Should -Match "event: 'controlled_failure'"
     }
 }
 
@@ -54,7 +67,7 @@ Describe 'Telemetry deployment secret handling' {
 
 Describe 'Bounded workspace telemetry validation' {
     It 'rejects identifiers before KQL interpolation' {
-        { New-TelemetryValidationQuery -TransactionId 'bad"; AppRequests | take 1 //' } | Should -Throw
+        { New-TelemetryValidationQuery -TransactionId 'bad"; AppDependencies | take 1 //' } | Should -Throw
     }
 
     It 'uses workspace-backed Application Insights table names and exact transaction matching' {
@@ -63,6 +76,15 @@ Describe 'Bounded workspace telemetry validation' {
         foreach ($table in @('AppRequests', 'AppDependencies', 'AppExceptions', 'AppTraces', 'AppMetrics', 'KubeEvents')) {
             $query | Should -Match $table
         }
+        $query | Should -Match 'peer\.service'
+        $query | Should -Match 'ExternalServiceResourceCount'
+        $query | Should -Match 'EndToEndCorrelationCount'
+        $query | Should -Match 'AppRoleName == "order-pricing-dependency"'
+        $query | Should -Match 'ResultCode == "200"'
+        $query | Should -Match 'Target contains_cs "tank-monitor"'
+        $query | Should -Match 'Data contains_cs "/health"'
+        $query | Should -Match 'RequestParentId == DependencySpanId'
+        $query | Should -Match 'union matchingRequests, matchingDependencies, matchingExceptions, matchingTraces, matchingMetrics'
         $query | Should -Match ([regex]::Escape('Properties["transaction.id"]'))
         $query | Should -Match ([regex]::Escape($id))
     }
@@ -89,15 +111,30 @@ Describe 'Bounded workspace telemetry validation' {
 
     It 'rejects stale or mismatched partial proof' {
         $partial = [pscustomobject]@{
-            RequestCount = 3
             DependencyCount = 4
-            CorrelatedOperationCount = 0
-            ServiceCount = 3
-            MetricCount = 3
+            CorrelatedTransactionCount = 0
+            RequiredTargetCount = 3
+            ControlledFailureCount = 1
+            ControlledRequestCount = 1
+            EndToEndCorrelationCount = 1
+            ExternalServiceResourceCount = 0
+            MetricCount = 4
             ExceptionCount = 1
             TraceCount = 4
             KubernetesEventCount = 1
         }
         Test-TelemetryProof -Proof $partial | Should -BeFalse
+    }
+
+    It 'creates the Kubernetes event only after the deterministic HTTP 503 is verified' {
+        $validation = Get-Content -LiteralPath $script:ValidationPath -Raw
+        $failureCheck = $validation.IndexOf("Telemetry proof Job did not observe the deterministic repo-owned controlled failure.")
+        $eventCreation = $validation.IndexOf("reason              = 'ControlledTelemetryFailure'")
+        $failureCheck | Should -BeGreaterThan 0
+        $eventCreation | Should -BeGreaterThan $failureCheck
+        $validation | Should -Match "route -eq '/controlled-failure'"
+        $validation | Should -Match "statusCode -eq 503"
+        $validation | Should -Match "route -eq '/health'"
+        $validation | Should -Match "statusCode -eq 200"
     }
 }

@@ -653,6 +653,74 @@ data:
       otlpExport('/v1/traces', payload);
     }
 
+    function exportControlledFailure(args) {
+      const resourceAttributes = [
+        { key: 'service.name', value: { stringValue: SERVICE_NAME } },
+        { key: 'service.namespace', value: { stringValue: SERVICE_NAMESPACE } },
+        { key: 'deployment.environment', value: { stringValue: ENVIRONMENT } },
+        { key: 'scenario.id', value: { stringValue: 'observability-validation' } },
+        { key: 'run.correlation_id', value: { stringValue: args.runId } },
+        { key: 'transaction.id', value: { stringValue: args.transactionId } },
+      ];
+      const commonAttributes = [
+        { key: 'http.request.method', value: { stringValue: 'GET' } },
+        { key: 'http.route', value: { stringValue: '/controlled-failure' } },
+        { key: 'http.response.status_code', value: { intValue: '503' } },
+        { key: 'failure.controlled', value: { boolValue: true } },
+        { key: 'transaction.id', value: { stringValue: args.transactionId } },
+        { key: 'run.correlation_id', value: { stringValue: args.runId } },
+      ];
+      otlpExport('/v1/traces', {
+        resourceSpans: [{
+          resource: { attributes: resourceAttributes },
+          scopeSpans: [{
+            scope: { name: 'order-pricing-dependency.controlled-failure' },
+            spans: [{
+              traceId: args.traceId,
+              spanId: args.spanId,
+              parentSpanId: args.parentSpanId,
+              name: 'GET /controlled-failure',
+              kind: 2,
+              startTimeUnixNano: args.startNs,
+              endTimeUnixNano: args.endNs,
+              attributes: commonAttributes,
+              status: { code: 2, message: 'Deterministic controlled telemetry failure' },
+              events: [{
+                timeUnixNano: args.endNs,
+                name: 'exception',
+                attributes: [
+                  { key: 'exception.type', value: { stringValue: 'ControlledTelemetryFailure' } },
+                  { key: 'exception.message', value: { stringValue: 'Deterministic repo-owned failure endpoint returned HTTP 503' } },
+                  { key: 'transaction.id', value: { stringValue: args.transactionId } },
+                ],
+              }],
+            }],
+          }],
+        }],
+      });
+      otlpExport('/v1/logs', {
+        resourceLogs: [{
+          resource: { attributes: resourceAttributes },
+          scopeLogs: [{
+            scope: { name: 'order-pricing-dependency.controlled-failure' },
+            logRecords: [{
+              timeUnixNano: args.endNs,
+              observedTimeUnixNano: args.endNs,
+              traceId: args.traceId,
+              spanId: args.spanId,
+              severityNumber: 17,
+              severityText: 'ERROR',
+              body: { stringValue: 'Deterministic controlled telemetry failure returned HTTP 503' },
+              attributes: commonAttributes.concat([
+                { key: 'exception.type', value: { stringValue: 'ControlledTelemetryFailure' } },
+                { key: 'exception.message', value: { stringValue: 'Deterministic repo-owned failure endpoint returned HTTP 503' } },
+              ]),
+            }],
+          }],
+        }],
+      });
+    }
+
     const server = http.createServer(function (req, res) {
       if (req.method === 'GET' && req.url === '/healthz') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -708,6 +776,55 @@ data:
           quantilesMs: { p50: computeQuantile(sorted, 50), p95: computeQuantile(sorted, 95), p99: computeQuantile(sorted, 99) },
           errorRatePct: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0,
         }, null, 2));
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/controlled-failure') {
+        const transactionId = String(req.headers['x-transaction-id'] || '');
+        const runId = String(req.headers['x-run-correlation-id'] || '');
+        if (!/^[a-f0-9]{32}$/.test(transactionId) || !/^[a-f0-9]{32}$/.test(runId)) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ status: 'invalid_correlation' }));
+          return;
+        }
+
+        const inbound = parseTraceParent(req.headers.traceparent);
+        const traceId = inbound ? inbound.traceId : newHexId(16);
+        const parentSpanId = inbound ? inbound.spanId : newHexId(8);
+        const spanId = newHexId(8);
+        const startNs = (BigInt(Date.now()) * 1000000n).toString();
+        const endNs = (BigInt(Date.now()) * 1000000n).toString();
+        exportControlledFailure({
+          traceId: traceId,
+          parentSpanId: parentSpanId,
+          spanId: spanId,
+          transactionId: transactionId,
+          runId: runId,
+          startNs: startNs,
+          endNs: endNs,
+        });
+        console.log(JSON.stringify({
+          event: 'controlled_failure',
+          service: SERVICE_NAME,
+          route: '/controlled-failure',
+          status_code: 503,
+          transaction_id: transactionId,
+          run_correlation_id: runId,
+          trace_id: traceId,
+          span_id: spanId,
+          parent_span_id: parentSpanId,
+        }));
+        res.writeHead(503, {
+          'content-type': 'application/json',
+          traceparent: '00-' + traceId + '-' + spanId + '-01',
+        });
+        res.end(JSON.stringify({
+          status: 'controlled_failure',
+          route: '/controlled-failure',
+          transactionId: transactionId,
+          runCorrelationId: runId,
+          traceId: traceId,
+        }));
         return;
       }
 

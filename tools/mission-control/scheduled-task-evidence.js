@@ -108,19 +108,24 @@ function createScheduledTaskEvidenceStore(options = {}) {
     }
 
     const minimums = {
-      requestCount: 3,
       dependencyCount: 4,
-      correlatedOperationCount: 1,
-      serviceCount: 3,
-      metricCount: 3,
+      correlatedTransactionCount: 4,
+      requiredTargetCount: 3,
+      controlledFailureCount: 1,
+      controlledRequestCount: 1,
+      endToEndCorrelationCount: 1,
+      metricCount: 4,
       exceptionCount: 1,
-      traceCount: 3,
+      traceCount: 4,
       kubernetesEventCount: 1,
     };
     for (const [field, minimum] of Object.entries(minimums)) {
       if (!Number.isInteger(proof[field]) || proof[field] < minimum) {
         return { valid: false, reason: `Application Insights telemetry proof is incomplete (${field} < ${minimum})` };
       }
+    }
+    if (!Number.isInteger(proof.externalServiceResourceCount) || proof.externalServiceResourceCount !== 0) {
+      return { valid: false, reason: 'Application Insights telemetry proof attributes signals to an external service resource' };
     }
 
     return {

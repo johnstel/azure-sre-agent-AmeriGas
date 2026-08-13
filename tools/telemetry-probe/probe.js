@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://otel-collector.propane.svc.cluster.local:4318').replace(/\/$/, '');
 const RUN_ID_PATTERN = /^[a-f0-9]{32}$/;
+const PROBE_SERVICE_NAME = 'telemetry-probe';
 const runId = (process.env.RUN_CORRELATION_ID || crypto.randomUUID()).replaceAll('-', '').toLowerCase();
 const scenarioId = process.env.SCENARIO_ID || 'observability-baseline';
 
@@ -18,7 +19,11 @@ const targets = [
   { service: 'tank-monitor', url: 'http://tank-monitor:3000/health' },
   { service: 'inventory-service', url: 'http://inventory-service:3002/health' },
   { service: 'order-service', url: 'http://order-service:3001/health' },
-  { service: 'order-service', url: 'http://order-service:3001/telemetry-controlled-failure', controlledFailure: true },
+  {
+    service: 'order-pricing-dependency',
+    url: 'http://order-pricing-dependency:4000/controlled-failure',
+    controlledFailure: true,
+  },
 ];
 
 const hex = (bytes) => crypto.randomBytes(bytes).toString('hex');
@@ -30,10 +35,10 @@ const attributes = (entries) => Object.entries(entries).map(([key, value]) => ({
   value: typeof value === 'number' ? intValue(value) : stringValue(value),
 }));
 
-function resource(service) {
+function resource() {
   return {
     attributes: attributes({
-      'service.name': service,
+      'service.name': PROBE_SERVICE_NAME,
       'service.namespace': 'propane',
       'deployment.environment': 'demo',
       'scenario.id': scenarioId,
@@ -58,7 +63,7 @@ async function postOtlp(signal, payload) {
 
 async function observeTarget(target) {
   const traceId = hex(16);
-  const requestSpanId = hex(8);
+  const transactionSpanId = hex(8);
   const dependencySpanId = hex(8);
   const started = nanoTime();
   const startedMs = Date.now();
@@ -67,7 +72,11 @@ async function observeTarget(target) {
 
   try {
     const response = await fetch(target.url, {
-      headers: { traceparent: `00-${traceId}-${dependencySpanId}-01` },
+      headers: {
+        traceparent: `00-${traceId}-${dependencySpanId}-01`,
+        'x-transaction-id': runId,
+        'x-run-correlation-id': runId,
+      },
       signal: AbortSignal.timeout(10000),
     });
     statusCode = response.status;
@@ -86,6 +95,10 @@ async function observeTarget(target) {
     'http.response.status_code': statusCode,
     'url.full': target.url,
     'server.address': new URL(target.url).hostname,
+    'server.port': Number(new URL(target.url).port),
+    'peer.service': target.service,
+    'target.service': target.service,
+    'http.route': new URL(target.url).pathname,
     'scenario.id': scenarioId,
     'run.correlation_id': runId,
     'transaction.id': runId,
@@ -95,12 +108,18 @@ async function observeTarget(target) {
   const spans = [
     {
       traceId,
-      spanId: requestSpanId,
-      name: `synthetic ${target.service} request`,
-      kind: 2,
+      spanId: transactionSpanId,
+      name: `observe ${target.service}`,
+      kind: 1,
       startTimeUnixNano: started,
       endTimeUnixNano: ended,
-      attributes: attributes({ ...common, 'http.route': new URL(target.url).pathname }),
+      attributes: attributes({
+        'span.role': 'synthetic-transaction',
+        'target.service': target.service,
+        'scenario.id': scenarioId,
+        'run.correlation_id': runId,
+        'transaction.id': runId,
+      }),
       status: failed && !expectedFailure
         ? { code: 2, message: errorMessage || `HTTP ${statusCode}` }
         : { code: 1 },
@@ -108,12 +127,12 @@ async function observeTarget(target) {
     {
       traceId,
       spanId: dependencySpanId,
-      parentSpanId: requestSpanId,
+      parentSpanId: transactionSpanId,
       name: `GET ${target.service}`,
       kind: 3,
       startTimeUnixNano: started,
       endTimeUnixNano: ended,
-      attributes: attributes(common),
+      attributes: attributes({ ...common, 'span.role': 'observed-http-client' }),
       status: failed ? { code: 2, message: errorMessage || `HTTP ${statusCode}` } : { code: 1 },
       events: failed ? [{
         timeUnixNano: ended,
@@ -132,13 +151,13 @@ async function observeTarget(target) {
   await Promise.all([
     postOtlp('traces', {
       resourceSpans: [{
-        resource: resource(target.service),
+        resource: resource(),
         scopeSpans: [{ scope: { name: 'amerigas.telemetry-probe', version: '1.0.0' }, spans }],
       }],
     }),
     postOtlp('metrics', {
       resourceMetrics: [{
-        resource: resource(target.service),
+        resource: resource(),
         scopeMetrics: [{
           scope: { name: 'amerigas.telemetry-probe', version: '1.0.0' },
           metrics: [{
@@ -148,7 +167,8 @@ async function observeTarget(target) {
             gauge: {
               dataPoints: [{
                 attributes: attributes({
-                  'service.name': target.service,
+                  'peer.service': target.service,
+                  'server.address': new URL(target.url).hostname,
                   'transaction.id': runId,
                   'failure.controlled': String(expectedFailure),
                 }),
@@ -162,7 +182,7 @@ async function observeTarget(target) {
     }),
     postOtlp('logs', {
       resourceLogs: [{
-        resource: resource(target.service),
+        resource: resource(),
         scopeLogs: [{
           scope: { name: 'amerigas.telemetry-probe', version: '1.0.0' },
           logRecords: [{
@@ -177,7 +197,7 @@ async function observeTarget(target) {
               : `Observed healthy HTTP ${statusCode} from ${target.service}`),
             attributes: attributes({
               ...common,
-              'service.name': target.service,
+              'peer.service': target.service,
               ...(failed ? {
                 'exception.type': expectedFailure ? 'ControlledHttpFailure' : 'ObservedHttpFailure',
                 'exception.message': errorMessage || `Observed HTTP ${statusCode}`,
@@ -189,7 +209,13 @@ async function observeTarget(target) {
     }),
   ]);
 
-  return { service: target.service, statusCode, traceId, controlledFailure: expectedFailure };
+  return {
+    service: target.service,
+    route: new URL(target.url).pathname,
+    statusCode,
+    traceId,
+    controlledFailure: expectedFailure,
+  };
 }
 
 async function main() {
@@ -208,4 +234,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, observeTarget };
+module.exports = { main, observeTarget, targets };

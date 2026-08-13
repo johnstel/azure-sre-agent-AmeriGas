@@ -124,8 +124,10 @@ never be reported as ready" requirement.
 
 The gate also reads `tools/mission-control/.data/telemetry-proof.json`, which is
 written atomically only after `scripts/validate-telemetry.ps1` proves fresh
-`AppRequests`, `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`,
-and a correlated `KubeEvents` record. A missing, stale (older than five
+`telemetry-probe` records in `AppDependencies`, `AppExceptions`, `AppTraces`,
+and `AppMetrics`, plus a correlated `KubeEvents` record. The proof requires all
+three real service targets and rejects telemetry attributed to those external
+services as resource roles. A missing, stale (older than five
 minutes), incomplete, or mismatched telemetry proof keeps readiness blocked
 regardless of the scheduled task's reported status.
 
