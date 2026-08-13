@@ -1,0 +1,129 @@
+{
+  "$comment": "Canonical, single-source-of-truth catalog of fictional ZavaGas Cylinder Exchange partner sites. Both the customer portal ('Nearby Exchange Locations') and the dispatch console (Retail Cage Operations Center) render from this exact catalog — do not fork or duplicate it. All partner names are drawn from well-known Microsoft sample/demo brands and are NOT real ZavaGas partners or real companies of any kind. All regions and route identifiers are fictional (Zava-East / Zava-Central / Zava-North, Route Z-##). See docs/BRAND-POLICY.md.",
+  "version": 1,
+  "brand": "ZavaGas",
+  "disclaimer": "ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.",
+  "regions": ["Zava-East", "Zava-Central", "Zava-North"],
+  "sites": [
+    {
+      "id": "contoso-104",
+      "partner": "Contoso",
+      "siteLabel": "Contoso Market #104",
+      "region": "Zava-East",
+      "route": "Route Z-12",
+      "cageSize": 20,
+      "distanceMiles": 2.3,
+      "primary": true
+    },
+    {
+      "id": "contoso-921",
+      "partner": "Contoso",
+      "siteLabel": "Contoso Market #921",
+      "region": "Zava-Central",
+      "route": "Route Z-58",
+      "cageSize": 20,
+      "distanceMiles": 9.6,
+      "primary": false
+    },
+    {
+      "id": "fabrikam-208",
+      "partner": "Fabrikam",
+      "siteLabel": "Fabrikam Home & Garden #208",
+      "region": "Zava-East",
+      "route": "Route Z-19",
+      "cageSize": 12,
+      "distanceMiles": 6.8,
+      "primary": true
+    },
+    {
+      "id": "fabrikam-1034",
+      "partner": "Fabrikam",
+      "siteLabel": "Fabrikam Home & Garden #1034",
+      "region": "Zava-North",
+      "route": "Route Z-77",
+      "cageSize": 12,
+      "distanceMiles": 14.2,
+      "primary": false
+    },
+    {
+      "id": "adventure-works-317",
+      "partner": "Adventure Works",
+      "siteLabel": "Adventure Works Outfitters #317",
+      "region": "Zava-East",
+      "route": "Route Z-24",
+      "cageSize": 12,
+      "distanceMiles": 8.2,
+      "primary": true
+    },
+    {
+      "id": "adventure-works-1142",
+      "partner": "Adventure Works",
+      "siteLabel": "Adventure Works Outfitters #1142",
+      "region": "Zava-Central",
+      "route": "Route Z-63",
+      "cageSize": 12,
+      "distanceMiles": 11.5,
+      "primary": false
+    },
+    {
+      "id": "northwind-412",
+      "partner": "Northwind Traders",
+      "siteLabel": "Northwind Traders #412",
+      "region": "Zava-East",
+      "route": "Route Z-31",
+      "cageSize": 20,
+      "distanceMiles": 3.5,
+      "primary": true
+    },
+    {
+      "id": "northwind-1250",
+      "partner": "Northwind Traders",
+      "siteLabel": "Northwind Traders #1250",
+      "region": "Zava-North",
+      "route": "Route Z-84",
+      "cageSize": 20,
+      "distanceMiles": 16.0,
+      "primary": false
+    },
+    {
+      "id": "wide-world-importers-506",
+      "partner": "Wide World Importers",
+      "siteLabel": "Wide World Importers #506",
+      "region": "Zava-Central",
+      "route": "Route Z-40",
+      "cageSize": 20,
+      "distanceMiles": 5.6,
+      "primary": true
+    },
+    {
+      "id": "tailspin-toys-611",
+      "partner": "Tailspin Toys",
+      "siteLabel": "Tailspin Toys #611",
+      "region": "Zava-Central",
+      "route": "Route Z-52",
+      "cageSize": 20,
+      "distanceMiles": 12.4,
+      "primary": true
+    },
+    {
+      "id": "fourth-coffee-704",
+      "partner": "Fourth Coffee",
+      "siteLabel": "Fourth Coffee #704",
+      "region": "Zava-North",
+      "route": "Route Z-69",
+      "cageSize": 24,
+      "distanceMiles": 7.9,
+      "primary": true
+    },
+    {
+      "id": "woodgrove-819",
+      "partner": "Woodgrove",
+      "siteLabel": "Woodgrove Market #819",
+      "region": "Zava-North",
+      "route": "Route Z-76",
+      "cageSize": 16,
+      "distanceMiles": 10.1,
+      "primary": true
+    }
+  ]
+}

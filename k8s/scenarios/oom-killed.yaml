@@ -1,8 +1,8 @@
 # =============================================================================
-# Breakable Scenarios for Azure SRE Agent AmeriGas Propane Demo
+# Breakable Scenarios for Azure SRE Agent ZavaGas Propane Demo
 # =============================================================================
 # This file contains a failure scenario that can be applied to the
-# AmeriGas Propane Distribution Platform for demonstrating Azure SRE Agent
+# ZavaGas Propane Distribution Platform for demonstrating Azure SRE Agent
 # diagnosis capabilities.
 #
 # Apply with: kubectl apply -f k8s/scenarios/oom-killed.yaml

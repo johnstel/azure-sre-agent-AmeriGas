@@ -9,7 +9,7 @@
 # delayed alarm queue and the exact-once processing recovery path.
 #
 # The thresholds and severity labels below are SIMULATED only and require
-# AmeriGas safety SME validation before they are treated as production policy.
+# ZavaGas safety SME validation before they are treated as production policy.
 #
 # HOW TO BREAK:
 # kubectl apply -f k8s/scenarios/probe-failure.yaml
@@ -37,7 +37,7 @@ data:
   simulated_severity: "SEV-1"
   ack_state: "pending"
   processed_exactly_once: "false"
-  threshold: "SIMULATED tank level drop below 20% after 15 minutes; requires AmeriGas safety SME validation."
+  threshold: "SIMULATED tank level drop below 20% after 15 minutes; requires ZavaGas safety SME validation."
   triggered_at: "2025-02-11T06:41:52Z"
   detected_at: "2025-02-11T06:51:12Z"
   processing_component: "safety-compliance-monitor"
@@ -73,7 +73,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              echo '{"event":"bulk_tank_safety_alarm","alarm_id":"BT-SAFETY-ALM-00042","asset_id":"BT-1551","reading_age_minutes":9,"simulated_severity":"SEV-1","ack_state":"pending","triggered_at":"2025-02-11T06:41:52Z","detected_at":"2025-02-11T06:51:12Z","threshold":"SIMULATED tank level drop below 20% after 15 minutes; requires AmeriGas safety SME validation.","processing_component":"safety-compliance-monitor","processing_state":"suppressed","workload_healthy":true,"duplicate_incident_count":0}'
+              echo '{"event":"bulk_tank_safety_alarm","alarm_id":"BT-SAFETY-ALM-00042","asset_id":"BT-1551","reading_age_minutes":9,"simulated_severity":"SEV-1","ack_state":"pending","triggered_at":"2025-02-11T06:41:52Z","detected_at":"2025-02-11T06:51:12Z","threshold":"SIMULATED tank level drop below 20% after 15 minutes; requires ZavaGas safety SME validation.","processing_component":"safety-compliance-monitor","processing_state":"suppressed","workload_healthy":true,"duplicate_incident_count":0}'
               while true; do
                 echo '{"event":"alarm_processing","alarm_id":"BT-SAFETY-ALM-00042","status":"delayed","component":"safety-compliance-monitor","processing_state":"suppressed","workload_healthy":true,"duplicate_incident_count":0}'
                 sleep 30
