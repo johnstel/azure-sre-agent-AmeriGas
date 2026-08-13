@@ -62,6 +62,8 @@ function healthyBaseline(overrides = {}) {
       deployment('rabbitmq'),
       deployment('mongodb'),
       deployment('otel-collector'),
+      deployment('order-pricing-dependency'),
+      deployment('order-checkout-probe'),
     ],
     services: [
       service('customer-portal'),

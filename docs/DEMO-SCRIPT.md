@@ -267,6 +267,37 @@ kubectl apply -f k8s/base/application.yaml
 
 ---
 
+### Scenario E: Dependency Latency — Gradual Order Slowdown (Alternative)
+
+**Domain:** Shared
+
+**Why this one:** The strongest "application-level reasoning" scenario in the catalog — every pod stays Running/Ready, so a naive pod-status check tells you nothing. It demonstrates SLO/trace/metric correlation and root-causing a recent config change.
+
+**1. Set the scene:**
+> "An on-call engineer just pushed an emergency config change to the pricing-lookup dependency. Nothing crashed — but checkout is getting slower by the second."
+
+**2. Break it** — click **"Dependency Latency"**, or run:
+```bash
+kubectl apply -f k8s/scenarios/dependency-latency.yaml
+```
+
+**3. Ask SRE Agent (vague to specific):**
+
+> **"Order checkout feels slow, can you take a look?"**
+
+> **"Why is p95 checkout latency above our SLO even though every pod looks healthy?"**
+
+> **"Correlate the p95 SLO breach on order-pricing-dependency with any recent configuration change."**
+
+Agent should identify the `order-pricing-dependency-config` config-version change, the delayed `dependency.pricing-lookup` span, and that pods remain Ready throughout (a genuinely latency-led incident, not a crash).
+
+**4. Fix it** — click **🔧 Fix All**, or run:
+```bash
+kubectl apply -f k8s/base/application.yaml
+```
+
+---
+
 **Domain:** Shared
 
 ## Act 3 — Proactive + Observability (7 min)
@@ -387,8 +418,9 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 | Missing Config | Missing ConfigMaps | Delivery zone config not deployed |
 | MongoDB Down | Database scaled to 0 | Database outage — cascading failure across bulk tank readings and order processing |
 | Service Mismatch | Selector label drift | Silent routing failure after "v2 upgrade" |
+| Dependency Latency | Pricing-lookup config ramped from 45ms to 950ms | Gradual checkout slowdown after an emergency config change; all pods stay Ready |
 
-### Platform Services (9 active)
+### Platform Services (11 active)
 
 | Service | Role | Domain | Replicas |
 |---------|------|--------|----------|
@@ -398,8 +430,10 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 | `inventory-service` | Bulk delivery pricing & retail cylinder exchange cage catalog | Shared | 2 |
 | `order-service` | Order fulfillment & delivery scheduling (bulk tank + cylinder exchange) | Shared | 2 |
 | `usage-simulator` | Residential/commercial bulk propane tank usage pattern generator | Bulk Tank | 1 |
-| `otel-collector` | OpenTelemetry Collector — receives OTLP, exports to App Insights & ADX | Shared | 1 |
+| `order-pricing-dependency` | Synthetic order-checkout pricing-lookup dependency (issue #22) | Shared | 1 |
+| `order-checkout-probe` | Synthetic order-checkout traffic generator with correlation ids (issue #22) | Shared | 1 |
+| `otel-collector` | OpenTelemetry Collector — receives OTLP + Prometheus scrape | Shared | 1 |
 | `rabbitmq` | Event bus — bulk tank alerts, order events, dispatch coordination | Shared | 1 |
 | `mongodb` | Bulk tank readings, delivery/order records, customer data | Shared | 1 |
 
-> **Note:** `order-worker` exists in the manifests but is disabled (`replicas: 0`). The OTel Collector is a platform component — it receives telemetry from all instrumented services and exports to Application Insights (for real-time APM) and through Container Insights to Log Analytics and ADX (for deep analytics).
+> **Note:** `order-worker` exists in the manifests but is disabled (`replicas: 0`). The OTel Collector is a platform component that receives OTLP traces/metrics and scrapes Prometheus targets from every instrumented service. Its current pipeline exporters only include the `logging` exporter — the `otlp/appinsights` exporter is defined but not yet wired into an active pipeline, so treat Application Insights ingestion as pending (issue #25) rather than proven, until that pipeline is corrected/finalized.

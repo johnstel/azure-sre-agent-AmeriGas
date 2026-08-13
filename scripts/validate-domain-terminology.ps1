@@ -58,6 +58,7 @@ param(
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/missing-config.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/mongodb-down.yaml"),
         (Join-Path $PSScriptRoot ".." "k8s/scenarios/service-mismatch.yaml"),
+        (Join-Path $PSScriptRoot ".." "k8s/scenarios/dependency-latency.yaml"),
         (Join-Path $PSScriptRoot ".." "docs/sre-agent-knowledge.md"),
         (Join-Path $PSScriptRoot ".." "docs/DEMO-SCRIPT.md"),
         (Join-Path $PSScriptRoot ".." "docs/BREAKABLE-SCENARIOS.md")
