@@ -6,103 +6,126 @@
  * (the get_cluster_info Copilot tool) so there is exactly one discovery
  * algorithm, not two independently drifting copies.
  *
- * Resolution order — this NEVER silently falls back to "whichever resource
- * group happens to exist":
+ * This NEVER silently falls back to "whichever resource group happens to
+ * exist": the subscription/resource group MUST be explicitly configured via
+ * environment variables (typically set from deployment output — see
+ * scripts/deploy.ps1), and are strictly validated:
  *
- *   1. Explicit override (e.g. an HTTP request query parameter, or an
- *      explicit readiness request parameter).
- *   2. Explicit environment variable (MISSION_CONTROL_SUBSCRIPTION_ID /
- *      MISSION_CONTROL_RESOURCE_GROUP), typically set from deployment
- *      output (see scripts/deploy.ps1).
- *   3. Only when neither of the above is configured: the single resource
- *      group tagged workload=<DEPLOYMENT_WORKLOAD_TAG>, applied by
- *      infra/bicep/main.bicep. If zero or more than one resource group
- *      matches that tag, this throws instead of guessing.
+ *   - Both MISSION_CONTROL_SUBSCRIPTION_ID (or AZURE_SUBSCRIPTION_ID) and
+ *     MISSION_CONTROL_RESOURCE_GROUP (or MISSION_CONTROL_RESOURCE_GROUP_NAME
+ *     / AZURE_RESOURCE_GROUP) must be set, or resolution throws.
+ *   - The subscription ID must be a syntactically valid GUID.
+ *   - The resource group name must be a syntactically valid Azure resource
+ *     group name.
+ *   - If a caller-supplied subscriptionId/resourceGroupName (e.g. an HTTP
+ *     request query parameter) is also present, it MUST match the
+ *     server-configured value exactly, or resolution throws — a mismatch is
+ *     never silently resolved by preferring one value over the other.
+ *   - The live Azure account context's subscription must match the
+ *     configured subscription, and the configured resource group must
+ *     actually exist in it, or resolution throws.
  *
- * An explicitly configured resource group is always verified to exist
- * (via `az group exists` + `az group show`) before being trusted, so a
- * stale or mistyped value fails loudly rather than silently reporting a
- * broken scope as "ready". This remains deterministic across a tag
- * migration (scripts/migrate-brand-tags.ps1): an explicit resource group
- * override is checked first and does not depend on the tag value at all,
- * and the tag-based fallback always re-reads the live tag rather than any
- * cached value.
+ * This remains deterministic across a brand-tag migration
+ * (scripts/migrate-brand-tags.ps1): resolution here never depends on any
+ * Azure tag value at all, only on the explicitly configured environment
+ * variables, so migrating mutable tags can never change which
+ * subscription/resource group Mission Control considers "the" deployed lab.
  */
 
-const DEPLOYMENT_WORKLOAD_TAG = 'zavagas-propane-demo';
+function isValidGuid(value) {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(String(value || ''));
+}
 
-function firstTrimmed(...values) {
-  for (const value of values) {
-    const trimmed = String(value === undefined || value === null ? '' : value).trim();
-    if (trimmed) return trimmed;
-  }
-  return '';
+function isValidResourceGroupName(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9._()\-]{0,88}$/.test(String(value || ''));
 }
 
 /**
- * @param {object} options
- * @param {(...args: string[]) => Promise<string>} options.az - executes the
- *   `az` CLI and resolves with stdout (or rejects/throws). Injected so this
- *   module never spawns a process itself and can be exercised with mocks in
- *   tests — no live Azure calls are made by this module or its tests.
- * @param {string} [options.subscriptionId] - explicit subscription override,
- *   e.g. from an HTTP request query parameter.
- * @param {string} [options.resourceGroupName] - explicit resource group
- *   override, e.g. from an HTTP request query parameter.
- * @param {NodeJS.ProcessEnv} [options.env] - defaults to process.env.
- * @returns {Promise<{subscriptionId: string, subscriptionName: string, resourceGroupName: string, location: string, discoveredBy: 'explicit'|'tag'}>}
+ * Reads and strictly validates the server-configured subscription/resource
+ * group from environment variables. Throws (with `statusCode: 400`) if
+ * either is missing or malformed — never returns a partial/guessed scope.
+ *
+ * @param {NodeJS.ProcessEnv} [env] - defaults to process.env. Accepting an
+ *   explicit env object keeps this fully testable without mutating the
+ *   real process environment.
  */
-async function resolveDeployedScope({ az, subscriptionId, resourceGroupName, env = process.env } = {}) {
+function resolveConfiguredScope(env = process.env) {
+  const subscriptionId = String(env.MISSION_CONTROL_SUBSCRIPTION_ID || env.AZURE_SUBSCRIPTION_ID || '').trim();
+  const resourceGroupName = String(env.MISSION_CONTROL_RESOURCE_GROUP || env.MISSION_CONTROL_RESOURCE_GROUP_NAME || env.AZURE_RESOURCE_GROUP || '').trim();
+
+  if (!subscriptionId || !resourceGroupName) {
+    throw Object.assign(new Error('Server readiness scope is not configured. Set MISSION_CONTROL_SUBSCRIPTION_ID and MISSION_CONTROL_RESOURCE_GROUP on the server.'), { statusCode: 400 });
+  }
+  if (!isValidGuid(subscriptionId)) {
+    throw Object.assign(new Error(`MISSION_CONTROL_SUBSCRIPTION_ID must be a valid GUID, received: ${subscriptionId}`), { statusCode: 400 });
+  }
+  if (!isValidResourceGroupName(resourceGroupName)) {
+    throw Object.assign(new Error(`MISSION_CONTROL_RESOURCE_GROUP must be a valid Azure resource group name, received: ${resourceGroupName}`), { statusCode: 400 });
+  }
+
+  return { subscriptionId, resourceGroupName };
+}
+
+/**
+ * Resolves the live Azure scope (account name/subscription, resource group
+ * name/location) for display and readiness purposes, given an injected
+ * `az(...)` function. Never makes a live Azure call itself in tests — the
+ * `az` function is always caller-supplied so this module (and its tests)
+ * never depend on a live Azure environment.
+ *
+ * If a caller-supplied subscriptionId/resourceGroupName is provided (e.g.
+ * from an HTTP request query parameter), it MUST match the
+ * server-configured scope exactly, or this throws instead of silently
+ * preferring one value over the other.
+ *
+ * @param {object} options
+ * @param {(...args: string[]) => Promise<string>} options.az
+ * @param {string} [options.subscriptionId] - caller-supplied subscription to
+ *   cross-check against the configured one (never used as the primary
+ *   source of truth on its own).
+ * @param {string} [options.resourceGroupName] - caller-supplied resource
+ *   group to cross-check against the configured one.
+ * @param {NodeJS.ProcessEnv} [options.env] - defaults to process.env.
+ */
+async function resolveDeployedScope({ az, subscriptionId: suppliedSubscriptionIdRaw, resourceGroupName: suppliedResourceGroupNameRaw, env = process.env } = {}) {
   if (typeof az !== 'function') {
     throw new TypeError('resolveDeployedScope requires an injected az(...) function');
   }
 
-  const explicitSubscriptionId = firstTrimmed(subscriptionId, env.MISSION_CONTROL_SUBSCRIPTION_ID);
-  const explicitResourceGroupName = firstTrimmed(resourceGroupName, env.MISSION_CONTROL_RESOURCE_GROUP);
+  const configured = resolveConfiguredScope(env);
+
+  const suppliedSubscription = String(suppliedSubscriptionIdRaw || '').trim();
+  const suppliedResourceGroup = String(suppliedResourceGroupNameRaw || '').trim();
+
+  if (suppliedSubscription && suppliedSubscription !== configured.subscriptionId) {
+    throw Object.assign(new Error(`Request subscriptionId "${suppliedSubscription}" does not match the server-configured subscription "${configured.subscriptionId}".`), { statusCode: 400 });
+  }
+  if (suppliedResourceGroup && suppliedResourceGroup !== configured.resourceGroupName) {
+    throw Object.assign(new Error(`Request resourceGroupName "${suppliedResourceGroup}" does not match the server-configured resource group "${configured.resourceGroupName}".`), { statusCode: 400 });
+  }
 
   const accountRaw = await az('account', 'show', '-o', 'json').catch(() => '{}');
   const account = JSON.parse(accountRaw || '{}');
-  const resolvedSubscriptionId = explicitSubscriptionId || account.id || '';
-  if (!resolvedSubscriptionId) {
-    throw new Error('Could not determine an Azure subscription. Run "az login" or set MISSION_CONTROL_SUBSCRIPTION_ID explicitly.');
+  const actualSubscriptionId = String(account.id || account.subscriptionId || '').trim();
+  if (!actualSubscriptionId) {
+    throw Object.assign(new Error('No active Azure account subscription is available.'), { statusCode: 400 });
+  }
+  if (actualSubscriptionId !== configured.subscriptionId) {
+    throw Object.assign(new Error(`Azure account context subscription "${actualSubscriptionId}" does not match the configured subscription "${configured.subscriptionId}".`), { statusCode: 400 });
   }
 
-  if (explicitResourceGroupName) {
-    const existsRaw = await az('group', 'exists', '--name', explicitResourceGroupName, '--subscription', resolvedSubscriptionId, '-o', 'json').catch(() => 'false');
-    if (String(existsRaw).trim().toLowerCase() !== 'true') {
-      throw new Error(`Configured resource group '${explicitResourceGroupName}' was not found in subscription '${resolvedSubscriptionId}'. Verify MISSION_CONTROL_RESOURCE_GROUP (or the resourceGroupName parameter) and the deployed lab.`);
-    }
-    const rgShowRaw = await az('group', 'show', '--name', explicitResourceGroupName, '--subscription', resolvedSubscriptionId, '-o', 'json').catch(() => '{}');
-    const rgShow = JSON.parse(rgShowRaw || '{}');
-    return {
-      subscriptionId: resolvedSubscriptionId,
-      subscriptionName: account.name || '',
-      resourceGroupName: explicitResourceGroupName,
-      location: rgShow.location || '',
-      discoveredBy: 'explicit',
-    };
-  }
-
-  // No explicit resource group configured — deterministically discover the
-  // single tagged resource group. This is the ONLY place a lookup by tag is
-  // allowed, and it deliberately fails loudly instead of picking rgs[0].
-  const rgRaw = await az('group', 'list', '--tag', `workload=${DEPLOYMENT_WORKLOAD_TAG}`, '--subscription', resolvedSubscriptionId, '-o', 'json').catch(() => '[]');
-  const rgs = JSON.parse(rgRaw || '[]');
-  if (rgs.length === 0) {
-    throw new Error(`No resource group in subscription '${resolvedSubscriptionId}' is tagged workload=${DEPLOYMENT_WORKLOAD_TAG}. Set MISSION_CONTROL_RESOURCE_GROUP (or pass resourceGroupName) explicitly to point Mission Control at the deployed lab.`);
-  }
-  if (rgs.length > 1) {
-    const names = rgs.map((g) => g.name).join(', ');
-    throw new Error(`Multiple resource groups are tagged workload=${DEPLOYMENT_WORKLOAD_TAG} (${names}). Set MISSION_CONTROL_RESOURCE_GROUP (or pass resourceGroupName) explicitly to disambiguate.`);
+  const groupRaw = await az('group', 'show', '--subscription', configured.subscriptionId, '--name', configured.resourceGroupName, '-o', 'json').catch(() => '{}');
+  const group = JSON.parse(groupRaw || '{}');
+  if (!group || !group.name || String(group.name).toLowerCase() !== configured.resourceGroupName.toLowerCase()) {
+    throw Object.assign(new Error(`Configured resource group "${configured.resourceGroupName}" was not found in subscription "${configured.subscriptionId}".`), { statusCode: 400 });
   }
 
   return {
-    subscriptionId: resolvedSubscriptionId,
+    subscriptionId: configured.subscriptionId,
     subscriptionName: account.name || '',
-    resourceGroupName: rgs[0].name,
-    location: rgs[0].location || '',
-    discoveredBy: 'tag',
+    resourceGroupName: configured.resourceGroupName,
+    location: group.location || '',
   };
 }
 
-module.exports = { resolveDeployedScope, DEPLOYMENT_WORKLOAD_TAG };
+module.exports = { resolveConfiguredScope, resolveDeployedScope, isValidGuid, isValidResourceGroupName };

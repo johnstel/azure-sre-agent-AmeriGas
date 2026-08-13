@@ -26,7 +26,7 @@ const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
 const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
-const { evaluateReadiness } = require('./readiness');
+const { evaluateReadiness, resolveProfileRequirements, resolveRequirementFlag } = require('./readiness');
 const operationLifecycle = require('./operation-lifecycle');
 const { resolveDeployedScope } = require('./deployment-scope');
 
@@ -500,9 +500,14 @@ app.get('/api/events', async (req, res) => {
 
 app.get('/api/cluster-info', async (req, res) => {
   try {
+    const query = (req && req.query) || {};
     const [context, scope] = await Promise.all([
       kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster'),
-      resolveDeployedScopeFromRequest(req),
+      resolveDeployedScope({
+        az,
+        subscriptionId: query.subscriptionId || query.subscription,
+        resourceGroupName: query.resourceGroupName || query.resourceGroup,
+      }),
     ]);
     res.json({
       context,
@@ -511,79 +516,138 @@ app.get('/api/cluster-info', async (req, res) => {
       resourceGroup: scope.resourceGroupName,
       location: scope.location || '',
     });
-  } catch (err) { res.status(400).json({ error: err.message }); }
+  } catch (err) { res.status(err && err.statusCode === 400 ? 400 : 500).json({ error: err.message }); }
 });
 
-/**
- * Wraps the shared resolveDeployedScope() (tools/mission-control/deployment-scope.js)
- * with this server's `az` helper and the current HTTP request's explicit
- * subscriptionId/resourceGroupName query parameters, if any. See that
- * module for the full deterministic resolution order and rationale.
- */
-function resolveDeployedScopeFromRequest(req) {
-  const query = (req && req.query) || {};
-  return resolveDeployedScope({
+async function resolveNativeSreAgentEvidence(scope) {
+  try {
+    const agents = await az('resource', 'list', '--subscription', scope.subscriptionId, '--resource-group', scope.resourceGroupName, '--resource-type', 'Microsoft.App/agents', '-o', 'json');
+    const items = JSON.parse(agents || '[]');
+    const list = Array.isArray(items) ? items : [];
+    const agent = list.find((item) => item && String(item.type || '').toLowerCase() === 'microsoft.app/agents');
+    if (!agent) {
+      return { available: false, fresh: false, status: 'missing', details: { message: 'No native Azure SRE Agent resource was found in the configured resource group.' } };
+    }
+    const provisioningState = String(agent.properties?.provisioningState || agent.provisioningState || 'Unknown');
+    const ready = ['succeeded', 'running', 'ready', 'healthy', 'successful'].includes(provisioningState.trim().toLowerCase());
+    return {
+      available: ready,
+      fresh: ready,
+      status: ready ? 'ready' : provisioningState || 'missing',
+      details: { name: agent.name || null, resourceId: agent.id || null, provisioningState },
+    };
+  } catch (error) {
+    return { available: false, fresh: false, status: 'unavailable', details: { message: error && error.message ? error.message : 'Native Azure SRE Agent check failed.' } };
+  }
+}
+
+async function resolveAuthorizedReadinessScope(req) {
+  const query = req && req.query ? req.query : {};
+  const scope = await resolveDeployedScope({
     az,
     subscriptionId: query.subscriptionId || query.subscription,
     resourceGroupName: query.resourceGroupName || query.resourceGroup,
   });
-}
-
-async function resolveAuthorizedReadinessScope(req) {
-  const [context, scope] = await Promise.all([
-    kubectl('config', 'current-context').then((s) => s.trim()).catch(() => 'No cluster'),
-    resolveDeployedScopeFromRequest(req),
-  ]);
 
   return {
-    context,
+    context: 'server-configured',
     subscriptionId: scope.subscriptionId,
     resourceGroupName: scope.resourceGroupName,
-    profile: String(req.query.profile || process.env.MISSION_CONTROL_PROFILE || 'default').trim() || 'default',
-    runId: String(req.query.runId || process.env.MISSION_CONTROL_RUN_ID || 'mission-control').trim() || 'mission-control',
-    timeoutMs: Number(req.query.timeoutMs || 90000),
+    profile: String(query.profile || process.env.MISSION_CONTROL_PROFILE || 'default').trim() || 'default',
+    runId: String(query.runId || process.env.MISSION_CONTROL_RUN_ID || 'mission-control').trim() || 'mission-control',
+    timeoutMs: Number(query.timeoutMs ?? query.timeout ?? 90000),
   };
 }
 
-app.get('/api/readiness', async (req, res) => {
+function buildReadinessFailurePayload(error) {
+  const message = error && error.message ? error.message : 'readiness evaluation failed';
+  const statusCode = (() => {
+    if (error && Number.isInteger(error.statusCode)) return error.statusCode;
+    if (error && error.code === 'ETIMEDOUT') return 503;
+    if (/timed out|timeout/i.test(message)) return 503;
+    if (/scope|subscription|resource group|profile|mismatch|invalid|required/i.test(message)) return 400;
+    return 500;
+  })();
+
+  const blocked = {
+    schemaVersion: 1,
+    category: 'demo-readiness',
+    status: 'blocked',
+    blocking: true,
+    observedAt: new Date().toISOString(),
+    duration: 0,
+    summary: statusCode === 400
+      ? 'Readiness blocked by invalid request scope.'
+      : statusCode === 503
+        ? 'Readiness blocked by server-side timeout.'
+        : 'Mission Control failed to evaluate demo readiness.',
+    checks: [{
+      id: 'api-readiness-failure',
+      category: 'api',
+      status: 'fail',
+      blocking: true,
+      observedAt: new Date().toISOString(),
+      duration: 0,
+      evidence: { message },
+      remediation: statusCode === 400
+        ? 'Verify the exact configured Azure subscription and resource group, then retry the readiness gate with a matching request scope.'
+        : statusCode === 503
+          ? 'Retry the readiness check after the server-side dependency recovers or the timeout window resets.'
+          : 'Verify the Azure context and rerun the readiness check.',
+    }],
+    blockers: ['api-readiness-failure'],
+    advisories: [],
+  };
+
+  return { statusCode, blocked };
+}
+
+async function handleReadinessRequest(req, res) {
   try {
     const scope = await resolveAuthorizedReadinessScope(req);
+    const query = req && req.query ? req.query : {};
+    const profileRequirements = resolveProfileRequirements(scope.profile, {
+      requireMissionControl: query.requireMissionControl,
+      requireNativeSreAgent: query.requireNativeSreAgent,
+    });
+    const requireMissionControl = resolveRequirementFlag(profileRequirements.requireMissionControl, query.requireMissionControl);
+    const requireNativeSreAgent = resolveRequirementFlag(profileRequirements.requireNativeSreAgent, query.requireNativeSreAgent);
+    const runtime = {
+      missionControl: {
+        available: true,
+        fresh: true,
+        status: 'ready',
+        details: {
+          source: 'mission-control-server',
+          observedAt: new Date().toISOString(),
+          subscriptionId: scope.subscriptionId,
+          resourceGroupName: scope.resourceGroupName,
+          runId: scope.runId,
+          profile: scope.profile,
+        },
+      },
+      nativeSreAgent: await resolveNativeSreAgentEvidence(scope),
+    };
+
     const result = await evaluateReadiness({
       subscriptionId: scope.subscriptionId,
       resourceGroupName: scope.resourceGroupName,
       profile: scope.profile,
       runId: scope.runId,
-      timeoutMs: scope.timeoutMs,
-      requireMissionControl: req.query.requireMissionControl !== 'false',
-      requireNativeSreAgent: req.query.requireNativeSreAgent === 'true',
-    });
+      timeoutMs: Number.isFinite(scope.timeoutMs) ? Math.min(scope.timeoutMs, 90000) : 90000,
+      mockScenario: query.mockScenario || query.mock || req.body?.mockScenario,
+      requireMissionControl,
+      requireNativeSreAgent,
+    }, runtime);
     return res.json(result);
   } catch (error) {
-    return res.status(500).json({
-      schemaVersion: 1,
-      category: 'demo-readiness',
-      status: 'blocked',
-      blocking: true,
-      observedAt: new Date().toISOString(),
-      duration: 0,
-      summary: 'Mission Control failed to evaluate demo readiness.',
-      checks: [{
-        id: 'api-readiness-failure',
-        category: 'api',
-        status: 'fail',
-        blocking: true,
-        observedAt: new Date().toISOString(),
-        duration: 0,
-        evidence: { message: error && error.message ? error.message : 'readiness evaluation failed' },
-        remediation: 'Verify the Azure context and rerun the readiness check.',
-      }],
-    });
+    const { statusCode, blocked } = buildReadinessFailurePayload(error);
+    return res.status(statusCode).json(blocked);
   }
-});
+}
 
-app.get('/api/demo-readiness', async (req, res) => {
-  return app._router.handle(req, res);
-});
+app.get('/api/readiness', handleReadinessRequest);
+app.get('/api/demo-readiness', handleReadinessRequest);
 
 // --- Break / Fix Endpoints ---
 
@@ -1009,6 +1073,8 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  resolveAuthorizedReadinessScope,
+  handleReadinessRequest,
   presenterStateMachine,
   presenterStateStore,
   sanitizePresenterRequestBody,

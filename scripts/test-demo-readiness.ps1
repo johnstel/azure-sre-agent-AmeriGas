@@ -1,13 +1,16 @@
 [CmdletBinding()]
 param(
+    [Alias('Subscription')]
     [string]$SubscriptionId,
+    [Alias('ResourceGroup')]
     [string]$ResourceGroupName,
     [string]$Profile = 'default',
     [string]$RunId,
     [int]$TimeoutMs = 90000,
     [switch]$Json,
     [switch]$Human,
-    [switch]$NoMissionControl,
+    [switch]$RequireMissionControl,
+    [switch]$RequireNativeSreAgent,
     [string]$Mock = ''
 )
 
@@ -37,8 +40,11 @@ if ($TimeoutMs -gt 0) {
     $nodeArgs += '--timeout-ms'
     $nodeArgs += [string]$TimeoutMs
 }
-if ($NoMissionControl) {
-    $nodeArgs += '--no-mission-control'
+if ($RequireMissionControl) {
+    $nodeArgs += '--require-mission-control'
+}
+if ($RequireNativeSreAgent) {
+    $nodeArgs += '--require-native-sre-agent'
 }
 if ($Mock) {
     $nodeArgs += '--mock'
