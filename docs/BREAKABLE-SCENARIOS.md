@@ -18,7 +18,6 @@ This guide explains each failure scenario available in the ZavaGas Propane SRE D
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
 | MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause; native alert-to-approved-remediation response plan in the demo profile (see [sre-agent-response-plans/README.md](sre-agent-response-plans/README.md)) |
 | Service Mismatch | `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
-| Dependency Latency | `dependency-latency.yaml` | Shared | Order checkout pricing-lookup dependency gradually slows down after an emergency config change while all pods stay Ready | SLO/trace/metric correlation, config-change clue |
 
 > **Telemetry proof is not a break scenario.** `scripts/validate-telemetry.ps1` calls the repo-owned `order-pricing-dependency` `GET /controlled-failure` route, verifies its deterministic HTTP 503, and then creates the correlated Kubernetes event without changing the healthy baseline. The `telemetry-probe` resource emits truthful CLIENT dependency telemetry; it never impersonates tank-monitor, inventory-service, or order-service. `AppRequests` contains only the repo-owned failure endpoint's truthful server span. Use the transaction ID to verify `AppRequests`, `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`, and `KubeEvents` before applying any scenario.
 
