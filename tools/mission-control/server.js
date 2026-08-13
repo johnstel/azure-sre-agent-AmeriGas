@@ -18,10 +18,11 @@ const {
 const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
 const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
 const { SCENARIO_MAP, SCENARIO_METADATA, SCENARIO_CATALOG } = require('./scenario-catalog');
-const { startDemoScenario, resetDemoBaseline } = require('./scenario-lifecycle');
+const { startDemoScenario, resetDemoBaseline, collectClusterSnapshot, verifyBaselineState, DEFAULT_NAMESPACE } = require('./scenario-lifecycle');
 const { evaluateScenarioHealth } = require('./scenario-health');
 const { createIncidentStore } = require('./incident-store');
 const { createScheduledTaskEvidenceStore } = require('./scheduled-task-evidence');
+const { buildTrustedPresenterServerProof } = require('./presenter-trust');
 const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
@@ -119,6 +120,7 @@ const PRESENT_SESSION_FORBIDDEN_FIELDS = new Set([
   'readinessPass',
   'baselineHealthPass',
   'scenarioActive',
+  'scenarioStatus',
   'nativeEvidenceAvailable',
   'nativeEvidenceStatus',
   'approved',
@@ -151,6 +153,8 @@ const PRESENT_SESSION_FORBIDDEN_FIELDS = new Set([
   'evidenceStatus',
   'valueRecorded',
   'valueStatus',
+  'denied',
+  'expired',
   'bypass',
   'serverProof',
   'serverState',
@@ -223,7 +227,37 @@ function sanitizePresenterRequestBody(body = {}) {
   return { clean, rejected };
 }
 
-function handlePresenterMutation(req, res, operation) {
+// Test-only override for the live-cluster snapshot collector used to
+// evaluate readiness/baseline/scenario gate evidence. Production code
+// always uses the real collectClusterSnapshot (which shells out to
+// kubectl); tests inject a fake so the readiness/baseline gate can be
+// exercised deterministically without a live cluster, exactly like
+// scenario-lifecycle.js's own `runner` dependency-injection pattern.
+let clusterSnapshotProviderOverride = null;
+function __setClusterSnapshotProviderForTests(fn) {
+  clusterSnapshotProviderOverride = fn;
+}
+
+/**
+ * Builds the COMPLETE trusted server-side proof for the presenter gate
+ * system (see presenter-trust.js) -- the single, sole source of
+ * `context.serverProof` for every presenter mutation route below. Never
+ * accepts or merges anything from the request body.
+ */
+async function getTrustedPresenterServerProof(incidentCorrelationId) {
+  return buildTrustedPresenterServerProof({
+    incidentStore,
+    scheduledTaskEvidenceStore,
+    collectClusterSnapshot: clusterSnapshotProviderOverride || collectClusterSnapshot,
+    verifyBaselineState,
+    evaluateScenarioHealth,
+    repoRoot: REPO_ROOT,
+    namespace: DEFAULT_NAMESPACE,
+    incidentCorrelationId,
+  });
+}
+
+async function handlePresenterMutation(req, res, operation) {
   const body = req.body || {};
   const { clean, rejected } = sanitizePresenterRequestBody(body);
   if (rejected.length > 0) {
@@ -234,6 +268,38 @@ function handlePresenterMutation(req, res, operation) {
     });
   }
 
+  // The incident a presenter run is bound to is determined by the
+  // SERVER-PERSISTED presenter state (set once, at /start time, from the
+  // sanitized request body) -- never re-derived from a later request's
+  // own body. This matters specifically for the 'recovery' gate: once an
+  // incident is finalized (finalState='recovered'), incidentStore's own
+  // getActive() stops returning it (see incident-timeline.js), so the
+  // bound incidentCorrelationId is the only reliable way to still look it
+  // up. Falls back to this request's own `clean.incidentCorrelationId`
+  // only for the very first /start call, before any state is persisted.
+  const persistedIncidentCorrelationId = presenterStateMachine.getState().incidentCorrelationId || null;
+  const incidentCorrelationIdForProof = persistedIncidentCorrelationId || clean.incidentCorrelationId || null;
+
+  let serverProof;
+  try {
+    serverProof = await getTrustedPresenterServerProof(incidentCorrelationIdForProof);
+  } catch (err) {
+    return res.status(500).json({ error: `Failed to build trusted presenter evidence: ${err.message}` });
+  }
+
+  // The ONLY fields ever present on `context` are these explicitly listed,
+  // sanitized values plus the server-built `serverProof` above. Nothing
+  // from the raw request body is ever merged in beyond what
+  // sanitizePresenterRequestBody already validated into `clean` --
+  // there is deliberately no `...body`/`...req.body` spread anywhere in
+  // this function or in any route below. A prior version of the `/start`
+  // route re-spread the raw, unsanitized request body on top of this
+  // context, which could let a client-supplied field reach the gate
+  // trust resolver depending on how the two independent block-lists
+  // (this file's PRESENT_SESSION_FORBIDDEN_FIELDS and presenter-mode.js's
+  // CLIENT_GATE_TRUTH_KEYS) happened to overlap -- that entire class of
+  // bug is eliminated by construction here: `operation` only ever
+  // receives this object literal, never anything derived from `body`.
   const context = {
     trackId: clean.trackId,
     stepId: clean.stepId,
@@ -243,20 +309,18 @@ function handlePresenterMutation(req, res, operation) {
     notesVisible: clean.notesVisible,
     focusMode: clean.focusMode,
     lastEvent: clean.lastEvent,
-    // Server-computed trust context for gates that already have a real
-    // evidence source wired up. Only `scheduledTaskEvidence` is populated
-    // today (issue #24); other gate kinds intentionally fail closed until
-    // their own trusted evidence source is wired the same way — this is
-    // NEVER built from `clean`/request-body fields (those are rejected
-    // outright by sanitizePresenterRequestBody above for every
-    // CLIENT_GATE_TRUTH_KEYS field, including scheduledTaskAvailable).
-    serverProof: {
-      scheduledTaskAvailable: scheduledTaskEvidenceStore.evaluate().available === true,
-      scheduledTaskEvidence: scheduledTaskEvidenceStore.evaluate(),
-    },
+    serverProof,
   };
 
-  const result = operation(context);
+  let result;
+  try {
+    result = await operation(context);
+  } catch (error) {
+    return res.status(400).json({
+      error: error && error.message ? error.message : 'Presenter action failed',
+      state: presenterStateMachine.getState(),
+    });
+  }
   if (!result || !('ok' in result)) {
     return res.status(500).json({ error: 'Presenter operation did not return a valid response' });
   }
@@ -266,38 +330,38 @@ function handlePresenterMutation(req, res, operation) {
   return res.json({ ok: true, state: result.state, reason: result.reason });
 }
 
-app.post('/api/presenter/start', (req, res) => {
-  const { trackId, ...body } = req.body || {};
+app.post('/api/presenter/start', async (req, res) => {
+  const { trackId } = req.body || {};
   if (!trackId || typeof trackId !== 'string') {
     return res.status(400).json({ error: 'trackId is required' });
   }
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.startTrack(trackId, { ...context, ...body }));
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.startTrack(trackId, context));
 });
 
-app.post('/api/presenter/continue', (req, res) => {
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.continueStep(context));
+app.post('/api/presenter/continue', async (req, res) => {
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.continueStep(context));
 });
 
-app.post('/api/presenter/pause', (req, res) => {
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.pause(context));
+app.post('/api/presenter/pause', async (req, res) => {
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.pause(context));
 });
 
-app.post('/api/presenter/resume', (req, res) => {
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.resume(context));
+app.post('/api/presenter/resume', async (req, res) => {
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.resume(context));
 });
 
-app.post('/api/presenter/abort', (req, res) => {
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.abort(context));
+app.post('/api/presenter/abort', async (req, res) => {
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.abort(context));
 });
 
-app.post('/api/presenter/reset', (req, res) => {
+app.post('/api/presenter/reset', async (req, res) => {
   const body = req.body || {};
-  const trackId = body.trackId;
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.reset({ ...context, trackId }));
+  const trackId = typeof body.trackId === 'string' ? body.trackId : undefined;
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.reset({ ...context, trackId }));
 });
 
-app.post('/api/presenter/reconnect', (req, res) => {
-  handlePresenterMutation(req, res, (context) => presenterStateMachine.reconnect(context));
+app.post('/api/presenter/reconnect', async (req, res) => {
+  await handlePresenterMutation(req, res, (context) => presenterStateMachine.reconnect(context));
 });
 
 const IS_WIN = process.platform === 'win32';
@@ -809,7 +873,13 @@ app.post('/api/approval/approve', (req, res) => {
     incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
   });
   if (result.success && result.incidentCorrelationId) {
-    incidentStore.approveAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
+    incidentStore.approveAction(result.incidentCorrelationId, {
+      actionKey,
+      approver: resolveApproverIdentity(req),
+      approved: true,
+      status: 'approved',
+      decision: 'approved',
+    });
   }
   res.json(result);
 });
@@ -824,7 +894,13 @@ app.post('/api/approval/deny', (req, res) => {
     incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
   });
   if (result.success && result.incidentCorrelationId) {
-    incidentStore.denyAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
+    incidentStore.denyAction(result.incidentCorrelationId, {
+      actionKey,
+      approver: resolveApproverIdentity(req),
+      denied: true,
+      status: 'denied',
+      decision: 'denied',
+    });
   }
   res.json(result);
 });
@@ -944,4 +1020,12 @@ module.exports = {
   presenterStateStore,
   sanitizePresenterRequestBody,
   PRESENT_SESSION_FORBIDDEN_FIELDS,
+  // Test-only surface for exercising the presenter trust pipeline
+  // end-to-end (real incidentStore, real scheduledTaskEvidenceStore, a
+  // fake cluster-snapshot collector) without a live Kubernetes cluster.
+  incidentStore,
+  securityState,
+  scheduledTaskEvidenceStore,
+  __setClusterSnapshotProviderForTests,
+  getTrustedPresenterServerProof,
 };
