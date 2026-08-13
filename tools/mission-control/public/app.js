@@ -1,22 +1,55 @@
 
-/* ── Scenario Definitions ─────────────────────────────── */
-const SCENARIOS = [
-  { id:'oom',     name:'OOMKilled',        desc:'Tank monitor memory exhaustion',           icon:'💾' },
-  { id:'crash',   name:'CrashLoopBackOff', desc:'Inventory service bad config crash',       icon:'💥' },
-  { id:'image',   name:'ImagePullBackOff', desc:'Order service wrong image tag',             icon:'🖼️' },
-  { id:'cpu',     name:'High CPU',         desc:'Demand forecast calculation overload',      icon:'🔥' },
-  { id:'pending', name:'Pending Pods',     desc:'Fleet telemetry over-provisioned requests', icon:'⏳' },
-  { id:'probe',   name:'Bulk Tank Safety Alarm', desc:'Healthy workload + delayed safety alarm', icon:'💓' },
-  { id:'backlog', name:'Refill Order Backlog', desc:'Poison refill event and queue backlog', icon:'🧵' },
-  { id:'latency', name:'Dependency Latency', desc:'Order-pricing dependency SLO breach', icon:'⏱️' },
-  { id:'network', name:'Network Block',    desc:'Tank monitor network policy isolation',     icon:'🌐' },
-  { id:'config',  name:'Missing Config',   desc:'Delivery zone missing ConfigMap',           icon:'📄' },
-  { id:'mongodb', name:'MongoDB Down',     desc:'Database outage — cascading failure',       icon:'🗄️' },
-  { id:'service', name:'Service Mismatch', desc:'Tank monitor selector drift after v2',      icon:'🔀' },
-  { id:'latency', name:'Dependency Latency', desc:'Order pricing-lookup dependency gradually slows down', icon:'🐌' },
-];
+/* ── Scenario catalog wiring ───────────────────────────── */
+let scenarioCatalog = [];
 
-// Pods whose presence/state indicate a scenario is active
+function getScenarioCatalog() {
+  return Array.isArray(scenarioCatalog) ? scenarioCatalog : [];
+}
+
+async function refreshScenarioCatalog() {
+  try {
+    const payload = await api('scenarios');
+    if (payload && Array.isArray(payload.scenarios)) {
+      const entries = payload.scenarios.filter((entry, index, array) => array.findIndex((candidate) => candidate.id === entry.id) === index);
+      scenarioCatalog = entries.map((entry) => ({
+        id: entry.id,
+        title: entry.title || entry.name || entry.id,
+        name: entry.name || entry.title || entry.id,
+        domain: entry.domain || 'Shared',
+        narrative: entry.narrative || '',
+        impactedService: entry.impactedService || '',
+        manifest: entry.manifest || '',
+        relatedIds: Array.isArray(entry.relatedIds) ? entry.relatedIds : [],
+        icon: entry.icon || {
+          oom: '💾',
+          crash: '💥',
+          image: '🖼️',
+          cpu: '🔥',
+          pending: '⏳',
+          probe: '💓',
+          backlog: '🧵',
+          latency: '⏱️',
+          network: '🌐',
+          config: '📄',
+          mongodb: '🗄️',
+          service: '🔀',
+        }[entry.id] || '📌',
+      }));
+      buildScenarioGrid();
+      updateScenarioIndicators();
+      return scenarioCatalog;
+    }
+  } catch (error) {
+    console.warn('Scenario catalog unavailable:', error.message);
+  }
+
+  scenarioCatalog = [];
+  return scenarioCatalog;
+}
+
+// Pods whose presence/state indicate a scenario is active. These are keyed by
+// the validated, canonical scenario IDs in the server/catalog and are used as
+// predicate adapters only when the underlying signal is real.
 const SCENARIO_INDICATORS = {
   oom:     p => p.name.startsWith('tank-monitor') && (p.reason === 'OOMKilled' || p.status === 'CrashLoopBackOff' || p.restarts > 2),
   crash:   p => p.name.startsWith('inventory-service') && (p.status === 'CrashLoopBackOff' || p.status === 'Error'),
@@ -30,13 +63,6 @@ const SCENARIO_INDICATORS = {
   mongodb: null, // detected via a dedicated check below: mongodb-down scales the Deployment to 0, so "any matching pod" is not a safe indicator (see isMongoPodReady)
   network: null, // detected via networkpolicies API
   service: null, // detected via endpoints API
-  // The dependency-latency scenario never changes a pod's name/status — it
-  // overrides the order-pricing-dependency-config ConfigMap the pod already
-  // reads (see scenario-health.js evaluateScenarioHealth('latency', ...)).
-  // The browser has no ConfigMap visibility, so — matching the "never
-  // fabricate a result" rule used throughout this file — this indicator is
-  // left null rather than guessing from pod state alone.
-  latency: null,
 };
 
 /** True only when a pod is both Running and fully Ready (all containers ready). Mirrors the server-side check in scenario-health.js so client/server health semantics stay aligned. */
@@ -282,7 +308,10 @@ async function refreshClusterInfo() {
 
 /* ── Scenario Indicators ──────────────────────────────── */
 function updateScenarioIndicators() {
-  for (const sc of SCENARIOS) {
+  const scenarios = getScenarioCatalog();
+  if (!scenarios.length) return;
+
+  for (const sc of scenarios) {
     const indicator = document.getElementById('ind-' + sc.id);
     if (!indicator) continue;
 
@@ -307,20 +336,32 @@ function updateScenarioIndicators() {
 /* ── Build Scenario Cards ─────────────────────────────── */
 function buildScenarioGrid() {
   const grid = document.getElementById('scenarios-grid');
+  if (!grid) return;
+
+  const scenarios = getScenarioCatalog();
   const fragment = document.createDocumentFragment();
 
-  SCENARIOS.forEach(sc => {
+  if (!scenarios.length) {
+    const empty = document.createElement('div');
+    empty.className = 'scenario-card empty';
+    empty.textContent = 'Loading scenario catalog…';
+    fragment.appendChild(empty);
+    grid.replaceChildren(fragment);
+    return;
+  }
+
+  scenarios.forEach((sc) => {
     const card = document.createElement('div');
     card.className = 'scenario-card';
 
     const name = document.createElement('div');
     name.className = 'sc-name';
-    name.textContent = sc.icon + ' ' + sc.name;
+    name.textContent = `${sc.icon || '📌'} ${sc.title || sc.name || sc.id}`;
     card.appendChild(name);
 
     const desc = document.createElement('div');
     desc.className = 'sc-desc';
-    desc.textContent = sc.desc;
+    desc.textContent = sc.narrative || sc.name || sc.id;
     card.appendChild(desc);
 
     const status = document.createElement('div');
@@ -778,6 +819,7 @@ async function refreshPresenterStateOnLoad() {
 
 /* ── Init ──────────────────────────────────────────────── */
 buildScenarioGrid();
+refreshScenarioCatalog();
 refreshPods();
 refreshEvents();
 refreshServices();

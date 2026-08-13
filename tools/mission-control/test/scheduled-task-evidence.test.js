@@ -13,13 +13,16 @@ function validTelemetryProof(overrides = {}) {
   return {
     transactionId: '0123456789abcdef0123456789abcdef',
     verifiedAt: new Date().toISOString(),
-    requestCount: 3,
     dependencyCount: 4,
-    correlatedOperationCount: 1,
-    serviceCount: 3,
-    metricCount: 3,
+    correlatedTransactionCount: 4,
+    requiredTargetCount: 3,
+    controlledFailureCount: 1,
+    controlledRequestCount: 1,
+    endToEndCorrelationCount: 1,
+    externalServiceResourceCount: 0,
+    metricCount: 4,
     exceptionCount: 1,
-    traceCount: 3,
+    traceCount: 4,
     kubernetesEventCount: 1,
     ...overrides,
   };
@@ -186,7 +189,7 @@ test('an incomplete telemetry proof blocks readiness', () => {
   const filePath = tempEvidencePath();
   fs.writeFileSync(
     path.join(path.dirname(filePath), 'telemetry-proof.json'),
-    JSON.stringify(validTelemetryProof({ correlatedOperationCount: 0 })),
+    JSON.stringify(validTelemetryProof({ correlatedTransactionCount: 0 })),
     'utf8',
   );
   const store = createScheduledTaskEvidenceStore({ filePath });
@@ -194,5 +197,20 @@ test('an incomplete telemetry proof blocks readiness', () => {
 
   const evaluated = store.evaluate();
   assert.equal(evaluated.available, false);
-  assert.match(evaluated.reason, /correlatedOperationCount/);
+  assert.match(evaluated.reason, /correlatedTransactionCount/);
+});
+
+test('telemetry proof attributed to an external service resource blocks readiness', () => {
+  const filePath = tempEvidencePath();
+  fs.writeFileSync(
+    path.join(path.dirname(filePath), 'telemetry-proof.json'),
+    JSON.stringify(validTelemetryProof({ externalServiceResourceCount: 1 })),
+    'utf8',
+  );
+  const store = createScheduledTaskEvidenceStore({ filePath });
+  store.recordExecutionEvidence(validEvidence());
+
+  const evaluated = store.evaluate();
+  assert.equal(evaluated.available, false);
+  assert.match(evaluated.reason, /external service resource/);
 });

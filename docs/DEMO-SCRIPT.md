@@ -81,9 +81,9 @@ If the gate returns `blocking: true`, do not present the live demo. Stop and fix
 
 ### Show: Telemetry Pipeline
 
-1. Briefly explain: "The third-party service images are not claimed to be instrumented. A repo-owned synthetic probe makes real HTTP calls to tank-monitor, inventory-service, and order-service, propagates W3C `traceparent`, and reports the observed status and latency as OTLP traces, logs, and metrics. The collector exports those signals with the `azuremonitor` exporter."
+1. Briefly explain: "The third-party service images are not instrumented by this lab. The repo-owned `telemetry-probe` makes real HTTP calls to tank-monitor, inventory-service, and order-service, propagates W3C `traceparent`, and emits only telemetry it owns: INTERNAL transaction spans and CLIENT dependency spans with `peer.service`, target address, route, status, and measured latency. It never impersonates a target service."
 2. Show the non-secret collector ConfigMap: `kubectl get configmap otel-collector-config -n propane -o yaml`. The Application Insights connection string is read from the `application-insights-connection` Secret and must not be displayed.
-3. Run `.\scripts\validate-telemetry.ps1 -ResourceGroupName <rg>` and use its transaction ID to query `AppRequests`, `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`, and `KubeEvents`.
+3. Run `.\scripts\validate-telemetry.ps1 -ResourceGroupName <rg>` and use its transaction ID to query `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`, and `KubeEvents`. `AppRequests` is used only for the truthful server span emitted by the repo-owned `order-pricing-dependency` `GET /controlled-failure` route, which returns HTTP 503 deterministically.
 
 ### Show: SRE Agent Portal
 
@@ -316,7 +316,7 @@ kubectl apply -f k8s/base/application.yaml
 
 1. Open **Azure Portal → Application Insights** for the propane resource
 2. Navigate to **Application Map** or **Live Metrics**
-3. Explain: "This trace is the repo-owned probe's observed request/dependency pair for a real service response. It does not imply that the third-party service image emits its own internal spans."
+3. Explain: "This trace is the repo-owned probe's INTERNAL transaction and child CLIENT dependency span for a real service response. `peer.service` identifies the target; the resource role remains `telemetry-probe`. It does not imply that the third-party image emits spans."
 4. Show a sample transaction end-to-end trace if available
 
 ### Show: Azure Data Explorer
@@ -369,7 +369,7 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 
 1. **A truthful, per-run record** — "Every scenario run gets a single correlation id and a server-timestamped timeline, from activation through recovery. We just showed you the real numbers for the run we did together — not an industry benchmark, not a guess."
 
-2. **Verified Observability Pipeline** — "The repo-owned probe sends observed request/dependency spans, logs, exceptions, and metrics through OpenTelemetry to workspace-based Application Insights. The bounded validation command proves freshness and operation-ID correlation rather than inferring telemetry from pod status. ADX remains optional."
+2. **Verified Observability Pipeline** — "The repo-owned probe sends truthful INTERNAL transaction and CLIENT dependency spans, logs, exceptions, and metrics through OpenTelemetry to workspace-based Application Insights. The bounded validation proves freshness, parent/child correlation, all three required dependency targets, and zero target-service impersonation. ADX remains optional."
 
 3. **24/7 Coverage** — "SRE Agent doesn't sleep, doesn't go on vacation, and doesn't need to be paged at 3am. It can run scheduled health checks and alert when something deviates."
 
