@@ -33,7 +33,7 @@ Retail propane cylinder exchange cages hosted at partner stores (Home Depot, Wal
 
 ### Shared Infrastructure
 
-Services and scenarios used by both domains: `inventory-service` (Bulk Tank pricing + Cylinder Exchange cage catalog), `order-service` and `order-worker` (Bulk Tank delivery orders + Cylinder Exchange restock orders), `rabbitmq` (tank alerts + order events), `mongodb` (tank readings + delivery/order + customer records), `otel-collector`, plus the `crash-loop.yaml`, `image-pull-backoff.yaml`, `pending-pods.yaml`, `probe-failure.yaml`, `missing-config.yaml`, and `mongodb-down.yaml` scenarios.
+Services and scenarios used by both domains: `inventory-service` (Bulk Tank pricing + Cylinder Exchange cage catalog), `order-service` and `order-worker` (Bulk Tank delivery orders + Cylinder Exchange restock orders), `order-pricing-dependency` and `order-checkout-probe` (synthetic order-checkout dependency hop + traffic generator for the dependency-latency scenario, issue #22), `rabbitmq` (tank alerts + order events), `mongodb` (tank readings + delivery/order + customer records), `otel-collector`, plus the `crash-loop.yaml`, `image-pull-backoff.yaml`, `pending-pods.yaml`, `probe-failure.yaml`, `missing-config.yaml`, `mongodb-down.yaml`, and `dependency-latency.yaml` scenarios.
 
 ## Architecture
 
@@ -48,7 +48,9 @@ Services and scenarios used by both domains: `inventory-service` (Bulk Tank pric
 | Order Service | `order-service` | 3001 | Order fulfillment — processes bulk tank delivery orders and cylinder exchange cage restock orders | Shared | Go |
 | Usage Simulator | `usage-simulator` | — | Generates simulated residential bulk propane tank consumption patterns (background, no port) | Bulk Tank | Python |
 | Order Worker | `order-worker` | — | Processes order fulfillment queue messages (disabled by default, 0 replicas) | Shared | Python |
-| OTel Collector | `otel-collector` | 4317 / 4318 | OpenTelemetry Collector — receives OTLP telemetry, scrapes Prometheus, exports to App Insights | Shared | OTel Contrib |
+| Order Pricing Dependency | `order-pricing-dependency` | 4000 | Synthetic order-checkout pricing-lookup dependency hop for the dependency-latency scenario (issue #22) | Shared | Node.js |
+| Order Checkout Probe | `order-checkout-probe` | 4100 | Synthetic order-checkout traffic generator with deterministic transaction/run correlation ids (issue #22) | Shared | Node.js |
+| OTel Collector | `otel-collector` | 4317 / 4318 | OpenTelemetry Collector — receives OTLP telemetry, scrapes Prometheus. `logging` exporter is active; the `otlp/appinsights` exporter is defined but not yet wired into a pipeline (pending issue #25) | Shared | OTel Contrib |
 | RabbitMQ | `rabbitmq` | 5672 / 15672 | Event bus for bulk tank events, order alerts, dispatch coordination | Shared | RabbitMQ 3.13 |
 | MongoDB | `mongodb` | 27017 | Stores bulk tank readings, delivery/order records, customer accounts | Shared | MongoDB 7.0 |
 
@@ -160,13 +162,15 @@ When the platform is healthy, you should see these pods running in the `propane`
 | inventory-service-* | Running | 0 | 2 |
 | order-service-* | Running | 0 | 2 |
 | usage-simulator-* | Running | 0 | 1 |
+| order-pricing-dependency-* | Running | 0 | 1 |
+| order-checkout-probe-* | Running | 0 | 1 |
 | otel-collector-* | Running | 0 | 1 |
 | rabbitmq-* | Running | 0 | 1 |
 | mongodb-* | Running | 0 | 1 |
 
 **order-worker** has 0 replicas by default and will not have a running pod.
 
-Total expected healthy pods: **13** (across 9 deployments)
+Total expected healthy pods: **15** (across 11 deployments)
 
 ## Known Failure Scenarios and Runbooks
 

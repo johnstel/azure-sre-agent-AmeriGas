@@ -11,6 +11,7 @@ const SCENARIOS = [
   { id:'config',  name:'Missing Config',   desc:'Delivery zone missing ConfigMap',           icon:'📄' },
   { id:'mongodb', name:'MongoDB Down',     desc:'Database outage — cascading failure',       icon:'🗄️' },
   { id:'service', name:'Service Mismatch', desc:'Tank monitor selector drift after v2',      icon:'🔀' },
+  { id:'latency', name:'Dependency Latency', desc:'Order pricing-lookup dependency gradually slows down', icon:'🐌' },
 ];
 
 // Pods whose presence/state indicate a scenario is active
@@ -25,6 +26,13 @@ const SCENARIO_INDICATORS = {
   mongodb: null, // detected via a dedicated check below: mongodb-down scales the Deployment to 0, so "any matching pod" is not a safe indicator (see isMongoPodReady)
   network: null, // detected via networkpolicies API
   service: null, // detected via endpoints API
+  // The dependency-latency scenario never changes a pod's name/status — it
+  // overrides the order-pricing-dependency-config ConfigMap the pod already
+  // reads (see scenario-health.js evaluateScenarioHealth('latency', ...)).
+  // The browser has no ConfigMap visibility, so — matching the "never
+  // fabricate a result" rule used throughout this file — this indicator is
+  // left null rather than guessing from pod state alone.
+  latency: null,
 };
 
 /** True only when a pod is both Running and fully Ready (all containers ready). Mirrors the server-side check in scenario-health.js so client/server health semantics stay aligned. */

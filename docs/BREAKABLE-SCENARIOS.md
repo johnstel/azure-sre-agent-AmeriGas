@@ -17,6 +17,7 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
 | MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause; native alert-to-approved-remediation response plan in the demo profile (see [sre-agent-response-plans/README.md](sre-agent-response-plans/README.md)) |
 | Service Mismatch | `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
+| Dependency Latency | `dependency-latency.yaml` | Shared | Order checkout pricing-lookup dependency gradually slows down after an emergency config change while all pods stay Ready | SLO/trace/metric correlation, config-change clue |
 
 ## Scenario Details
 
@@ -463,6 +464,69 @@ kubectl get pods -n propane -l app=tank-monitor --show-labels
 ```bash
 kubectl apply -f k8s/base/application.yaml
 ```
+
+---
+
+### 11. Dependency Latency — Gradual Order Pricing-Lookup Slowdown
+
+**Domain:** Shared
+
+**File:** `k8s/scenarios/dependency-latency.yaml`
+
+**Business narrative:** Order checkout calls a synthetic pricing/tax lookup dependency (`order-pricing-dependency`) during fulfillment. An on-call engineer pushes an "emergency" config change that raises the pricing-lookup timeout from 45ms to 950ms to work around a vendor rate limit. Every order-service pod, the dependency pod, and the synthetic traffic generator (`order-checkout-probe`) stay Running and Ready the entire time — there is no crash, no restart, no scheduling failure. The only symptom is that checkout gets slower and slower over about 75 seconds, exactly the kind of subtle, application-level incident that a pure Kubernetes pod-status view will miss.
+
+**Documented SLO / error ceiling:** p95 checkout latency must stay at or below **500ms**; the synthetic error rate must stay at or below **2%**. Baseline p95 is ~58ms. During the incident p95 ramps from ~45ms toward ~950ms over ~75 seconds while the error rate stays under 0.5% — the incident is genuinely latency-led, not error-led.
+
+**Config-change clue:** the scenario overrides the `order-pricing-dependency-config` ConfigMap (the very same ConfigMap `k8s/base/application.yaml` defines with healthy defaults) with `config_version: "incident-v2"`, `config_change_reason: "Emergency change: pricing-lookup dependency timeout raised from 45ms to 950ms in order-pricing-dependency-config to accommodate a vendor rate-limit workaround."`, and `config_changed_by: "platform-ops-oncall"`. The `order-pricing-dependency` pod detects this change on its next poll of the mounted ConfigMap (no restart required) and logs a `config_change_detected` structured JSON event with the before/after config version — the single clearest artifact tying the SLO breach to a recent change.
+
+**What happens:**
+- `order-checkout-probe` issues one synthetic order-checkout request per second against `order-pricing-dependency`, each with a deterministic `TX-<run-id>-<sequence>` transaction id and a W3C `traceparent` header.
+- `order-pricing-dependency` computes its delay from the mounted `order-pricing-dependency-config` ConfigMap only — it never proxies to, or accepts, any caller-supplied or external target (no SSRF surface). Readiness/liveness probes hit a separate `/healthz` route that is never delayed, so the pod stays Ready throughout.
+- Baseline config is `delay_mode: fixed`, `fixed_delay_ms: 45` (p95 well under the 500ms SLO). The scenario config is `delay_mode: ramp`, ramping from 45ms to 950ms over 75 seconds, then holding at the ceiling.
+- Both pods emit standards-compliant OTLP spans (root `order.checkout` + child `dependency.pricing-lookup`, sharing one W3C trace id) to the existing `otel-collector` OTLP/HTTP receiver, plus a Prometheus-scrapeable `/metrics` endpoint (`order_dependency_request_duration_ms_p50/p95/p99`, `order_checkout_duration_ms_p50/p95/p99`, request/error counters, and a `order_dependency_config_change_timestamp_seconds` gauge) and structured JSON stdout logs correlating `trace_id`/`span_id`/`transaction_id`/`run_id`.
+- Recovery (reset) restores the original `order-pricing-dependency-config` ConfigMap (via the shared scenario lifecycle's delete-by-kind+name-then-reapply-base flow, same as every other scenario) — no scenario-only Deployment is left behind.
+
+**Evidence — what is proven locally vs. what is still pending (issue #25):**
+- **Proven now, locally, in this PR:** OTLP/HTTP trace export to the existing `otel-collector` receiver (`/v1/traces`), Prometheus-scrapeable p50/p95/p99 histograms and error counters on both pods, structured JSON logs with full trace/transaction/run correlation, and a deterministic Node.js harness (`tools/mission-control/order-dependency-latency.js` + its tests) that runs 5 reproducible baseline/failure/recovery cycles and asserts the SLO/error/readiness contract in fake/local mode with no cluster required.
+- **Not claimed here:** this repo's `otlp/appinsights` exporter in the `otel-collector` config is not currently wired into the collector's active pipelines (see the collector's `service.pipelines` block — only the `logging` exporter is attached), and its endpoint/header shape does not match Azure Monitor's actual OTLP ingestion contract. **This PR does not claim Application Insights contains these records.** Issue #25 is expected to correct/finalize the end-to-end OTel → Application Insights pipeline; once that lands, this scenario's existing OTLP spans and Prometheus metrics should flow through unchanged — no scenario-side changes should be required.
+
+**How to break:**
+```bash
+kubectl apply -f k8s/scenarios/dependency-latency.yaml
+```
+
+**What to observe:**
+```bash
+# All targeted pods stay Running and Ready throughout
+kubectl get pods -n propane -l 'app in (order-pricing-dependency,order-checkout-probe,order-service)'
+
+# Structured request/dependency logs with trace/transaction/run correlation
+kubectl logs -n propane deploy/order-pricing-dependency --tail 20
+kubectl logs -n propane deploy/order-checkout-probe --tail 20
+
+# Live p50/p95/p99 + error rate + current config version
+kubectl exec -n propane deploy/order-checkout-probe -- wget -qO- http://localhost:4100/status
+kubectl exec -n propane deploy/order-pricing-dependency -- wget -qO- http://localhost:4000/status
+
+# Prometheus-format latency histogram (scraped by otel-collector; also curl-able directly)
+kubectl exec -n propane deploy/order-pricing-dependency -- wget -qO- http://localhost:4000/metrics
+
+# The config-change clue
+kubectl get configmap order-pricing-dependency-config -n propane -o yaml
+```
+
+**SRE Agent prompts (vague to specific):**
+- "Order checkout feels slow, can you take a look?"
+- "Why is p95 checkout latency above our SLO even though every pod looks healthy?"
+- "Which dependency is adding latency to the order-checkout transaction, and is it a genuine latency incident or errors in disguise?"
+- "Correlate the p95 SLO breach on order-pricing-dependency with any recent configuration change and the affected trace/transaction ids."
+
+**Safe remediation / reset:**
+```bash
+kubectl delete configmap order-pricing-dependency-config -n propane --ignore-not-found
+kubectl apply -f k8s/base/application.yaml
+```
+Or via the shared lifecycle: `break-latency` to activate, `fix-all` / `Reset-DemoBaseline` to recover deterministically (same lifecycle used by every other scenario in this repo).
 
 ---
 

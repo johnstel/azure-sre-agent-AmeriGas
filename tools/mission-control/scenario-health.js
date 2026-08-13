@@ -81,7 +81,7 @@ function isPodReadyAndRunning(pod) {
  * Evaluate whether a scenario's failure signature is currently observable.
  *
  * @param {string} scenarioId - one of the SCENARIO_MAP keys from scenario-catalog.js
- * @param {{pods?: object[], networkPolicies?: object[], endpoints?: object[]}} cluster
+ * @param {{pods?: object[], networkPolicies?: object[], endpoints?: object[], configMaps?: object[]}} cluster
  * @returns {{active: boolean|null, reason: string}} active is null when no
  *   server-side indicator exists for the scenario (never fabricated).
  */
@@ -132,6 +132,43 @@ function evaluateScenarioHealth(scenarioId, cluster = {}) {
             ? 'no mongodb pods found (Deployment likely scaled to 0 replicas)'
             : `${mongoPods.length} mongodb pod(s) found but none are Running and Ready`)
         : `${readyPods.length} mongodb pod(s) Running and Ready`,
+    };
+  }
+
+  if (scenarioId === 'latency') {
+    // dependency-latency.yaml never creates or deletes a pod: it overrides
+    // the SAME order-pricing-dependency-config ConfigMap that k8s/base/
+    // application.yaml defines, swapping its fixed low-delay values for a
+    // ramped high-delay configuration that the order-pricing-dependency pod
+    // polls from its mounted volume. There is therefore no distinguishing
+    // pod-name/status signature to key off of (unlike oom/crash/image/etc.);
+    // activation is instead evaluated from the ConfigMap's own data plus a
+    // readiness invariant, matching this scenario's core promise that all
+    // targeted pods stay Running/Ready throughout — a scenario where the
+    // dependency pod is NOT Ready must never be reported as "active" (that
+    // would be a crash-led failure, not the genuine latency-led incident
+    // this scenario claims). Full p95/error-rate proof is produced by the
+    // deterministic Node.js harness in order-dependency-latency.js and by
+    // the live pod's own /metrics, /status, and OTLP export — this check is
+    // intentionally coarse-grained, the same granularity used by every
+    // other scenario's activation signal in this file.
+    const configMaps = cluster.configMaps || [];
+    const configMap = configMaps.find((cm) => cm && cm.metadata && cm.metadata.name === 'order-pricing-dependency-config');
+    const delayMode = configMap && configMap.data ? configMap.data.delay_mode : null;
+    const dependencyPods = pods.filter((p) => p.name.startsWith('order-pricing-dependency'));
+    const probePods = pods.filter((p) => p.name.startsWith('order-checkout-probe'));
+    const allReady = dependencyPods.length > 0 && dependencyPods.every(isPodReadyAndRunning)
+      && probePods.length > 0 && probePods.every(isPodReadyAndRunning);
+    const active = delayMode === 'ramp' && allReady;
+    return {
+      active,
+      reason: !configMap
+        ? 'order-pricing-dependency-config ConfigMap not found'
+        : delayMode !== 'ramp'
+          ? `order-pricing-dependency-config delay_mode is "${delayMode || 'unknown'}", not "ramp"`
+          : !allReady
+            ? 'order-pricing-dependency-config is in ramp mode but order-pricing-dependency/order-checkout-probe pods are not all Running and Ready'
+            : 'order-pricing-dependency-config is in ramp mode and all targeted pods are Running and Ready',
     };
   }
 
