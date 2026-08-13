@@ -1,9 +1,95 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const TRACK_CATALOG = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'presenter-tracks.json'), 'utf8')
-);
+const DEFAULT_TRACK_CATALOG = {
+  schemaVersion: 1,
+  panelIds: ['presenter-panel', 'incident-panel', 'timeline-panel', 'evidence-panel'],
+  actionIds: ['continue', 'pause', 'resume', 'cancel', 'approve', 'remediate', 'recovery', 'review-evidence', 'open-incident'],
+  gateIds: ['readiness-pass', 'baseline-health', 'scenario-active', 'native-sre-agent-investigation', 'scheduled-task-evidence', 'approval-required', 'remediation-complete', 'recovery-verified'],
+  tracks: [
+    {
+      id: 'fast-wow',
+      title: 'Fast Wow',
+      durationMinutes: 6,
+      steps: [
+        {
+          id: 'readiness',
+          title: 'Baseline readiness',
+          presenterNotes: ['Confirm the baseline is healthy before the incident story is started.'],
+          expectedEvidence: ['healthy baseline'],
+          productSurface: 'azure-sre-agent-cloud',
+          focusedPanels: ['presenter-panel', 'incident-panel'],
+          controls: ['continue'],
+          gate: { id: 'readiness-pass', kind: 'readiness', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline and preserve the run correlation.',
+          abortBehavior: 'Stop the track and leave the current incident in place until a fresh run starts.',
+        },
+        {
+          id: 'review-approval',
+          title: 'Review approval',
+          presenterNotes: ['Review the exact approved action before proceeding.'],
+          expectedEvidence: ['approved action milestone'],
+          productSurface: 'operator',
+          focusedPanels: ['incident-panel', 'presenter-panel'],
+          controls: ['approve'],
+          gate: { id: 'approval-required', kind: 'approval', action: 'approve', expectedActionKey: 'demo-action-key' },
+          resetBehavior: 'Reject stale approval callbacks and wait for the exact incident-bound action.',
+          abortBehavior: 'Leave the action pending and surface the mismatch warning.',
+        },
+        {
+          id: 'verified-recovery',
+          title: 'Verified recovery',
+          presenterNotes: ['Confirm the incident recovered with fresh evidence.'],
+          expectedEvidence: ['recovery verified'],
+          productSurface: 'azure-sre-agent-cloud',
+          focusedPanels: ['incident-panel', 'evidence-panel'],
+          controls: ['continue'],
+          gate: { id: 'recovery-verified', kind: 'recovery', action: 'continue', expectedActionKey: 'demo-action-key' },
+          resetBehavior: 'Require a fresh recovery assertion before the track closes.',
+          abortBehavior: 'Preserve the incident and keep the closed-state gate locked until recovery is observed.',
+        },
+      ],
+    },
+    {
+      id: 'deep-dive',
+      title: 'Deep Dive',
+      durationMinutes: 22,
+      steps: [
+        {
+          id: 'architecture-dependency-view',
+          title: 'Architecture dependency view',
+          presenterNotes: ['Inspect the live dependency view.'],
+          expectedEvidence: ['dependency view visible'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['presenter-panel', 'timeline-panel'],
+          controls: ['continue'],
+          gate: { id: 'baseline-health', kind: 'baseline', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline without carrying stale run state.',
+          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+        },
+        {
+          id: 'readiness',
+          title: 'Baseline readiness',
+          presenterNotes: ['Validate the cluster is ready for the incident walkthrough.'],
+          expectedEvidence: ['baseline is healthy'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['presenter-panel', 'timeline-panel'],
+          controls: ['continue'],
+          gate: { id: 'readiness-pass', kind: 'readiness', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline without carrying stale run state.',
+          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+        },
+      ],
+    },
+  ],
+};
+
+let TRACK_CATALOG = DEFAULT_TRACK_CATALOG;
+try {
+  TRACK_CATALOG = JSON.parse(fs.readFileSync(path.join(__dirname, 'presenter-tracks.json'), 'utf8'));
+} catch (error) {
+  TRACK_CATALOG = DEFAULT_TRACK_CATALOG;
+}
 
 const DEFAULT_PANEL_IDS = new Set(TRACK_CATALOG.panelIds || []);
 const DEFAULT_ACTION_IDS = new Set(TRACK_CATALOG.actionIds || []);

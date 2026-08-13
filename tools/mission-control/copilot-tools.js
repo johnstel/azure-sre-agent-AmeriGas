@@ -62,6 +62,39 @@ async function az(...args) {
   return stdout;
 }
 
+async function invokeScenarioLifecycle(operation, params = {}) {
+  const scriptPath = path.resolve(REPO_ROOT, 'tools', 'mission-control', 'scenario-lifecycle.js');
+  const args = [scriptPath, operation];
+
+  if (params.scenarioId) {
+    args.push('--scenario-id', params.scenarioId);
+  }
+  if (params.scope) {
+    args.push('--scope', params.scope);
+  }
+  if (params.allowStacking) {
+    args.push('--allow-stacking');
+  }
+  if (params.whatIf) {
+    args.push('--what-if');
+  }
+  if (params.namespace) {
+    args.push('--namespace', params.namespace);
+  }
+
+  const { stdout, stderr } = await runCommand('node', args, { timeout: 120000 });
+  const payload = (stdout || stderr || '').trim();
+  if (!payload) {
+    throw new Error(`Scenario lifecycle returned no output for ${operation}`);
+  }
+
+  try {
+    return JSON.parse(payload);
+  } catch (error) {
+    throw new Error(`Scenario lifecycle JSON parse failed for ${operation}: ${payload}`);
+  }
+}
+
 // Wrap a handler so it returns error strings instead of throwing
 function safeHandler(fn) {
   return async (...args) => {

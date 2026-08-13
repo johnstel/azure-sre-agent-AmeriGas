@@ -68,6 +68,7 @@ const POD_INDICATORS = {
   cpu: (p) => p.name.startsWith('demand-forecast'),
   pending: (p) => p.name.startsWith('fleet-telemetry'),
   probe: (p) => p.name.startsWith('safety-compliance'),
+  backlog: (p) => p.name.startsWith('refill-order-backlog'),
   config: (p) => p.name.startsWith('delivery-zone'),
 };
 

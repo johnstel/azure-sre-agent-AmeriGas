@@ -76,23 +76,23 @@ alias azsub='az account list -o table'
 alias deploy='pwsh ./scripts/deploy.ps1'
 alias destroy='pwsh ./scripts/destroy.ps1'
 
-# Break scenarios
-alias break-oom='kubectl apply -f k8s/scenarios/oom-killed.yaml'
-alias break-crash='kubectl apply -f k8s/scenarios/crash-loop.yaml'
-alias break-image='kubectl apply -f k8s/scenarios/image-pull-backoff.yaml'
-alias break-cpu='kubectl apply -f k8s/scenarios/high-cpu.yaml'
-alias break-pending='kubectl apply -f k8s/scenarios/pending-pods.yaml'
-alias break-probe='kubectl apply -f k8s/scenarios/probe-failure.yaml'
-alias break-backlog='kubectl apply -f k8s/scenarios/refill-order-backlog.yaml'
-alias break-network='kubectl apply -f k8s/scenarios/network-block.yaml'
-alias break-config='kubectl apply -f k8s/scenarios/missing-config.yaml'
-alias break-mongodb='kubectl apply -f k8s/scenarios/mongodb-down.yaml'
-alias break-service='kubectl apply -f k8s/scenarios/service-mismatch.yaml'
+# Break scenarios / start/reset lifecycle
+alias break-oom='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id oom"'
+alias break-crash='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id crash"'
+alias break-image='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id image"'
+alias break-cpu='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id cpu"'
+alias break-pending='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id pending"'
+alias break-probe='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id probe"'
+alias break-backlog='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id backlog"'
+alias break-network='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id network"'
+alias break-config='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id config"'
+alias break-mongodb='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id mongodb"'
+alias break-service='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Start-DemoScenario -Id service"'
 
-# Fix commands
-alias fix-all='kubectl delete deployment safety-compliance-monitor refill-order-backlog-simulator -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>/dev/null || true; kubectl apply -f k8s/base/application.yaml'
-alias fix-network='kubectl delete networkpolicy deny-tank-monitor -n propane 2>/dev/null'
-alias fix-extras='kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config refill-order-backlog-simulator -n propane --ignore-not-found 2>/dev/null || true; kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>/dev/null || true'
+# Fix commands / reset workflow
+alias fix-all='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Reset-DemoBaseline -Scope all"'
+alias fix-network='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Reset-DemoBaseline -Scope network"'
+alias fix-extras='pwsh -NoLogo -NoProfile -Command ". ./scripts/demo-helpers.ps1; Reset-DemoBaseline -Scope extras"'
 
 # Site URL command
 alias site='echo "Customer Portal: http://$(kubectl get svc customer-portal -n propane -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || echo "pending...")"'
@@ -137,26 +137,23 @@ function destroy {
     }
 }
 
-function break-oom { kubectl apply -f k8s/scenarios/oom-killed.yaml }
-function break-crash { kubectl apply -f k8s/scenarios/crash-loop.yaml }
-function break-image { kubectl apply -f k8s/scenarios/image-pull-backoff.yaml }
-function break-cpu { kubectl apply -f k8s/scenarios/high-cpu.yaml }
-function break-pending { kubectl apply -f k8s/scenarios/pending-pods.yaml }
-function break-probe { kubectl apply -f k8s/scenarios/probe-failure.yaml }
-function break-backlog { kubectl apply -f k8s/scenarios/refill-order-backlog.yaml }
-function break-network { kubectl apply -f k8s/scenarios/network-block.yaml }
-function break-config { kubectl apply -f k8s/scenarios/missing-config.yaml }
-function break-mongodb { kubectl apply -f k8s/scenarios/mongodb-down.yaml }
-function break-service { kubectl apply -f k8s/scenarios/service-mismatch.yaml }
+function break-oom { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id oom }
+function break-crash { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id crash }
+function break-image { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id image }
+function break-cpu { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id cpu }
+function break-pending { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id pending }
+function break-probe { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id probe }
+function break-backlog { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id backlog }
+function break-network { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id network }
+function break-config { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id config }
+function break-mongodb { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id mongodb }
+function break-service { . ./scripts/demo-helpers.ps1; Start-DemoScenario -Id service }
 function fix-all {
-    kubectl delete deployment safety-compliance-monitor refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
-    kubectl apply -f k8s/base/application.yaml
+    . ./scripts/demo-helpers.ps1; Reset-DemoBaseline -Scope all
 }
-function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
+function fix-network { . ./scripts/demo-helpers.ps1; Reset-DemoBaseline -Scope network }
 function fix-extras {
-    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
+    . ./scripts/demo-helpers.ps1; Reset-DemoBaseline -Scope extras
 }
 
 # Site URL command  

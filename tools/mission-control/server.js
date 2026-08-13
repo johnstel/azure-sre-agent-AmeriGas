@@ -18,6 +18,7 @@ const {
 const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
 const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
 const { SCENARIO_MAP, SCENARIO_METADATA } = require('./scenario-catalog');
+const { startDemoScenario, resetDemoBaseline } = require('./scenario-lifecycle');
 const { evaluateScenarioHealth } = require('./scenario-health');
 const { createIncidentStore } = require('./incident-store');
 const { getSreAgentLinks } = require('./sre-agent-links');
@@ -491,62 +492,71 @@ app.get('/api/cluster-info', async (req, res) => {
 
 app.post('/api/break/:scenario', async (req, res) => {
   const scenarioId = req.params.scenario;
-  const filename = SCENARIO_MAP[scenarioId];
-  if (!filename) return res.status(400).json({ error: `Unknown scenario: ${scenarioId}` });
   try {
-    const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'scenarios', filename));
+    const result = await startDemoScenario(scenarioId, {
+      repoRoot: REPO_ROOT,
+      namespace: 'propane',
+      allowStacking: Boolean(req.query?.allowStacking === 'true' || req.body?.allowStacking === true),
+    });
+
+    if (!result.ok) {
+      const status = result.code === 'SCENARIO_STACKING_BLOCKED' || result.code === 'BASELINE_DEGRADED' ? 409 : 400;
+      return res.status(status).json({ success: false, ...result });
+    }
+
     const meta = SCENARIO_METADATA[scenarioId] || {};
     const incident = incidentStore.activate({
-      scenarioId,
-      scenarioName: meta.name || scenarioId,
+      scenarioId: result.scenarioId,
+      scenarioName: meta.name || result.scenarioId,
       domain: meta.domain || null,
       impactedService: meta.impactedService || null,
       relatedIds: meta.relatedIds || [],
       runMode: 'operator-direct',
+      correlationId: result.correlationId,
     });
-    res.json({ success: true, message: out.trim(), correlationId: incident.correlationId });
+    return res.json({ success: true, message: result.message, correlationId: incident.correlationId, lifecycle: result });
   }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.post('/api/fix/all', async (req, res) => {
   try {
-    await kubectl('delete', 'deployment', 'safety-compliance-monitor', '-n', 'propane', '--ignore-not-found');
-    await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
-    const out = await kubectl('apply', '-f', path.resolve(REPO_ROOT, 'k8s', 'base', 'application.yaml'));
-    recordOperatorDirectAction('fix_all', {}, { success: true, summary: out.trim() });
-    res.json({ success: true, message: out.trim() });
+    const result = await resetDemoBaseline({ repoRoot: REPO_ROOT, namespace: 'propane', scope: 'all' });
+    recordOperatorDirectAction('fix_all', {}, { success: result.ok, summary: result.message || 'Reset baseline' });
+    if (!result.ok) return res.status(400).json({ success: false, ...result });
+    return res.json({ success: true, ...result });
   }
   catch (err) {
     recordOperatorDirectAction('fix_all', {}, { success: false, summary: err.message });
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
 app.post('/api/fix/network', async (req, res) => {
   try {
-    const out = await kubectl('delete', 'networkpolicy', 'deny-tank-monitor', '-n', 'propane', '--ignore-not-found');
-    const message = out.trim() || 'Network policy removed';
-    recordOperatorDirectAction('fix_network', {}, { success: true, summary: message });
-    res.json({ success: true, message });
+    const result = await resetDemoBaseline({ repoRoot: REPO_ROOT, namespace: 'propane', scope: 'network' });
+    recordOperatorDirectAction('fix_network', {}, { success: result.ok, summary: result.message || 'Network reset' });
+    if (!result.ok) return res.status(400).json({ success: false, ...result });
+    return res.json({ success: true, ...result });
   }
   catch (err) {
     recordOperatorDirectAction('fix_network', {}, { success: false, summary: err.message });
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
 app.post('/api/fix/extras', async (req, res) => {
   try {
-    const deploymentOut = await kubectl('delete', 'deployment', 'demand-forecast-overload', 'fleet-telemetry-monitor', 'safety-compliance-monitor', 'delivery-zone-config', '-n', 'propane', '--ignore-not-found');
-    const configOut = await kubectl('delete', 'configmap', 'tank-safety-alarm-config', '-n', 'propane', '--ignore-not-found');
-    const message = [deploymentOut, configOut].filter(Boolean).join('\n') || 'Extra deployments and scenario config removed';
-    recordOperatorDirectAction('fix_extras', {}, { success: true, summary: message });
-    res.json({ success: true, message });
+    const result = await resetDemoBaseline({ repoRoot: REPO_ROOT, namespace: 'propane', scope: 'extras' });
+    recordOperatorDirectAction('fix_extras', {}, { success: result.ok, summary: result.message || 'Extra reset' });
+    if (!result.ok) return res.status(400).json({ success: false, ...result });
+    return res.json({ success: true, ...result });
   }
   catch (err) {
     recordOperatorDirectAction('fix_extras', {}, { success: false, summary: err.message });
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

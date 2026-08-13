@@ -36,18 +36,104 @@ function destroy {
     }
 }
 
+# Shared lifecycle implementation: use the same deterministic scenario engine
+# that Mission Control calls instead of duplicating ad hoc cleanup logic here.
+function Invoke-ScenarioLifecycle {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('start', 'reset')][string]$Operation,
+        [string]$ScenarioId,
+        [string]$Scope = 'all',
+        [switch]$AllowStacking,
+        [switch]$WhatIf,
+        [string]$Namespace = 'propane'
+    )
+
+    $lifecycleScript = Join-Path $PSScriptRoot '..\tools\mission-control\scenario-lifecycle.js'
+    $args = @($lifecycleScript, $Operation)
+    if ($ScenarioId) { $args += @('--scenario-id', $ScenarioId) }
+    if ($AllowStacking) { $args += '--allow-stacking' }
+    if ($WhatIf) { $args += '--what-if' }
+    if ($Namespace) { $args += @('--namespace', $Namespace) }
+    if ($Scope) { $args += @('--scope', $Scope) }
+
+    $raw = & node @args 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($null -eq $raw) { $raw = @() }
+
+    $jsonText = ($raw | Out-String).Trim()
+    if (-not $jsonText) {
+        throw "No JSON output received from scenario lifecycle: $Operation"
+    }
+
+    try {
+        $result = $jsonText | ConvertFrom-Json -Depth 100
+    }
+    catch {
+        throw "Scenario lifecycle returned invalid JSON for ${Operation}: ${jsonText}"
+    }
+
+    if ($exitCode -ne 0 -and -not $result.ok) {
+        $result | Add-Member -NotePropertyName exitCode -NotePropertyValue $exitCode -Force
+    }
+
+    return $result
+}
+
+function Start-DemoScenario {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('oom','crash','image','cpu','pending','probe','backlog','network','config','mongodb','service')]
+        [string]$Id,
+        [switch]$AllowStacking,
+        [switch]$WhatIf
+    )
+
+    if ($WhatIfPreference) { $WhatIf = $true }
+    $result = Invoke-ScenarioLifecycle -Operation 'start' -ScenarioId $Id -AllowStacking:$AllowStacking -WhatIf:$WhatIf
+
+    if ($result.ok) {
+        Write-Host "  ✅ Scenario '$($result.scenarioId)' activated successfully." -ForegroundColor Green
+        if ($result.correlationId) { Write-Host "     Correlation ID: $($result.correlationId)" -ForegroundColor DarkGray }
+        return $result
+    }
+
+    Write-Error $result.message
+    return $result
+}
+
+function Reset-DemoBaseline {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [ValidateSet('all','network','extras')]
+        [string]$Scope = 'all',
+        [switch]$WhatIf
+    )
+
+    if ($WhatIfPreference) { $WhatIf = $true }
+    $result = Invoke-ScenarioLifecycle -Operation 'reset' -Scope $Scope -WhatIf:$WhatIf
+
+    if ($result.ok) {
+        Write-Host "  ✅ Baseline reset verified (fingerprint: $($result.fingerprint.Substring(0,12)))." -ForegroundColor Green
+        return $result
+    }
+
+    Write-Error $result.message
+    return $result
+}
+
 # Break scenarios
-function break-oom { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\oom-killed.yaml" }
-function break-crash { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\crash-loop.yaml" }
-function break-image { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\image-pull-backoff.yaml" }
-function break-cpu { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\high-cpu.yaml" }
-function break-pending { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\pending-pods.yaml" }
-function break-probe { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\probe-failure.yaml" }
-function break-backlog { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\refill-order-backlog.yaml" }
-function break-network { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\network-block.yaml" }
-function break-config { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\missing-config.yaml" }
-function break-mongodb { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\mongodb-down.yaml" }
-function break-service { kubectl apply -f "$PSScriptRoot\..\k8s\scenarios\service-mismatch.yaml" }
+function break-oom { Start-DemoScenario -Id 'oom' @args }
+function break-crash { Start-DemoScenario -Id 'crash' @args }
+function break-image { Start-DemoScenario -Id 'image' @args }
+function break-cpu { Start-DemoScenario -Id 'cpu' @args }
+function break-pending { Start-DemoScenario -Id 'pending' @args }
+function break-probe { Start-DemoScenario -Id 'probe' @args }
+function break-backlog { Start-DemoScenario -Id 'backlog' @args }
+function break-network { Start-DemoScenario -Id 'network' @args }
+function break-config { Start-DemoScenario -Id 'config' @args }
+function break-mongodb { Start-DemoScenario -Id 'mongodb' @args }
+function break-service { Start-DemoScenario -Id 'service' @args }
 
 # Fix commands
 function ensure-credentials {
@@ -81,20 +167,21 @@ function ensure-credentials {
 }
 
 function fix-all {
-    # Ensure the propane namespace exists so the Secret can be created before pods start
-    kubectl create namespace propane --dry-run=client -o yaml | kubectl apply -f - 2>$null
-    # Clean up the simulated Bulk Tank safety scenario and any stale config that breaks the healthy baseline
-    kubectl delete deployment safety-compliance-monitor refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
-    # Ensure credentials secret exists (preserves any generated credentials from deploy.ps1)
-    ensure-credentials
-    # Apply the full application manifest
-    kubectl apply -f "$PSScriptRoot\..\k8s\base\application.yaml"
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    Reset-DemoBaseline -Scope 'all' -WhatIf:$WhatIfPreference
 }
-function fix-network { kubectl delete networkpolicy deny-tank-monitor -n propane 2>$null }
+
+function fix-network {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    Reset-DemoBaseline -Scope 'network' -WhatIf:$WhatIfPreference
+}
+
 function fix-extras {
-    kubectl delete deployment demand-forecast-overload fleet-telemetry-monitor safety-compliance-monitor delivery-zone-config refill-order-backlog-simulator -n propane --ignore-not-found 2>$null
-    kubectl delete configmap tank-safety-alarm-config refill-order-backlog-config -n propane --ignore-not-found 2>$null
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    Reset-DemoBaseline -Scope 'extras' -WhatIf:$WhatIfPreference
 }
 
 # Site URL
@@ -160,10 +247,12 @@ function menu {
 ║    break-mongodb               - MongoDB down (cascading failure)            ║
 ║    break-service               - Service selector mismatch                   ║
 ║                                                                              ║
-║  Fix Commands:                                                               ║
-║    fix-all                     - Restore all services to healthy state       ║
-║    fix-network                 - Remove network policy                       ║
-║    fix-extras                  - Delete extra broken deployments             ║
+║  Scenario lifecycle:                                                         ║
+║    Start-DemoScenario -Id <id> - Run a known scenario with baseline checks   ║
+║    Reset-DemoBaseline          - Restore the healthy baseline deterministically ║
+║    fix-all                     - Compatibility alias for Reset-DemoBaseline   ║
+║    fix-network                 - Compatibility alias for reset scope network ║
+║    fix-extras                  - Compatibility alias for reset scope extras  ║
 ║                                                                              ║
 ║  Documentation: docs/                                                        ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
