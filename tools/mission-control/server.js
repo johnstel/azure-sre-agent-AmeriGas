@@ -312,7 +312,15 @@ async function handlePresenterMutation(req, res, operation) {
     serverProof,
   };
 
-  const result = operation(context);
+  let result;
+  try {
+    result = await operation(context);
+  } catch (error) {
+    return res.status(400).json({
+      error: error && error.message ? error.message : 'Presenter action failed',
+      state: presenterStateMachine.getState(),
+    });
+  }
   if (!result || !('ok' in result)) {
     return res.status(500).json({ error: 'Presenter operation did not return a valid response' });
   }
@@ -865,7 +873,13 @@ app.post('/api/approval/approve', (req, res) => {
     incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
   });
   if (result.success && result.incidentCorrelationId) {
-    incidentStore.approveAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
+    incidentStore.approveAction(result.incidentCorrelationId, {
+      actionKey,
+      approver: resolveApproverIdentity(req),
+      approved: true,
+      status: 'approved',
+      decision: 'approved',
+    });
   }
   res.json(result);
 });
@@ -880,7 +894,13 @@ app.post('/api/approval/deny', (req, res) => {
     incidentCorrelationId: activeIncident ? activeIncident.correlationId : null,
   });
   if (result.success && result.incidentCorrelationId) {
-    incidentStore.denyAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
+    incidentStore.denyAction(result.incidentCorrelationId, {
+      actionKey,
+      approver: resolveApproverIdentity(req),
+      denied: true,
+      status: 'denied',
+      decision: 'denied',
+    });
   }
   res.json(result);
 });
@@ -1004,6 +1024,7 @@ module.exports = {
   // end-to-end (real incidentStore, real scheduledTaskEvidenceStore, a
   // fake cluster-snapshot collector) without a live Kubernetes cluster.
   incidentStore,
+  securityState,
   scheduledTaskEvidenceStore,
   __setClusterSnapshotProviderForTests,
   getTrustedPresenterServerProof,

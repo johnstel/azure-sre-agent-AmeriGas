@@ -9,8 +9,10 @@ const {
   evaluateGate,
   sanitizePresenterNotes,
   buildPresenterRehearsal,
+  getTrackById,
 } = require('../presenter-mode');
-const { app, presenterStateMachine, presenterStateStore, sanitizePresenterRequestBody, incidentStore, scheduledTaskEvidenceStore, __setClusterSnapshotProviderForTests } = require('../server');
+const { app, presenterStateMachine, presenterStateStore, sanitizePresenterRequestBody, incidentStore, scheduledTaskEvidenceStore, securityState, __setClusterSnapshotProviderForTests } = require('../server');
+const { evaluateToolAccess } = require('../security-policy');
 
 function createMemoryStore(initialState = null) {
   let currentState = initialState;
@@ -358,6 +360,109 @@ test('the server source never spreads the raw request body into a presenter-muta
   const serverSource = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
   assert.equal(/presenterStateMachine\.(startTrack|continueStep|pause|resume|abort|reconnect)\([^)]*\.\.\.(body|req\.body)/.test(serverSource), false);
   assert.equal(serverSource.includes('startTrack(trackId, { ...context, ...body })'), false);
+});
+
+test('invalid presenter track ids return stable JSON errors instead of hanging or causing unhandled rejections', async () => {
+  fullyClearSharedPresenterState();
+  const server = app.listen(0);
+  try {
+    const { port } = server.address();
+    const base = `http://127.0.0.1:${port}`;
+
+    for (const endpoint of ['start', 'reset']) {
+      const response = await fetch(`${base}/api/presenter/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trackId: 'not-a-real-track' }),
+      });
+      assert.equal(response.status, 400);
+      const body = await response.json();
+      assert.match(body.error, /unknown presenter track/i);
+      assert.ok(body.state);
+    }
+  } finally {
+    fullyClearSharedPresenterState();
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test('the real approval endpoint records canonical approved milestone data that unlocks only the exact action gate', async () => {
+  fullyClearSharedPresenterState();
+  securityState.pendingApproval = null;
+  const incident = incidentStore.activate({ scenarioId: 'mongodb', impactedService: 'mongodb', runMode: 'review' });
+  const correlationId = incident.correlationId;
+  const sessionId = `session-${Date.now()}`;
+  const gateResult = evaluateToolAccess(securityState, 'fix_all', {}, { sessionId, incidentCorrelationId: correlationId });
+  assert.equal(gateResult.allowed, false);
+  assert.ok(gateResult.approvalId);
+  assert.ok(gateResult.actionKey);
+  incidentStore.proposeAction(correlationId, { actionKey: gateResult.actionKey, toolName: 'fix_all', params: {} });
+
+  const server = app.listen(0);
+  const priorOperatorToken = process.env.MISSION_CONTROL_OPERATOR_TOKEN;
+  const operatorToken = `operator-${Date.now()}`;
+  process.env.MISSION_CONTROL_OPERATOR_TOKEN = operatorToken;
+  try {
+    const { port } = server.address();
+    const base = `http://127.0.0.1:${port}`;
+    const response = await fetch(`${base}/api/approval/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': base,
+        'X-Mission-Control-Operator-Token': operatorToken,
+      },
+      body: JSON.stringify({
+        approvalId: gateResult.approvalId,
+        sessionId,
+        actionKey: gateResult.actionKey,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const responseBody = await response.json();
+    assert.equal(responseBody.success, true);
+
+    const stored = incidentStore.getIncident(correlationId);
+    const approvalMilestone = stored.milestones.find((milestone) => (
+      milestone.type === 'action_approved' &&
+      milestone.data &&
+      milestone.data.actionKey === gateResult.actionKey
+    ));
+    assert.ok(approvalMilestone);
+    assert.equal(approvalMilestone.data.approved, true);
+    assert.equal(approvalMilestone.data.status, 'approved');
+    assert.equal(approvalMilestone.data.decision, 'approved');
+
+    const approvalStep = getTrackById('fast-wow').steps.find((step) => step.id === 'review-approval');
+    const proof = trustedServerProof({
+      correlationId: 'RUN-APPROVAL-ENDPOINT',
+      scenarioId: 'mongodb',
+      incidentCorrelationId: correlationId,
+      activeIncident: stored,
+    });
+    const allowed = evaluateGate(approvalStep, { serverProof: proof }, {
+      correlationId: 'RUN-APPROVAL-ENDPOINT',
+      scenarioId: 'mongodb',
+      incidentCorrelationId: correlationId,
+      expectedActionKey: gateResult.actionKey,
+    });
+    assert.equal(allowed.allowed, true);
+
+    const wrongAction = evaluateGate(approvalStep, { serverProof: proof }, {
+      correlationId: 'RUN-APPROVAL-ENDPOINT',
+      scenarioId: 'mongodb',
+      incidentCorrelationId: correlationId,
+      expectedActionKey: 'different-action',
+    });
+    assert.equal(wrongAction.allowed, false);
+  } finally {
+    if (priorOperatorToken === undefined) delete process.env.MISSION_CONTROL_OPERATOR_TOKEN;
+    else process.env.MISSION_CONTROL_OPERATOR_TOKEN = priorOperatorToken;
+    securityState.pendingApproval = null;
+    incidentStore.finalize(correlationId, 'denied', { reason: 'test cleanup' });
+    fullyClearSharedPresenterState();
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
 });
 
 test('a valid Fast Wow run succeeds end-to-end through the real HTTP endpoints using ACTUAL trusted server evidence -- readiness/baseline from a real (faked) cluster snapshot, approval/recovery from the real incidentStore milestones -- and exact incident milestones unlock each gate strictly in sequence', async () => {
