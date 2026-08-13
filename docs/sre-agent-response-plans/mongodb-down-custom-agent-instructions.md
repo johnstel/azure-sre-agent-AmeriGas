@@ -68,9 +68,9 @@ based on the alert title alone.
    ReplicaSet, and any Pods in the `propane` namespace of cluster
    `{{AKS_CLUSTER_NAME}}`. Confirm the Deployment's `spec.replicas` and
    whether zero Pods are Running.
-2. **Application Insights / dependency telemetry** — check `dependencies`
+2. **Application Insights / dependency telemetry** — check `AppDependencies`
    for calls from `order-service` / `tank-monitor` to MongoDB failing, and
-   `requests`/`exceptions` for downstream customer-portal or
+   `AppRequests`/`AppExceptions` for downstream customer-portal or
    dispatch-console errors that started at the same time.
 3. **Log Analytics (Container Insights)** — query `KubePodInventory` for
    the `mongodb` pod's presence/absence over the last 15 minutes, and
@@ -120,7 +120,7 @@ explicitly (do not report success without checking):
 
 1. `kubectl get deployment mongodb -n propane` shows `1/1` ready replicas.
 2. A `mongodb-*` Pod in namespace `propane` reaches `Running` status.
-3. `dependencies` in Application Insights shows new successful calls from
+3. `AppDependencies` in workspace-based Application Insights shows new successful calls from
    `order-service` (and/or `tank-monitor`) to MongoDB after the fix.
 4. The originating Azure Monitor alert (`{{ALERT_TITLE}}`) transitions out
    of its firing/active state within a reasonable window, or explain

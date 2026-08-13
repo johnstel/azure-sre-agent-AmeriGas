@@ -32,6 +32,7 @@ const path = require('path');
 // abandoned automation. Exported so tests and callers can reason about the
 // exact bound instead of a magic number.
 const MAX_EVIDENCE_AGE_MINUTES = 26 * 60;
+const MAX_TELEMETRY_PROOF_AGE_MINUTES = 5;
 
 // Statuses the underlying report is contractually allowed to produce (see
 // docs/sre-agent-scheduled-tasks/daily-propane-health-report-prompt.md).
@@ -50,6 +51,7 @@ function isNonEmptyString(value) {
 
 function createScheduledTaskEvidenceStore(options = {}) {
   const filePath = options.filePath || path.resolve(__dirname, '.data', 'scheduled-task-evidence.json');
+  const telemetryProofPath = options.telemetryProofPath || path.join(path.dirname(filePath), 'telemetry-proof.json');
   const onPersistError = typeof options.onPersistError === 'function' ? options.onPersistError : () => {};
   const clock = typeof options.clock === 'function' ? options.clock : () => new Date();
 
@@ -74,6 +76,59 @@ function createScheduledTaskEvidenceStore(options = {}) {
     } catch (err) {
       onPersistError(err);
     }
+  }
+
+  function evaluateTelemetryProof() {
+    let proof;
+    try {
+      if (!fs.existsSync(telemetryProofPath)) {
+        return { valid: false, reason: 'fresh Application Insights telemetry proof has not been recorded' };
+      }
+      proof = JSON.parse(fs.readFileSync(telemetryProofPath, 'utf8'));
+    } catch (err) {
+      onPersistError(err);
+      return { valid: false, reason: 'Application Insights telemetry proof is unreadable' };
+    }
+
+    if (!/^[a-f0-9]{32}$/.test(proof.transactionId || '')) {
+      return { valid: false, reason: 'Application Insights telemetry proof has an invalid transaction id' };
+    }
+    const verifiedAt = new Date(proof.verifiedAt);
+    if (Number.isNaN(verifiedAt.getTime())) {
+      return { valid: false, reason: 'Application Insights telemetry proof has an invalid timestamp' };
+    }
+    const ageMinutes = (clock().getTime() - verifiedAt.getTime()) / 60000;
+    if (ageMinutes < 0 || ageMinutes > MAX_TELEMETRY_PROOF_AGE_MINUTES) {
+      return {
+        valid: false,
+        reason: ageMinutes < 0
+          ? 'Application Insights telemetry proof timestamp is in the future'
+          : `Application Insights telemetry proof is stale (${Math.round(ageMinutes)} minutes old, max ${MAX_TELEMETRY_PROOF_AGE_MINUTES})`,
+      };
+    }
+
+    const minimums = {
+      requestCount: 3,
+      dependencyCount: 4,
+      correlatedOperationCount: 1,
+      serviceCount: 3,
+      metricCount: 3,
+      exceptionCount: 1,
+      traceCount: 3,
+      kubernetesEventCount: 1,
+    };
+    for (const [field, minimum] of Object.entries(minimums)) {
+      if (!Number.isInteger(proof[field]) || proof[field] < minimum) {
+        return { valid: false, reason: `Application Insights telemetry proof is incomplete (${field} < ${minimum})` };
+      }
+    }
+
+    return {
+      valid: true,
+      transactionId: proof.transactionId,
+      verifiedAt: verifiedAt.toISOString(),
+      ageMinutes,
+    };
   }
 
   /**
@@ -166,15 +221,31 @@ function createScheduledTaskEvidenceStore(options = {}) {
       };
     }
 
+    const telemetryProof = evaluateTelemetryProof();
+    if (!telemetryProof.valid) {
+      return {
+        available: false,
+        reason: telemetryProof.reason,
+        taskId: record.taskId,
+        promptVersionHash: record.promptVersionHash,
+        threadId: record.threadId,
+        timestamp: record.timestamp,
+        status: record.status,
+        ageMinutes,
+        telemetryProof,
+      };
+    }
+
     return {
       available: true,
-      reason: `fresh execution (${Math.round(ageMinutes)} minutes old) reported '${record.status}'`,
+      reason: `fresh execution (${Math.round(ageMinutes)} minutes old) reported '${record.status}' with correlated telemetry transaction ${telemetryProof.transactionId}`,
       taskId: record.taskId,
       promptVersionHash: record.promptVersionHash,
       threadId: record.threadId,
       timestamp: record.timestamp,
       status: record.status,
       ageMinutes,
+      telemetryProof,
     };
   }
 
@@ -184,5 +255,6 @@ function createScheduledTaskEvidenceStore(options = {}) {
 module.exports = {
   createScheduledTaskEvidenceStore,
   MAX_EVIDENCE_AGE_MINUTES,
+  MAX_TELEMETRY_PROOF_AGE_MINUTES,
   VALID_STATUSES,
 };

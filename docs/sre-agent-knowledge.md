@@ -50,7 +50,8 @@ Services and scenarios used by both domains: `inventory-service` (Bulk Tank pric
 | Order Worker | `order-worker` | — | Processes order fulfillment queue messages (disabled by default, 0 replicas) | Shared | Python |
 | Order Pricing Dependency | `order-pricing-dependency` | 4000 | Synthetic order-checkout pricing-lookup dependency hop for the dependency-latency scenario (issue #22) | Shared | Node.js |
 | Order Checkout Probe | `order-checkout-probe` | 4100 | Synthetic order-checkout traffic generator with deterministic transaction/run correlation ids (issue #22) | Shared | Node.js |
-| OTel Collector | `otel-collector` | 4317 / 4318 | OpenTelemetry Collector — receives OTLP telemetry, scrapes Prometheus. `logging` exporter is active; the `otlp/appinsights` exporter is defined but not yet wired into a pipeline (pending issue #25) | Shared | OTel Contrib |
+| OTel Collector | `otel-collector` | 4317 / 4318 | OpenTelemetry Collector — receives OTLP telemetry and exports through the Azure Monitor exporter | Shared | OTel Contrib 0.158.0 |
+| Telemetry Baseline | `telemetry-baseline` | — | Repo-owned probe that observes real HTTP responses from the three service APIs and emits correlated OTLP signals | Shared | Node.js 22.14 |
 | RabbitMQ | `rabbitmq` | 5672 / 15672 | Event bus for bulk tank events, order alerts, dispatch coordination | Shared | RabbitMQ 3.13 |
 | MongoDB | `mongodb` | 27017 | Stores bulk tank readings, delivery/order records, customer accounts | Shared | MongoDB 7.0 |
 
@@ -64,19 +65,21 @@ Order Service ──→ RabbitMQ (consumes tank-events) ──→ MongoDB (persi
 Inventory Service ──→ (standalone catalog, no DB dependency)
 Usage Simulator ──→ Tank Monitor (HTTP, generates load)
 Order Worker ──→ Order Service (disabled, 0 replicas)
-OTel Collector ──→ App Insights (exports traces/metrics/logs)
-All services ──→ OTel Collector (OTLP endpoint for telemetry)
+Telemetry Baseline ──→ Tank Monitor, Inventory Service, Order Service (real HTTP health requests with W3C trace context)
+Telemetry Baseline ──→ OTel Collector ──→ workspace-based Application Insights (traces/metrics/logs)
 ```
 
 **Critical dependency chain:** Usage Simulator → Tank Monitor → RabbitMQ → Order Service → MongoDB. If MongoDB goes down, Order Service fails, causing cascading failures visible in Customer Portal and Dispatch Console.
 
 ### Telemetry & Instrumentation
 
-- All application pods have `APPLICATIONINSIGHTS_CONNECTION_STRING` via `propane-telemetry-config` ConfigMap
-- Each service has `OTEL_SERVICE_NAME` set for distributed tracing identity
+- The third-party service images are not represented as natively instrumented. Their `OTEL_*` environment variables alone do not prove SDK instrumentation.
+- The repo-owned `telemetry-baseline` probe makes real in-cluster HTTP calls and emits telemetry based on the actual responses and measured latency.
+- The probe propagates a W3C `traceparent` header and emits server/request plus child client/dependency spans with the same trace ID.
+- Probe resources include `service.name`, `service.namespace=propane`, `deployment.environment=demo`, `scenario.id`, `run.correlation_id`, and `transaction.id`.
 - An **OpenTelemetry Collector** (`otel-collector`) runs in-cluster receiving OTLP (gRPC:4317, HTTP:4318) and scraping Prometheus metrics from services
-- The OTel Collector exports traces/metrics/logs to Application Insights and stdout (captured by Container Insights → Log Analytics)
-- The deploy script injects the real App Insights connection string post-deployment via `kubectl create configmap --dry-run=client | kubectl apply`
+- The collector's `azuremonitor` exporter sends traces, metrics, and logs to workspace-based Application Insights. A `debug` exporter is defined for opt-in diagnostics but is not enabled in baseline pipelines.
+- The connection string comes only from the `application-insights-connection` Kubernetes Secret. It is never stored in a ConfigMap.
 
 ### Storage
 
@@ -92,10 +95,48 @@ All services ──→ OTel Collector (OTLP endpoint for telemetry)
 ## Where Logs Are Stored
 
 - **Container logs:** Azure Log Analytics workspace via Container Insights (AKS monitoring addon). Tables: `ContainerLogV2`, `KubeEvents`, `KubePodInventory`, `KubeNodeInventory`, `Perf`
-- **Application telemetry:** Application Insights (workspace-based, ingests into the same Log Analytics workspace). Tables: `requests`, `dependencies`, `exceptions`, `traces`, `customMetrics`
+- **Application telemetry:** Application Insights (workspace-based, ingests into the same Log Analytics workspace). Tables: `AppRequests`, `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`
 - **AKS control plane logs:** Sent to Log Analytics via diagnostic settings (kube-apiserver, kube-controller-manager, kube-scheduler, kube-audit-admin, guard, cloud-controller-manager)
 - **Prometheus metrics:** Azure Monitor Workspace, viewable in Managed Grafana
-- **In-cluster telemetry pipeline:** OpenTelemetry Collector receives OTLP from application pods and writes structured logs to stdout, which Container Insights captures and sends to Log Analytics
+- **In-cluster telemetry pipeline:** OpenTelemetry Collector receives the probe's OTLP signals and exports them through `azuremonitor`; the defined `debug` exporter is disabled in baseline pipelines.
+
+### Proving Fresh Correlation
+
+Run `scripts/validate-telemetry.ps1`. It creates a known transaction ID, makes real calls to all three APIs, records one controlled HTTP failure and a Kubernetes event, then polls for at most five minutes. It fails on timeout, stale/no data, a missing service, or an operation-ID mismatch.
+
+```kql
+let transactionId = "<32-lowercase-hex-id-from-validation>";
+let cutoff = ago(5m);
+let requests = AppRequests
+| where TimeGenerated >= cutoff
+| where tostring(Properties["transaction.id"]) == transactionId;
+let dependencies = AppDependencies
+| where TimeGenerated >= cutoff
+| where tostring(Properties["transaction.id"]) == transactionId;
+requests
+| project RequestTime=TimeGenerated, OperationId, RequestName=Name, RequestRole=AppRoleName
+| join kind=inner (
+    dependencies
+    | project DependencyTime=TimeGenerated, OperationId, DependencyName=Name, Target, DependencyRole=AppRoleName
+) on OperationId
+```
+
+```kql
+let transactionId = "<32-lowercase-hex-id-from-validation>";
+union
+    (AppExceptions | project TimeGenerated, Signal="exception", OperationId, Properties),
+    (AppTraces | project TimeGenerated, Signal="trace", OperationId, Properties)
+| where TimeGenerated >= ago(5m)
+| where tostring(Properties["transaction.id"]) == transactionId
+| union (
+    KubeEvents
+    | where TimeGenerated >= ago(5m)
+    | where Namespace == "propane" and Reason == "ControlledTelemetryFailure"
+    | where Message has transactionId
+    | project TimeGenerated, Signal="kubernetes-event", OperationId="", Properties=pack("message", Message)
+)
+| order by TimeGenerated asc
+```
 
 ### Querying Logs in Log Analytics
 
@@ -317,7 +358,7 @@ kubectl describe svc tank-monitor -n propane
 - **Resource group naming:** `rg-srelab-{region}` (e.g., `rg-srelab-eastus2`)
 - **AKS cluster naming:** `aks-srelab-{suffix}`
 - **Resources deployed:** AKS, Azure Container Registry, Key Vault, Log Analytics, Application Insights, OpenTelemetry Collector (in-cluster), Azure Monitor Workspace, Managed Grafana, SRE Agent
-- **Telemetry ConfigMap:** `propane-telemetry-config` in namespace `propane` — holds `APPLICATIONINSIGHTS_CONNECTION_STRING`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and sampling config. Injected with real App Insights connection string by deploy.ps1 post-deployment.
+- **Telemetry configuration:** `propane-telemetry-config` contains only non-secret OTLP endpoint and sampling settings. `application-insights-connection` is a Kubernetes Secret containing the collector connection string.
 - **Tags on all resources:** `workload=amerigas-propane-demo`, `environment=demo`, `SecurityControl=Ignore`
 - **Supported regions:** East US 2, Sweden Central, Australia East
 

@@ -46,7 +46,7 @@ metadata:
 
 ---
 # =============================================================================
-# Telemetry Configuration - App Insights + OpenTelemetry
+# Telemetry Configuration - non-secret OpenTelemetry settings
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -56,7 +56,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: amerigas-propane-demo
 data:
-  APPLICATIONINSIGHTS_CONNECTION_STRING: "PLACEHOLDER_INJECT_AT_DEPLOY"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.propane.svc.cluster.local:4318"
   OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
   OTEL_TRACES_SAMPLER_ARG: "0.5"
@@ -2827,7 +2826,7 @@ spec:
 
 ---
 # =============================================================================
-# OpenTelemetry Collector - Telemetry pipeline (App Insights + ADX via stdout)
+# OpenTelemetry Collector - telemetry pipeline to workspace-based App Insights
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -2875,26 +2874,29 @@ data:
             value: propane
             action: upsert
     exporters:
-      logging:
-        loglevel: info
-      otlp/appinsights:
-        endpoint: "${APPLICATIONINSIGHTS_CONNECTION_STRING}"
-        headers:
-          "Content-Type": "application/json"
+      azuremonitor:
+        connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+        spaneventsenabled: true
+        exception_events_enabled: true
+        sending_queue:
+          enabled: true
+          queue_size: 2048
+      debug:
+        verbosity: basic
     service:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch, resource]
-          exporters: [logging]
+          processors: [memory_limiter, resource, batch]
+          exporters: [azuremonitor]
         metrics:
           receivers: [otlp, prometheus]
-          processors: [memory_limiter, batch, resource]
-          exporters: [logging]
+          processors: [memory_limiter, resource, batch]
+          exporters: [azuremonitor]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, batch, resource]
-          exporters: [logging]
+          processors: [memory_limiter, resource, batch]
+          exporters: [azuremonitor]
 
 ---
 apiVersion: apps/v1
@@ -2918,7 +2920,7 @@ spec:
         nodepool-type: user
       containers:
         - name: otel-collector
-          image: otel/opentelemetry-collector-contrib:0.96.0
+          image: otel/opentelemetry-collector-contrib:0.158.0
           args: ["--config=/etc/otel/otel-config.yaml"]
           ports:
             - containerPort: 4317
@@ -2932,9 +2934,12 @@ spec:
             limits:
               memory: "256Mi"
               cpu: "200m"
-          envFrom:
-            - configMapRef:
-                name: propane-telemetry-config
+          env:
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: application-insights-connection
+                  key: connection-string
           volumeMounts:
             - name: config
               mountPath: /etc/otel
@@ -2959,6 +2964,64 @@ spec:
     - name: otlp-http
       port: 4318
       targetPort: 4318
+
+---
+# =============================================================================
+# Synthetic telemetry probe - observes real service responses and emits OTLP
+# Domain: Shared
+# The telemetry-probe-source ConfigMap is generated from the repo-owned
+# tools/telemetry-probe/probe.js by scripts/deploy.ps1.
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: telemetry-baseline
+  namespace: propane
+  labels:
+    app: telemetry-baseline
+    app.kubernetes.io/part-of: amerigas-propane-demo
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app: telemetry-baseline
+            sre-demo: breakable
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            nodepool-type: user
+          containers:
+            - name: telemetry-probe
+              image: node:22.14.0-alpine
+              command: ["node", "/opt/telemetry/probe.js"]
+              env:
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: propane-telemetry-config
+                      key: OTEL_EXPORTER_OTLP_ENDPOINT
+                - name: RUN_CORRELATION_ID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+                - name: SCENARIO_ID
+                  value: observability-baseline
+              volumeMounts:
+                - name: probe-source
+                  mountPath: /opt/telemetry
+                  readOnly: true
+          volumes:
+            - name: probe-source
+              configMap:
+                name: telemetry-probe-source
 
 ---
 # =============================================================================

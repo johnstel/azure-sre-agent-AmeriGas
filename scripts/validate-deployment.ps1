@@ -35,7 +35,11 @@ param(
     [string]$ExpectedSubscriptionId,
 
     [Parameter()]
-    [string]$KnowledgeFilePath = (Join-Path $PSScriptRoot ".." "docs/sre-agent-knowledge.md")
+    [string]$KnowledgeFilePath = (Join-Path $PSScriptRoot ".." "docs/sre-agent-knowledge.md"),
+
+    [Parameter()]
+    [ValidateRange(1, 900)]
+    [int]$TelemetryTimeoutSeconds = 300
 )
 
 $ErrorActionPreference = 'Continue'
@@ -712,6 +716,23 @@ else {
     else {
         Write-Host "  ℹ️  No Container Insights agent detected" -ForegroundColor Gray
     }
+}
+
+$totalChecks++
+$telemetryValidationScript = Join-Path $PSScriptRoot 'validate-telemetry.ps1'
+try {
+    & $telemetryValidationScript `
+        -ResourceGroupName $ResourceGroupName `
+        -TimeoutSeconds $TelemetryTimeoutSeconds
+    if ($LASTEXITCODE -ne 0) {
+        throw "Telemetry validation exited with code $LASTEXITCODE."
+    }
+    if (Write-Check "Fresh correlated Application Insights telemetry" $true "Requests, dependencies, traces, metrics, exception, and Kubernetes event are correlated") {
+        $passedChecks++
+    }
+}
+catch {
+    Write-Check "Fresh correlated Application Insights telemetry" $false $_.Exception.Message | Out-Null
 }
 
 # =============================================================================

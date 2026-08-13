@@ -20,6 +20,8 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | Service Mismatch | `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
 | Dependency Latency | `dependency-latency.yaml` | Shared | Order checkout pricing-lookup dependency gradually slows down after an emergency config change while all pods stay Ready | SLO/trace/metric correlation, config-change clue |
 
+> **Telemetry proof is not a break scenario.** `scripts/validate-telemetry.ps1` makes a controlled failing HTTP request, emits an observed exception, and creates a correlated Kubernetes event without changing the healthy baseline. Use its transaction ID to verify `AppRequests`, `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`, and `KubeEvents` before applying any scenario.
+
 ## Scenario Details
 
 ---
