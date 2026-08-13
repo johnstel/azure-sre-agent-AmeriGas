@@ -822,7 +822,21 @@ function createPresenterStateMachine(options = {}) {
     }
 
     const nextIndex = track.steps.findIndex((step) => step.id === current.currentStepId);
-    const nextStep = track.steps[nextIndex + 1] || null;
+    let nextStep = track.steps[nextIndex + 1] || null;
+    if (current.currentStepId === 'review-approval' && nextStep && nextStep.id === 'exact-remediation') {
+      const incident = getIncidentForTrustContext(current, trustedEvidence);
+      const milestones = Array.isArray(incident && incident.milestones) ? incident.milestones : [];
+      const exactActionKey = current.expectedActionKey || bindExpectedActionKey(nextStep, { ...current, currentStepId: nextStep.id }, trustedEvidence).expectedActionKey || null;
+      const hasExactRemediation = milestones.some((milestone) => {
+        if (!milestone || !milestone.data || !milestone.data.actionKey) return false;
+        if (exactActionKey && milestone.data.actionKey !== exactActionKey) return false;
+        const kinds = ['action_result', 'action_executed', 'remediation_executed'];
+        return kinds.includes(milestone.type) && (milestone.data.success === true || milestone.data.status === 'success');
+      });
+      if (!hasExactRemediation) {
+        nextStep = track.steps.find((step) => step.id === 'verified-recovery') || nextStep;
+      }
+    }
     const actionBinding = nextStep ? bindExpectedActionKey(nextStep, { ...current, currentStepId: nextStep.id }, trustedEvidence) : { expectedActionKey: null, expectedActionKeyRunCorrelationId: null, expectedActionKeyIncidentCorrelationId: null, expectedActionKeyScenarioId: null, expectedActionKeyStepId: null };
     const updated = {
       ...current,
