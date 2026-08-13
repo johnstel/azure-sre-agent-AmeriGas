@@ -45,6 +45,44 @@ header .meta .ctx{background:rgba(255,255,255,.12);padding:3px 10px;border-radiu
 .panel{background:var(--card);border:1px solid var(--card-border);border-radius:10px;padding:1rem;margin-bottom:1rem}
 .panel h2{font-size:1rem;margin-bottom:.75rem;display:flex;align-items:center;gap:.4rem;color:var(--orange)}
 
+/* ── Presenter Mode ───────────────────────────────────── */
+.presenter-shell{display:flex;flex-direction:column;gap:.8rem}
+.presenter-header{display:flex;align-items:center;justify-content:space-between;gap:.8rem;flex-wrap:wrap}
+.presenter-brand{display:flex;align-items:center;gap:.6rem;font-weight:700}
+.presenter-badges{display:flex;gap:.5rem;flex-wrap:wrap}
+.presenter-badge{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid var(--card-border);font-size:.72rem;background:var(--bg);color:var(--text-dim)}
+.presenter-product{background:rgba(88,166,255,.15);color:var(--cyan);border-color:rgba(88,166,255,.3)}
+.presenter-companion{background:rgba(63,185,80,.12);color:var(--green);border-color:rgba(63,185,80,.3)}
+.presenter-status{border-radius:8px;padding:.7rem .85rem;background:var(--bg);border:1px solid var(--card-border);font-size:.85rem;color:var(--text-dim)}
+.presenter-status.running{color:var(--yellow);border-color:rgba(210,153,34,.35)}
+.presenter-status.paused{color:var(--cyan);border-color:rgba(88,166,255,.35)}
+.presenter-status.complete{color:var(--green);border-color:rgba(63,185,80,.35)}
+.presenter-status.aborted{color:var(--red);border-color:rgba(248,81,73,.35)}
+.presenter-step-grid{display:grid;grid-template-columns:1.2fr .9fr;gap:.9rem}
+@media(max-width:900px){.presenter-step-grid{grid-template-columns:1fr}}
+.presenter-step-card,.presenter-track-card{background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.85rem}
+.presenter-step-card h3,.presenter-track-card h3{font-size:.9rem;color:var(--orange);margin-bottom:.5rem}
+.presenter-step-card ul{margin-left:1.2rem;color:var(--text-dim);font-size:.8rem;line-height:1.6}
+.presenter-step-card p{font-size:.82rem;color:var(--text-dim);line-height:1.6}
+.presenter-track-list{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.25rem}
+.presenter-track-button{background:var(--card);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:6px;font-weight:600;cursor:pointer}
+.presenter-track-button.active{background:rgba(255,105,0,.18);border-color:rgba(255,105,0,.4);color:var(--orange)}
+.presenter-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.presenter-actions button{padding:8px 14px;border-radius:6px;border:none;font-weight:700;font-size:.8rem;cursor:pointer}
+.presenter-actions .primary{background:var(--orange);color:#fff}
+.presenter-actions .secondary{background:var(--card-border);color:var(--text)}
+.presenter-actions button:disabled{opacity:.55;cursor:not-allowed}
+.presenter-notes{display:none;list-style:disc;padding-left:1.2rem;color:var(--text-dim);font-size:.8rem;line-height:1.6;margin-top:.35rem}
+.presenter-notes.visible{display:block}
+.presenter-meta{font-size:.75rem;color:var(--text-dim)}
+.presenter-step-list{display:flex;flex-direction:column;gap:.5rem;margin-top:.2rem}
+.presenter-step-item{padding:.5rem .6rem;border-radius:6px;background:var(--card);border:1px solid var(--card-border);font-size:.78rem;color:var(--text-dim)}
+.presenter-step-item.current{border-color:rgba(255,105,0,.5);color:var(--orange)}
+.presenter-step-item.done{border-color:rgba(63,185,80,.4);color:var(--green)}
+.presenter-step-item.locked{opacity:.6}
+.presenter-focus-label{font-size:.72rem;color:var(--text-dim);padding-top:.2rem}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
 /* ── Pod Table ─────────────────────────────────────────── */
 table{width:100%;border-collapse:collapse;font-size:.85rem}
 th{text-align:left;padding:8px 10px;border-bottom:2px solid var(--card-border);color:var(--text-dim);font-weight:600;text-transform:uppercase;font-size:.72rem;letter-spacing:.5px}
@@ -391,6 +429,52 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
         <button class="fix-btn secondary" id="incident-export-md" data-action="export-incident-md">📄 Export Markdown</button>
         <button class="fix-btn secondary" id="incident-export-json" data-action="export-incident-json">🧾 Export JSON</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Presenter Mode -->
+  <div class="panel" id="presenter-panel" aria-live="polite" aria-label="Presenter mode">
+    <h2>🎤 Presenter Mode</h2>
+    <div class="presenter-shell">
+      <div class="presenter-header">
+        <div class="presenter-brand">Guided demo experience</div>
+        <div class="presenter-badges">
+          <span class="presenter-badge presenter-product" id="presenter-product-label">Azure SRE Agent — cloud product</span>
+          <span class="presenter-badge presenter-companion" id="presenter-companion-label">Mission Control Copilot — local companion</span>
+          <span class="presenter-badge" id="presenter-track-label">No track active</span>
+        </div>
+      </div>
+      <div id="presenter-status" class="presenter-status">Idle</div>
+
+      <div class="presenter-step-grid">
+        <div class="presenter-step-card">
+          <h3 id="presenter-step-title">Ready to begin</h3>
+          <p id="presenter-step-summary">Choose a track, confirm the environment baseline, and continue once the server gate passes.</p>
+          <ul id="presenter-notes" class="presenter-notes visible"></ul>
+          <div class="presenter-meta" id="presenter-meta">No active run</div>
+        </div>
+        <div class="presenter-track-card">
+          <h3>Track selection</h3>
+          <div class="presenter-track-list">
+            <button class="presenter-track-button active" type="button" data-action="presenter-select-track" data-track-id="fast-wow">Fast Wow</button>
+            <button class="presenter-track-button" type="button" data-action="presenter-select-track" data-track-id="deep-dive">Deep Dive</button>
+          </div>
+          <div class="presenter-step-list" id="presenter-step-list"></div>
+        </div>
+      </div>
+
+      <div class="presenter-actions">
+        <button class="primary" type="button" data-action="presenter-start">▶ Start</button>
+        <button class="secondary" type="button" data-action="presenter-pause">⏸ Pause</button>
+        <button class="secondary" type="button" data-action="presenter-resume">▶ Resume</button>
+        <button class="secondary" type="button" data-action="presenter-continue">Continue</button>
+        <button class="secondary" type="button" data-action="presenter-toggle-notes">Notes</button>
+        <button class="secondary" type="button" data-action="presenter-focus-mode">Focus</button>
+        <button class="secondary" type="button" data-action="presenter-reconnect">Reconnect</button>
+        <button class="secondary" type="button" data-action="presenter-abort">Abort</button>
+        <button class="secondary" type="button" data-action="presenter-reset">Reset</button>
+      </div>
+      <div class="presenter-focus-label" id="presenter-focus-label">Focused panels: none</div>
     </div>
   </div>
 

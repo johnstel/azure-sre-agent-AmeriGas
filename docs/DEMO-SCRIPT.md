@@ -1,8 +1,11 @@
 # AmeriGas Propane — Azure SRE Agent Demo Script
 
 > **Audience:** AmeriGas IT / Operations leadership
-> **Duration:** ~30–45 minutes
+> **Duration:** ~30–45 minutes (rehearsal pacing; see note below)
+> **Primary flow:** Presenter mode (Fast Wow or Deep Dive) is the default guided demo path; operator mode remains available for ad hoc exploration.
 > **Prerequisites:** Infrastructure already deployed (`deploy`), all 9 services running in the `propane` namespace
+
+> **Important:** These timings are simulated presentation budgets for a rehearsal script. They are not measured from a live `rg-srelab` environment, and no live rehearsal cluster is implied by the current repo state.
 
 ---
 

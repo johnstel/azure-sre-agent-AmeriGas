@@ -2,6 +2,24 @@
 
 Mission Control now binds to loopback by default and requires a CSRF token for state-changing requests. Loopback detection uses the peer socket address only; forwarded headers such as X-Forwarded-For and X-Real-IP are ignored.
 
+## Presenter mode (primary demo experience)
+
+Mission Control includes a guided presenter mode with two shared-source tracks:
+
+- **Fast Wow** — short executive path designed to fit under seven minutes
+- **Deep Dive** — longer technical path for architecture, evidence, and incident review
+
+The presenter shell intentionally keeps the local Mission Control companion and the cloud Azure SRE Agent clearly separate. It uses the same server-authoritative state machine and validated track catalog for both routes instead of duplicating the flow in HTML or docs.
+
+> The target step budgets are simulated rehearsal pacing, not measured live durations. No claim is made that a live `rg-srelab` environment is currently available in this repo.
+
+## Data source and evidence rules
+
+- Presenter-track metadata is defined once in `presenter-tracks.json` and validated before use.
+- Step gates verify live run correlation and evidence parity instead of accepting stale callbacks from another run.
+- The scheduled-task evidence hook remains visibly unavailable until native evidence is supplied; it is explicitly shown as "Unavailable / requires scheduled-task setup."
+- Operator mode remains available for ad hoc exploration without being the primary demo path.
+
 ## Defaults
 
 - `MISSION_CONTROL_HOST` defaults to `127.0.0.1` unless `MISSION_CONTROL_ALLOW_REMOTE=true` is set.

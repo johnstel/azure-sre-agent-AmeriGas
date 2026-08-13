@@ -482,6 +482,239 @@ async function exportIncident(format) {
   });
 }
 
+/* ── Presenter Mode ─────────────────────────────────────── */
+let selectedPresenterTrackId = 'fast-wow';
+let presenterCatalog = null;
+let presenterState = null;
+
+function getPresenterTrackDefinition(trackId = selectedPresenterTrackId) {
+  if (!presenterCatalog || !presenterCatalog.catalog) return null;
+  const track = presenterCatalog.catalog.tracks.find((entry) => entry.id === trackId);
+  return track || null;
+}
+
+function getPresenterStepForState() {
+  const track = getPresenterTrackDefinition();
+  if (!track || !presenterState || !presenterState.currentStepId) return null;
+  return track.steps.find((step) => step.id === presenterState.currentStepId) || track.steps[0] || null;
+}
+
+function updatePresenterTrackButtons() {
+  const buttons = document.querySelectorAll('.presenter-track-button');
+  buttons.forEach((button) => {
+    const active = button.dataset.trackId === (presenterState && presenterState.trackId ? presenterState.trackId : selectedPresenterTrackId);
+    button.classList.toggle('active', active);
+  });
+}
+
+function renderPresenterState() {
+  const track = getPresenterTrackDefinition(presenterState && presenterState.trackId ? presenterState.trackId : selectedPresenterTrackId) || getPresenterTrackDefinition(selectedPresenterTrackId);
+  const currentStep = getPresenterStepForState() || (track && track.steps[0]) || null;
+  const statusEl = document.getElementById('presenter-status');
+  const titleEl = document.getElementById('presenter-step-title');
+  const summaryEl = document.getElementById('presenter-step-summary');
+  const notesEl = document.getElementById('presenter-notes');
+  const metaEl = document.getElementById('presenter-meta');
+  const trackLabelEl = document.getElementById('presenter-track-label');
+  const productEl = document.getElementById('presenter-product-label');
+  const companionEl = document.getElementById('presenter-companion-label');
+  const focusEl = document.getElementById('presenter-focus-label');
+  const stepListEl = document.getElementById('presenter-step-list');
+
+  if (!track || !currentStep) {
+    if (statusEl) statusEl.textContent = 'No active track';
+    if (statusEl) statusEl.className = 'presenter-status';
+    return;
+  }
+
+  const stateStatus = (presenterState && presenterState.status) || 'idle';
+  statusEl.textContent = stateStatus === 'idle' ? 'Idle — ready for a guided run' : stateStatus.charAt(0).toUpperCase() + stateStatus.slice(1);
+  statusEl.className = 'presenter-status ' + (stateStatus === 'running' ? 'running' : stateStatus === 'paused' ? 'paused' : stateStatus === 'complete' ? 'complete' : stateStatus === 'aborted' ? 'aborted' : '');
+
+  titleEl.textContent = currentStep.title;
+  summaryEl.textContent = currentStep.audienceTakeaway || currentStep.summary || 'Continue when the current gate passes.';
+  trackLabelEl.textContent = track.title;
+  const productText = currentStep.productSurface === 'azure-sre-agent-cloud' ? 'Azure SRE Agent — cloud product' : currentStep.productSurface === 'mission-control-local' ? 'Mission Control Copilot — local companion' : 'Operator';
+  if (productEl) productEl.textContent = productText;
+  if (companionEl) companionEl.textContent = 'Mission Control Copilot — local companion';
+
+  const notes = Array.isArray(currentStep.presenterNotes) ? currentStep.presenterNotes : [];
+  notesEl.replaceChildren(...notes.map((note) => {
+    const item = document.createElement('li');
+    item.textContent = note;
+    return item;
+  }));
+  notesEl.classList.toggle('visible', notes.length > 0);
+
+  const correlation = presenterState && presenterState.correlationId ? presenterState.correlationId : 'not started';
+  metaEl.textContent = `Track: ${track.title} · Step ${track.steps.findIndex((item) => item.id === currentStep.id) + 1}/${track.steps.length} · Correlation: ${correlation}`;
+
+  const focusedPanels = (presenterState && Array.isArray(presenterState.focusedPanels) && presenterState.focusedPanels.length) ? presenterState.focusedPanels : [];
+  focusEl.textContent = 'Focused panels: ' + (focusedPanels.length ? focusedPanels.join(', ') : 'none');
+
+  stepListEl.replaceChildren(...track.steps.map((step) => {
+    const item = document.createElement('div');
+    const isCurrent = step.id === currentStep.id;
+    const done = Array.isArray(presenterState && presenterState.completedSteps) && presenterState.completedSteps.includes(step.id);
+    item.className = 'presenter-step-item ' + (isCurrent ? 'current' : done ? 'done' : 'locked');
+    item.textContent = `${step.sequence}. ${step.title}`;
+    return item;
+  }));
+
+  const controls = {
+    start: document.querySelector('[data-action="presenter-start"]'),
+    pause: document.querySelector('[data-action="presenter-pause"]'),
+    resume: document.querySelector('[data-action="presenter-resume"]'),
+    continue: document.querySelector('[data-action="presenter-continue"]'),
+    notes: document.querySelector('[data-action="presenter-toggle-notes"]'),
+    focus: document.querySelector('[data-action="presenter-focus-mode"]'),
+    reconnect: document.querySelector('[data-action="presenter-reconnect"]'),
+    abort: document.querySelector('[data-action="presenter-abort"]'),
+    reset: document.querySelector('[data-action="presenter-reset"]'),
+  };
+
+  const hasRun = Boolean(presenterState && presenterState.trackId);
+  const isRunning = stateStatus === 'running';
+  const isPaused = stateStatus === 'paused';
+  const isCompleted = stateStatus === 'complete';
+  const isAborted = stateStatus === 'aborted';
+
+  if (controls.start) {
+    controls.start.disabled = Boolean(hasRun && !['idle', 'complete', 'aborted'].includes(stateStatus));
+  }
+  if (controls.pause) controls.pause.disabled = !isRunning;
+  if (controls.resume) controls.resume.disabled = !isPaused;
+  if (controls.continue) controls.continue.disabled = !hasRun || !isRunning || isCompleted || isAborted || !currentStep;
+  if (controls.notes) controls.notes.disabled = !hasRun;
+  if (controls.focus) controls.focus.disabled = !hasRun;
+  if (controls.reconnect) controls.reconnect.disabled = !hasRun;
+  if (controls.abort) controls.abort.disabled = !hasRun || isAborted;
+  if (controls.reset) controls.reset.disabled = !hasRun;
+
+  updatePresenterTrackButtons();
+}
+
+async function runPresenterAction(path, payload = {}) {
+  try {
+    const response = await apiClient.request('presenter/' + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      toast(data.error || 'Presenter action failed', 'error');
+      return null;
+    }
+    if (data.state) {
+      presenterState = data.state;
+      if (presenterState && presenterState.trackId) {
+        selectedPresenterTrackId = presenterState.trackId;
+      }
+    }
+    renderPresenterState();
+    return data;
+  } catch (error) {
+    toast('Presenter action failed: ' + error.message, 'error');
+    return null;
+  }
+}
+
+async function startPresenterTrack() {
+  const trackId = presenterState && presenterState.trackId ? presenterState.trackId : selectedPresenterTrackId;
+  if (!trackId) {
+    toast('Select a presenter track before starting', 'error');
+    return;
+  }
+  const payload = {
+    trackId,
+    notesVisible: true,
+    focusMode: false,
+    correlationId: presenterState && presenterState.correlationId ? presenterState.correlationId : null,
+  };
+  const result = await runPresenterAction('start', payload);
+  if (result) {
+    toast('Presenter track started: ' + trackId);
+  }
+}
+
+async function continuePresenterTrack() {
+  if (!presenterState || presenterState.status !== 'running') {
+    toast('Continue is blocked until the current gate passes', 'error');
+    return;
+  }
+  const result = await runPresenterAction('continue', {
+    notesVisible: true,
+    focusMode: Boolean(presenterState && presenterState.focusMode),
+    correlationId: presenterState && presenterState.correlationId,
+    incidentCorrelationId: presenterState && presenterState.incidentCorrelationId,
+    scenarioId: presenterState && presenterState.scenarioId,
+  });
+  if (result) {
+    toast('Presenter step advanced');
+  }
+}
+
+async function pausePresenterTrack() {
+  if (!presenterState || presenterState.status !== 'running') return;
+  await runPresenterAction('pause', { notesVisible: true, focusMode: Boolean(presenterState && presenterState.focusMode) });
+}
+
+async function resumePresenterTrack() {
+  if (!presenterState || presenterState.status !== 'paused') return;
+  await runPresenterAction('resume', { notesVisible: true, focusMode: Boolean(presenterState && presenterState.focusMode) });
+}
+
+async function abortPresenterTrack() {
+  if (!presenterState || !presenterState.trackId) return;
+  await runPresenterAction('abort', { notesVisible: true, focusMode: Boolean(presenterState && presenterState.focusMode) });
+}
+
+async function resetPresenterTrack() {
+  const trackId = presenterState && presenterState.trackId ? presenterState.trackId : selectedPresenterTrackId;
+  if (!trackId) return;
+  await runPresenterAction('reset', { trackId, notesVisible: false, focusMode: false });
+}
+
+async function reconnectPresenterTrack() {
+  const result = await runPresenterAction('reconnect', { notesVisible: true, focusMode: Boolean(presenterState && presenterState.focusMode) });
+  if (result) {
+    toast('Presenter state restored');
+  }
+}
+
+function togglePresenterNotes() {
+  if (!presenterState || !presenterState.trackId) return;
+  const next = !(presenterState.notesVisible === true);
+  presenterState = { ...presenterState, notesVisible: next };
+  renderPresenterState();
+  const notesEl = document.getElementById('presenter-notes');
+  if (notesEl) notesEl.classList.toggle('visible', next);
+}
+
+function togglePresenterFocusMode() {
+  if (!presenterState || !presenterState.trackId) return;
+  const nextMode = !(presenterState.focusMode === true);
+  presenterState = { ...presenterState, focusMode: nextMode, focusedPanels: nextMode ? ['presenter-panel', 'incident-panel'] : [] };
+  renderPresenterState();
+}
+
+async function refreshPresenterStateOnLoad() {
+  try {
+    const response = await apiClient.request('presenter/catalog');
+    presenterCatalog = await response.json();
+    const stateResponse = await apiClient.request('presenter/state');
+    const data = await stateResponse.json();
+    presenterState = data.state || null;
+    if (presenterState && presenterState.trackId) {
+      selectedPresenterTrackId = presenterState.trackId;
+    }
+    renderPresenterState();
+  } catch (error) {
+    console.warn('Presenter catalog unavailable:', error.message);
+  }
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 buildScenarioGrid();
 refreshPods();
@@ -494,6 +727,7 @@ refreshNetworkPolicies();
 refreshEndpoints();
 refreshActiveIncident();
 refreshRecentIncidents();
+refreshPresenterStateOnLoad();
 
 setInterval(refreshPods, 5000);
 setInterval(refreshEvents, 10000);
@@ -869,6 +1103,47 @@ function handleGlobalClick(event) {
       break;
     case 'export-incident-json':
       exportIncident('json');
+      break;
+    case 'presenter-select-track': {
+      const nextTrackId = actionEl.dataset.trackId || selectedPresenterTrackId;
+      if (!nextTrackId) break;
+      if (presenterState && ['running','paused','complete','aborted'].includes(presenterState.status)) {
+        toast('Reset or reconnect the current presenter run before changing tracks', 'error');
+        break;
+      }
+      selectedPresenterTrackId = nextTrackId;
+      if (presenterState) {
+        presenterState = { ...presenterState, trackId: nextTrackId, status: 'idle', currentStepId: null, focusedPanels: [] };
+      }
+      renderPresenterState();
+      break;
+    }
+    case 'presenter-start':
+      startPresenterTrack();
+      break;
+    case 'presenter-continue':
+      continuePresenterTrack();
+      break;
+    case 'presenter-pause':
+      pausePresenterTrack();
+      break;
+    case 'presenter-resume':
+      resumePresenterTrack();
+      break;
+    case 'presenter-abort':
+      abortPresenterTrack();
+      break;
+    case 'presenter-reset':
+      resetPresenterTrack();
+      break;
+    case 'presenter-reconnect':
+      reconnectPresenterTrack();
+      break;
+    case 'presenter-toggle-notes':
+      togglePresenterNotes();
+      break;
+    case 'presenter-focus-mode':
+      togglePresenterFocusMode();
       break;
     case 'submit-remote-auth':
       submitRemoteAuthToken();

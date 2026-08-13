@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('node:fs');
 const { execFile, spawn } = require('child_process');
 const path = require('path');
 const util = require('util');
@@ -22,6 +23,7 @@ const { createIncidentStore } = require('./incident-store');
 const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
+const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
 const operationLifecycle = require('./operation-lifecycle');
 
 const execFileAsync = util.promisify(execFile);
@@ -97,6 +99,176 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/csrf-token', (req, res) => {
   res.json({ token: csrfTokenStore.issue() });
+});
+
+const PRESENT_SESSION_FORBIDDEN_FIELDS = new Set([
+  'gateContext',
+  'baselineReady',
+  'ready',
+  'readinessPass',
+  'baselineHealthPass',
+  'scenarioActive',
+  'nativeEvidenceAvailable',
+  'nativeEvidenceStatus',
+  'approved',
+  'runApproved',
+  'actionKey',
+  'expectedActionKey',
+  'expectedActionIdentity',
+  'actionId',
+  'selectedAction',
+  'remediationExecuted',
+  'actionExecuted',
+  'executed',
+  'recoveryVerified',
+  'recovered',
+  'assertionPassed',
+  'valueSummaryRecorded',
+  'valueEvidenceObserved',
+  'incidentValueRecorded',
+  'scheduledTaskAvailable',
+  'force',
+  'forceBypass',
+  'focusedPanels',
+  'approvalPassed',
+  'approvalDenied',
+  'approvalExpired',
+  'approvalStatus',
+  'recoveryStatus',
+  'evidenceReady',
+  'evidenceAvailable',
+  'evidenceStatus',
+  'valueRecorded',
+  'valueStatus',
+  'bypass',
+  'serverProof',
+  'serverState',
+  'trustedState',
+  'proof',
+  'skipGate',
+  'approval',
+  'recovery',
+  'evidence',
+  'value',
+]);
+
+const presenterStatePath = path.resolve(__dirname, '.data', 'presenter-state.json');
+const presenterStateStore = {
+  read() {
+    try {
+      const raw = fs.readFileSync(presenterStatePath, 'utf8');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  write(state) {
+    try {
+      fs.mkdirSync(path.dirname(presenterStatePath), { recursive: true });
+      fs.writeFileSync(presenterStatePath, JSON.stringify(state, null, 2));
+    } catch (error) {
+      console.error('Presenter state persist failed:', error.message);
+    }
+    return state;
+  },
+};
+const presenterStateMachine = createPresenterStateMachine({
+  storage: presenterStateStore,
+  catalog: TRACK_CATALOG,
+});
+
+app.get('/api/presenter/catalog', (req, res) => {
+  const validation = validatePresenterTracks(TRACK_CATALOG);
+  res.json({
+    valid: validation.valid,
+    errors: validation.errors,
+    catalog: TRACK_CATALOG,
+  });
+});
+
+app.get('/api/presenter/state', (req, res) => {
+  res.json({ state: presenterStateMachine.getState() });
+});
+
+function sanitizePresenterRequestBody(body = {}) {
+  const clean = {};
+  const rejected = [];
+  for (const [key, value] of Object.entries(body || {})) {
+    if (PRESENT_SESSION_FORBIDDEN_FIELDS.has(key)) {
+      rejected.push(key);
+      continue;
+    }
+    if (key === 'focusMode' || key === 'notesVisible' || key === 'trackId' || key === 'stepId' || key === 'correlationId' || key === 'incidentCorrelationId' || key === 'scenarioId' || key === 'lastEvent') {
+      clean[key] = value;
+    }
+  }
+  return { clean, rejected };
+}
+
+function handlePresenterMutation(req, res, operation) {
+  const body = req.body || {};
+  const { clean, rejected } = sanitizePresenterRequestBody(body);
+  if (rejected.length > 0) {
+    return res.status(400).json({
+      error: 'Presenter request contains blocked client-supplied gate truth',
+      rejected,
+      state: presenterStateMachine.getState(),
+    });
+  }
+
+  const context = {
+    trackId: clean.trackId,
+    stepId: clean.stepId,
+    scenarioId: clean.scenarioId,
+    correlationId: clean.correlationId,
+    incidentCorrelationId: clean.incidentCorrelationId,
+    notesVisible: clean.notesVisible,
+    focusMode: clean.focusMode,
+    lastEvent: clean.lastEvent,
+  };
+
+  const result = operation(context);
+  if (!result || !('ok' in result)) {
+    return res.status(500).json({ error: 'Presenter operation did not return a valid response' });
+  }
+  if (!result.ok) {
+    return res.status(400).json({ error: result.reason || 'Presenter action failed', state: result.state || presenterStateMachine.getState() });
+  }
+  return res.json({ ok: true, state: result.state, reason: result.reason });
+}
+
+app.post('/api/presenter/start', (req, res) => {
+  const { trackId, ...body } = req.body || {};
+  if (!trackId || typeof trackId !== 'string') {
+    return res.status(400).json({ error: 'trackId is required' });
+  }
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.startTrack(trackId, { ...context, ...body }));
+});
+
+app.post('/api/presenter/continue', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.continueStep(context));
+});
+
+app.post('/api/presenter/pause', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.pause(context));
+});
+
+app.post('/api/presenter/resume', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.resume(context));
+});
+
+app.post('/api/presenter/abort', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.abort(context));
+});
+
+app.post('/api/presenter/reset', (req, res) => {
+  const body = req.body || {};
+  const trackId = body.trackId;
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.reset({ ...context, trackId }));
+});
+
+app.post('/api/presenter/reconnect', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.reconnect(context));
 });
 
 const IS_WIN = process.platform === 'win32';
@@ -670,37 +842,45 @@ async function preflight() {
   return checks;
 }
 
-(async () => {
-  console.log('');
-  console.log('  🔥 AmeriGas Propane — Mission Control');
-  console.log('  ─────────────────────────────────────');
-  console.log('  Powered by GitHub Copilot SDK');
-  console.log('');
-  const checks = await preflight();
-  checks.forEach(c => console.log(c));
-
-  const rehydratedCount = rehydratePendingAssertions();
-  if (rehydratedCount > 0) {
-    console.log(`  ⏳ Rehydrated ${rehydratedCount} pending post-action assertion(s) from a prior run`);
-  }
-
-  console.log('  ⏳ Initializing Copilot SDK...');
-  try {
-    copilotClient = new CopilotClient({ logLevel: 'error' });
-    await copilotClient.start();
-    copilotSession = await createCopilotSession();
-    copilotReady = true;
-    console.log('  ✅ Copilot SDK initialized');
-  } catch (err) {
-    copilotError = err.message;
-    console.log(`  ⚠️  Copilot SDK failed: ${err.message}`);
-  }
-
-  app.listen(PORT, HOST, () => {
+if (require.main === module) {
+  (async () => {
     console.log('');
-    console.log(`  🚀 Dashboard → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
+    console.log('  🔥 AmeriGas Propane — Mission Control');
+    console.log('  ─────────────────────────────────────');
+    console.log('  Powered by GitHub Copilot SDK');
     console.log('');
-  });
-})();
+    const checks = await preflight();
+    checks.forEach(c => console.log(c));
 
-module.exports = { app };
+    const rehydratedCount = rehydratePendingAssertions();
+    if (rehydratedCount > 0) {
+      console.log(`  ⏳ Rehydrated ${rehydratedCount} pending post-action assertion(s) from a prior run`);
+    }
+
+    console.log('  ⏳ Initializing Copilot SDK...');
+    try {
+      copilotClient = new CopilotClient({ logLevel: 'error' });
+      await copilotClient.start();
+      copilotSession = await createCopilotSession();
+      copilotReady = true;
+      console.log('  ✅ Copilot SDK initialized');
+    } catch (err) {
+      copilotError = err.message;
+      console.log(`  ⚠️  Copilot SDK failed: ${err.message}`);
+    }
+
+    app.listen(PORT, HOST, () => {
+      console.log('');
+      console.log(`  🚀 Dashboard → http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`);
+      console.log('');
+    });
+  })();
+}
+
+module.exports = {
+  app,
+  presenterStateMachine,
+  presenterStateStore,
+  sanitizePresenterRequestBody,
+  PRESENT_SESSION_FORBIDDEN_FIELDS,
+};

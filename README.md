@@ -2,6 +2,17 @@
 
 A fully automated Azure environment for demonstrating **Azure SRE Agent** capabilities using an **AmeriGas Propane Distribution Platform**. Deploy a breakable multi-service propane distribution application on AKS and let SRE Agent diagnose and fix the issues!
 
+## 🎤 Presenter Mode Is the Primary Demo Flow
+
+Mission Control includes a guided presenter mode with two product-aware tracks:
+
+- **Fast Wow** — a high-signal walkthrough under 7 minutes for executive or stakeholder demos
+- **Deep Dive** — a 20–25 minute architecture and incident walkthrough for technical audiences
+
+The presenter flow is the primary demo experience. Free-form operator mode remains available for ad hoc exploration, but it is intentionally not the default experience for live demos.
+
+> Timing values are rehearsal budgets for presentation flow only. They are not live measurements from a real rg-srelab environment, and no claim is made that the repo currently contains a live rehearsal cluster.
+
 ## 🎯 What This Lab Provides
 
 - **Azure Kubernetes Service (AKS)** with a multi-pod propane distribution platform
