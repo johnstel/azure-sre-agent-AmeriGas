@@ -26,6 +26,7 @@ const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
 const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
+const { evaluateReadiness } = require('./readiness');
 const operationLifecycle = require('./operation-lifecycle');
 
 const execFileAsync = util.promisify(execFile);
@@ -507,6 +508,77 @@ app.get('/api/cluster-info', async (req, res) => {
     const rgs = JSON.parse(rgRaw);
     res.json({ context, subscription: account.name || 'Unknown', subscriptionId: account.id || '', resourceGroup: rgs.length > 0 ? rgs[0].name : 'Not found', location: rgs.length > 0 ? rgs[0].location : '' });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+async function resolveAuthorizedReadinessScope(req) {
+  const [context, accountRaw, rgRaw] = await Promise.all([
+    kubectl('config', 'current-context').then((s) => s.trim()).catch(() => 'No cluster'),
+    az('account', 'show', '-o', 'json').catch(() => '{}'),
+    az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
+  ]);
+
+  const account = JSON.parse(accountRaw || '{}');
+  const rgs = JSON.parse(rgRaw || '[]');
+  const serverScope = {
+    context,
+    subscriptionId: account.id || '',
+    resourceGroupName: rgs.length > 0 ? rgs[0].name : '',
+    profile: String(req.query.profile || process.env.MISSION_CONTROL_PROFILE || 'default').trim() || 'default',
+    runId: String(req.query.runId || process.env.MISSION_CONTROL_RUN_ID || 'mission-control').trim() || 'mission-control',
+    timeoutMs: Number(req.query.timeoutMs || 90000),
+  };
+
+  const suppliedSubscription = (req.query.subscriptionId || req.query.subscription || '').trim();
+  const suppliedResourceGroup = (req.query.resourceGroupName || req.query.resourceGroup || '').trim();
+
+  if (suppliedSubscription && serverScope.subscriptionId && suppliedSubscription !== serverScope.subscriptionId) {
+    serverScope.subscriptionId = serverScope.subscriptionId;
+  }
+  if (suppliedResourceGroup && serverScope.resourceGroupName && suppliedResourceGroup !== serverScope.resourceGroupName) {
+    serverScope.resourceGroupName = serverScope.resourceGroupName;
+  }
+
+  return serverScope;
+}
+
+app.get('/api/readiness', async (req, res) => {
+  try {
+    const scope = await resolveAuthorizedReadinessScope(req);
+    const result = await evaluateReadiness({
+      subscriptionId: scope.subscriptionId,
+      resourceGroupName: scope.resourceGroupName,
+      profile: scope.profile,
+      runId: scope.runId,
+      timeoutMs: scope.timeoutMs,
+      requireMissionControl: req.query.requireMissionControl !== 'false',
+      requireNativeSreAgent: req.query.requireNativeSreAgent === 'true',
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      schemaVersion: 1,
+      category: 'demo-readiness',
+      status: 'blocked',
+      blocking: true,
+      observedAt: new Date().toISOString(),
+      duration: 0,
+      summary: 'Mission Control failed to evaluate demo readiness.',
+      checks: [{
+        id: 'api-readiness-failure',
+        category: 'api',
+        status: 'fail',
+        blocking: true,
+        observedAt: new Date().toISOString(),
+        duration: 0,
+        evidence: { message: error && error.message ? error.message : 'readiness evaluation failed' },
+        remediation: 'Verify the Azure context and rerun the readiness check.',
+      }],
+    });
+  }
+});
+
+app.get('/api/demo-readiness', async (req, res) => {
+  return app._router.handle(req, res);
 });
 
 // --- Break / Fix Endpoints ---
