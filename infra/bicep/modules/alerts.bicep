@@ -1,7 +1,7 @@
 // =============================================================================
 // Alerts Module
 // =============================================================================
-// Deploys baseline Azure Monitor scheduled query alerts for the AmeriGas Propane
+// Deploys baseline Azure Monitor scheduled query alerts for the ZavaGas Propane
 // platform. These alerts can be connected to action groups for paging/incident
 // workflows.
 // =============================================================================
@@ -31,7 +31,7 @@ param deployStandardAlerts bool = true
 param deployMongoDbDownDemoAlert bool = false
 
 @description('Deterministic display title for the demo MongoDB-down alert. The Azure SRE Agent response plan (bootstrap-sre-agent-response-plan.ps1) filters incidents on this exact title plus the severity below, so it must stay in sync with that script and with docs/sre-agent-response-plans.')
-param mongoDbDownDemoAlertTitle string = 'AmeriGas Propane Demo - MongoDB Down'
+param mongoDbDownDemoAlertTitle string = 'ZavaGas Propane Demo - MongoDB Down'
 
 @description('Severity for the demo MongoDB-down alert (0=critical .. 4=verbose). Must match the severity filter configured in the bootstrapped response plan.')
 @minValue(0)
@@ -42,7 +42,7 @@ var alertActions = {
   actionGroups: actionGroupIds
   customProperties: {
     source: 'azure-sre-agent-sandbox'
-    workload: 'amerigas-propane'
+    workload: 'zavagas-propane'
   }
 }
 
@@ -52,8 +52,8 @@ resource podRestartAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = i
   tags: tags
   kind: 'LogAlert'
   properties: {
-    displayName: 'AmeriGas Propane - Pod restart spike'
-    description: 'Triggers quickly when restart activity is detected in the AmeriGas propane namespace.'
+    displayName: 'ZavaGas Propane - Pod restart spike'
+    description: 'Triggers quickly when restart activity is detected in the ZavaGas propane namespace.'
     enabled: true
     severity: 2
     scopes: [
@@ -87,8 +87,8 @@ resource http5xxAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (
   tags: tags
   kind: 'LogAlert'
   properties: {
-    displayName: 'AmeriGas Propane - HTTP 5xx spike'
-    description: 'Triggers when 5xx request count increases in AmeriGas propane App Insights logs.'
+    displayName: 'ZavaGas Propane - HTTP 5xx spike'
+    description: 'Triggers when 5xx request count increases in ZavaGas propane App Insights logs.'
     enabled: true
     severity: 1
     scopes: [
@@ -122,8 +122,8 @@ resource podFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = i
   tags: tags
   kind: 'LogAlert'
   properties: {
-    displayName: 'AmeriGas Propane - Failed or pending pods'
-    description: 'Triggers quickly when failed or pending pods are detected in the AmeriGas propane namespace.'
+    displayName: 'ZavaGas Propane - Failed or pending pods'
+    description: 'Triggers quickly when failed or pending pods are detected in the ZavaGas propane namespace.'
     enabled: true
     severity: 2
     scopes: [
@@ -157,8 +157,8 @@ resource crashLoopOomAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' =
   tags: tags
   kind: 'LogAlert'
   properties: {
-    displayName: 'AmeriGas Propane - CrashLoop/OOM detected'
-    description: 'Triggers when CrashLoopBackOff or OOM-related Kubernetes events are detected in the AmeriGas propane namespace.'
+    displayName: 'ZavaGas Propane - CrashLoop/OOM detected'
+    description: 'Triggers when CrashLoopBackOff or OOM-related Kubernetes events are detected in the ZavaGas propane namespace.'
     enabled: true
     severity: 1
     scopes: [
@@ -209,7 +209,7 @@ resource mongoDbDownDemoAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01
   kind: 'LogAlert'
   properties: {
     displayName: mongoDbDownDemoAlertTitle
-    description: 'Demo-only alert (issue #19): fires when zero Running mongodb pods are found in the AmeriGas propane namespace, indicating the tank/order database is offline (e.g. k8s/scenarios/mongodb-down.yaml scaled the Deployment to 0 replicas). Bound to a single Azure SRE Agent response plan by exact title + severity match — do not rename without updating scripts/bootstrap-sre-agent-response-plan.ps1.'
+    description: 'Demo-only alert (issue #19): fires when zero Running mongodb pods are found in the ZavaGas propane namespace, indicating the tank/order database is offline (e.g. k8s/scenarios/mongodb-down.yaml scaled the Deployment to 0 replicas). Bound to a single Azure SRE Agent response plan by exact title + severity match — do not rename without updating scripts/bootstrap-sre-agent-response-plan.ps1.'
     enabled: true
     severity: mongoDbDownDemoAlertSeverity
     scopes: [

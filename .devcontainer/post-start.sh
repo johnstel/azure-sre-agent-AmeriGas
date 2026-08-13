@@ -7,7 +7,7 @@
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════════════════════╗"
-echo "║                    AmeriGas Propane SRE Demo Lab                             ║"
+echo "║                    ZavaGas Propane SRE Demo Lab                              ║"
 echo "╠══════════════════════════════════════════════════════════════════════════════╣"
 echo "║                                                                              ║"
 echo "║  Quick Start:                                                                ║"

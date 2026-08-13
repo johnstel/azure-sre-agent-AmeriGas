@@ -58,7 +58,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-02-01' exis
 resource mongoDbRemediationRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: roleDefinitionGuid
   properties: {
-    roleName: 'AmeriGas SRE Agent - MongoDB Remediation (${workloadName})'
+    roleName: 'ZavaGas SRE Agent - MongoDB Remediation (${workloadName})'
     description: 'Least-scope custom role for the issue #19 MongoDB-down demo response plan: grants exactly the actions Microsoft documents as required for `az aks command invoke` (runCommand, commandResults/read) plus read, scoped to this one AKS cluster resource only. Does not grant cluster write, credential listing, or delete.'
     type: 'CustomRole'
     permissions: [

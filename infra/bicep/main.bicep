@@ -1,5 +1,5 @@
 // =============================================================================
-// Azure SRE Agent AmeriGas Propane Demo Lab - Main Bicep Template
+// Azure SRE Agent ZavaGas Propane Demo Lab - Main Bicep Template
 // =============================================================================
 // This template deploys an AKS cluster with a multi-pod propane distribution platform,
 // along with supporting infrastructure for demonstrating Azure SRE Agent
@@ -97,7 +97,7 @@ param userNodeCount int = 3
 
 @description('Tags to apply to all resources')
 param tags object = {
-  workload: 'amerigas-propane-demo'
+  workload: 'zavagas-propane-demo'
   environment: 'sandbox'
   managedBy: 'bicep'
   purpose: 'propane-sre-demo'
