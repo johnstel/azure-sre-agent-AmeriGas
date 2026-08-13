@@ -27,8 +27,11 @@
         issue #27, and produces the expected exemption count.
       - CLI subprocess behavior: -OutputFormat Json prints valid JSON and
         exits 0 when clean / exits 1 when a real violation is present.
-      - Binary files (e.g. media/menu.png) are skipped safely through the
-        full Invoke-BrandPolicyAudit pipeline without erroring.
+      - Binary files (a synthetic fixture, plus any *.png/*.jpg/etc. by
+        extension) are skipped safely through the full
+        Invoke-BrandPolicyAudit pipeline without erroring.
+      - Local Markdown image references (e.g. `![alt](path.png)`) are
+        checked for existence; a dangling reference is a violation.
 
 .EXAMPLE
     Invoke-Pester -Path scripts/tests/audit-brand-policy.tests.ps1
@@ -219,7 +222,7 @@ Describe "Test-BrandPolicyPathExcluded" {
     }
 
     It "excludes files matching a wildcard extension exclusion" {
-        Test-BrandPolicyPathExcluded -RelativePath 'media/menu.png' -Exclusions $script:Policy.exclusions | Should -Be $true
+        Test-BrandPolicyPathExcluded -RelativePath 'docs/some-diagram.png' -Exclusions $script:Policy.exclusions | Should -Be $true
     }
 
     It "does not exclude an ordinary tracked source file" {
@@ -234,12 +237,64 @@ Describe "Test-BrandPolicyPathExcluded" {
 }
 
 Describe "Test-BrandPolicyBinaryPath" {
-    It "detects a PNG as binary by extension without opening the real menu.png" {
-        Test-BrandPolicyBinaryPath -FullPath (Join-Path $script:RepoRoot 'media' 'menu.png') | Should -Be $true
+    It "detects a PNG as binary purely by extension, without needing the file to exist on disk at all" {
+        Test-BrandPolicyBinaryPath -FullPath (Join-Path $script:RepoRoot 'docs' 'does-not-exist.png') | Should -Be $true
+    }
+
+    It "detects a synthetic non-.png-extension binary fixture as binary via the null-byte sniff heuristic (not the extension fast-path)" {
+        $binaryFixturePath = Join-Path $script:FixturesDir 'binary-sample.dat'
+        Test-Path -LiteralPath $binaryFixturePath -PathType Leaf | Should -Be $true
+        Test-BrandPolicyBinaryPath -FullPath $binaryFixturePath | Should -Be $true
     }
 
     It "does not treat an ordinary markdown fixture as binary" {
         Test-BrandPolicyBinaryPath -FullPath (Join-Path $script:FixturesDir 'valid.md') | Should -Be $false
+    }
+}
+
+Describe "Get-BrandPolicyMediaReferenceViolations — dangling Markdown image reference detection" {
+    It "does not flag a valid local image reference (positive case)" {
+        $fixturePath = Join-Path $script:FixturesDir 'valid-media-ref.md'
+        $lines = Get-Content -LiteralPath $fixturePath
+        $violations = Get-BrandPolicyMediaReferenceViolations -Lines $lines -FileName 'scripts/tests/fixtures/brand-policy/valid-media-ref.md' -FullPath $fixturePath -RepoRoot $script:RepoRoot
+        $violations.Count | Should -Be 0
+    }
+
+    It "flags a dangling reference to a nonexistent image (negative case)" {
+        $danglingFixturePath = Join-Path $script:FixturesDir 'dangling-media-ref.md'
+        Set-Content -LiteralPath $danglingFixturePath -Value @(
+            '# Dangling Media Reference Fixture (negative case)'
+            ''
+            'This fixture intentionally references an image that does not exist.'
+            ''
+            '![missing image](this-file-does-not-exist.png)'
+        ) -NoNewline:$false
+        try {
+            $lines = Get-Content -LiteralPath $danglingFixturePath
+            $violations = Get-BrandPolicyMediaReferenceViolations -Lines $lines -FileName 'scripts/tests/fixtures/brand-policy/dangling-media-ref.md' -FullPath $danglingFixturePath -RepoRoot $script:RepoRoot
+            $violations.Count | Should -Be 1
+            $violations[0].Term | Should -Be 'dangling-media-reference'
+            $violations[0].Text | Should -Match 'this-file-does-not-exist\.png'
+            $violations[0].Line | Should -Be 5
+        }
+        finally {
+            Remove-Item -LiteralPath $danglingFixturePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "ignores remote (http/https) and protocol-relative image references" {
+        $lines = @(
+            '![remote](https://example.com/image.png)',
+            '![also remote](//example.com/image.png)'
+        )
+        $violations = Get-BrandPolicyMediaReferenceViolations -Lines $lines -FileName 'synthetic.md' -FullPath (Join-Path $script:FixturesDir 'valid.md') -RepoRoot $script:RepoRoot
+        $violations.Count | Should -Be 0
+    }
+
+    It "ignores inline data: URI image references" {
+        $lines = @('![inline](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB)')
+        $violations = Get-BrandPolicyMediaReferenceViolations -Lines $lines -FileName 'synthetic.md' -FullPath (Join-Path $script:FixturesDir 'valid.md') -RepoRoot $script:RepoRoot
+        $violations.Count | Should -Be 0
     }
 }
 
@@ -281,12 +336,41 @@ Describe "Invoke-BrandPolicyAudit — real repository tree" {
         $report.summary.checkedFileCount | Should -Be 0
     }
 
-    It "safely skips a binary file (media/menu.png) through the full pipeline without erroring, and does not count it as checked" {
-        { Invoke-BrandPolicyAudit -RepoRoot $script:RepoRoot -Policy $script:Policy -Paths @('media/menu.png') } | Should -Not -Throw
-        $report = Invoke-BrandPolicyAudit -RepoRoot $script:RepoRoot -Policy $script:Policy -Paths @('media/menu.png')
+    It "safely skips a binary file through the full pipeline without erroring, and does not count it as checked (via the null-byte sniff, not a path exclusion)" {
+        $relativeFixturePath = 'scripts/tests/fixtures/brand-policy/binary-sample.dat'
+        { Invoke-BrandPolicyAudit -RepoRoot $script:RepoRoot -Policy $script:Policy -Paths @($relativeFixturePath) } | Should -Not -Throw
+        $report = Invoke-BrandPolicyAudit -RepoRoot $script:RepoRoot -Policy $script:Policy -Paths @($relativeFixturePath)
         $report.summary.checkedFileCount | Should -Be 0
         $report.summary.violationCount | Should -Be 0
-        $report.checkedFiles | Should -Not -Contain 'media/menu.png'
+        $report.summary.skippedBinaryCount | Should -Be 1
+        $report.checkedFiles | Should -Not -Contain $relativeFixturePath
+    }
+
+    It "flags a dangling Markdown image reference as a real violation through the full pipeline" {
+        $danglingFixturePath = Join-Path $script:FixturesDir 'audit-dangling-media-ref.md'
+        Set-Content -LiteralPath $danglingFixturePath -Value @(
+            '# Injected via -Paths for the full-pipeline media reference check'
+            '![missing](does-not-exist-anywhere.png)'
+        ) -NoNewline:$false
+        try {
+            $relativeFixturePath = 'scripts/tests/fixtures/brand-policy/audit-dangling-media-ref.md'
+            $report = Invoke-BrandPolicyAudit -RepoRoot $script:RepoRoot -Policy $script:Policy -Paths @($relativeFixturePath)
+            $report.summary.violationCount | Should -Be 1
+            $report.violations[0].Term | Should -Be 'dangling-media-reference'
+        }
+        finally {
+            Remove-Item -LiteralPath $danglingFixturePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "the real repository tree has zero dangling Markdown image references" {
+        $report = Invoke-BrandPolicyAudit -RepoRoot $script:RepoRoot -Policy $script:Policy
+        $mediaViolations = @($report.violations | Where-Object { $_.Term -eq 'dangling-media-reference' })
+        if ($mediaViolations.Count -gt 0) {
+            $details = ($mediaViolations | ForEach-Object { "$($_.File):$($_.Line) $($_.Text)" }) -join "`n"
+            throw "Expected zero dangling media references, found $($mediaViolations.Count):`n$details"
+        }
+        $mediaViolations.Count | Should -Be 0
     }
 }
 

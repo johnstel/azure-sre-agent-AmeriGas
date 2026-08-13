@@ -257,6 +257,66 @@ function Get-BrandPolicyViolations {
     return $violations
 }
 
+function Get-BrandPolicyMediaReferenceViolations {
+    <#
+    .SYNOPSIS
+        Scans Markdown content for local image references (e.g.
+        `![alt](path/to/image.png)`) and reports one violation per
+        reference whose target file does not exist in the repository.
+        Remote references (http(s):// or protocol-relative //) and inline
+        data: URIs are never checked (there is nothing local to verify).
+
+    .DESCRIPTION
+        A relative reference is resolved relative to the Markdown file's
+        own directory (standard Markdown/GitHub rendering behavior); a
+        reference starting with `/` is resolved relative to RepoRoot.
+        Importable via dot-sourcing for Pester tests.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][string]$FullPath,
+        [Parameter(Mandatory = $true)][string]$RepoRoot
+    )
+
+    $violations = @()
+    $imageRefPattern = '!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)'
+    $markdownDirectory = Split-Path -Parent $FullPath
+
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        foreach ($match in [regex]::Matches($Lines[$i], $imageRefPattern)) {
+            $refPath = $match.Groups[1].Value.Trim()
+            if ([string]::IsNullOrWhiteSpace($refPath)) { continue }
+            if ($refPath -match '^(https?:)?//') { continue }
+            if ($refPath.StartsWith('data:')) { continue }
+
+            # Strip any URL fragment/query before resolving to a filesystem path.
+            $cleanPath = ($refPath -split '[#?]')[0]
+            if ([string]::IsNullOrWhiteSpace($cleanPath)) { continue }
+
+            $resolvedPath = if ($cleanPath.StartsWith('/')) {
+                Join-Path $RepoRoot $cleanPath.TrimStart('/')
+            }
+            else {
+                Join-Path $markdownDirectory $cleanPath
+            }
+
+            if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+                $violations += [pscustomobject]@{
+                    File = $FileName
+                    Line = $i + 1
+                    Term = 'dangling-media-reference'
+                    Text = "$($Lines[$i].Trim()) [missing: $cleanPath]"
+                }
+            }
+        }
+    }
+
+    return $violations
+}
 function Split-BrandPolicyExemptions {
     <#
     .SYNOPSIS
@@ -344,6 +404,7 @@ function Invoke-BrandPolicyAudit {
     $filesToCheck = if ($Paths) { $Paths } else { Get-BrandPolicyAuditFileList -RepoRoot $RepoRoot }
 
     $rawHits = @()
+    $mediaReferenceViolations = @()
     $checkedFiles = @()
     $skippedExcludedCount = 0
     $skippedBinaryCount = 0
@@ -369,13 +430,34 @@ function Invoke-BrandPolicyAudit {
         $rawHits += Get-BrandPolicyViolations -Lines $lines -FileName $relativePath -Policy $Policy
     }
 
+    # Dangling Markdown image references are checked independently of the
+    # brand-content `exclusions` above: a file that is legitimately excluded
+    # from denylist-term scanning (e.g. docs/BRAND-POLICY.md, which must
+    # quote denylisted terms) can still contain a real, audience-facing
+    # broken image link, and that is a distinct problem this audit must
+    # still catch. Every tracked Markdown file is scanned here, regardless
+    # of exclusion status; only files that don't exist on disk are skipped.
+    foreach ($relativePath in $filesToCheck) {
+        if ($relativePath -notmatch '\.md$') { continue }
+        $fullPath = Join-Path $RepoRoot $relativePath
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
+        $lines = Get-Content -LiteralPath $fullPath
+        $mediaReferenceViolations += Get-BrandPolicyMediaReferenceViolations -Lines $lines -FileName $relativePath -FullPath $fullPath -RepoRoot $RepoRoot
+    }
+
     $split = Split-BrandPolicyExemptions -Hits $rawHits -IntentionalLegacyReferences $Policy.intentionalLegacyReferences
+
+    # Dangling Markdown image references are always real violations -- they
+    # are never subject to intentionalLegacyReferences exemption (that
+    # mechanism is specifically for denylisted brand terms, not for media
+    # reference integrity).
+    $allViolations = @($split.Violations) + @($mediaReferenceViolations)
 
     $sortedCheckedFiles = @($checkedFiles | Sort-Object)
     $sortedExclusions = @($Policy.exclusions | Sort-Object -Property path)
     $sortedLegacyReferences = @($Policy.intentionalLegacyReferences | Sort-Object -Property path, term)
     $sortedExemptions = @($split.Exemptions | Sort-Object -Property File, Term, Line)
-    $sortedViolations = @($split.Violations | Sort-Object -Property File, Line, Term)
+    $sortedViolations = @($allViolations | Sort-Object -Property File, Line, Term)
 
     return [pscustomobject]@{
         schemaVersion                = 2

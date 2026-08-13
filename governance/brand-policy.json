@@ -62,6 +62,10 @@
       "reason": "Pester fixtures intentionally inject banned terms to verify the audit tool flags them (positive test cases)."
     },
     {
+      "path": "scripts/tests/brand-slug-consistency.tests.ps1",
+      "reason": "Test descriptions/comments reference 'AmeriGas' only to document a pre-existing, unrelated infra/terraform naming finding and to describe what the slug-drift regex checks for (a regression guard, not banned content)."
+    },
+    {
       "path": "scripts/tests/fixtures/brand-policy/invalid.md",
       "reason": "Negative-case Pester fixture. Intentionally contains banned real-brand/retailer terms so the audit tool can be tested against known-bad content."
     },
@@ -75,7 +79,7 @@
     },
     {
       "path": "*.png",
-      "reason": "Binary image files are not scanned for text content (see also the media/menu.png follow-up noted in docs/BRAND-POLICY.md)."
+      "reason": "Binary image files are not scanned for text content."
     },
     {
       "path": "*.jpg",

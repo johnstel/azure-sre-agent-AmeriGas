@@ -67,6 +67,10 @@ pwsh scripts/audit-brand-policy.ps1 -OutputFormat Json
 
 Pass `-PassThru` (when dot-sourcing the script) to get the report as a PowerShell object instead of printing/exiting — used by the Pester tests in `scripts/tests/audit-brand-policy.tests.ps1`.
 
+## Media reference check
+
+`scripts/audit-brand-policy.ps1` also scans every tracked Markdown file for local image references (standard Markdown image syntax pointing at a relative or root-relative path, excluding `http(s)://` links) and verifies each referenced path actually exists in the repository. A dangling reference — pointing at an image that was deleted, renamed, or never existed — is reported as a **violation**, in the same `violations` array as a real-brand-name hit, not as a separate warning. This is what prevented `media/menu.png` (removed; see "Known exclusions / follow-ups" below) from silently leaving behind a broken `README.md` image reference.
+
 ## Non-destructive tag/label migration
 
 For an **already-deployed** lab that still carries the old `amerigas-propane-demo` tag/labels, use:
@@ -81,6 +85,6 @@ See `scripts/migrate-brand-tags.ps1`'s comment-based help for full details. It o
 
 ## Known exclusions / follow-ups
 
-- **`media/menu.png`** — this screenshot shows a generic terminal help menu titled "Azure SRE Agent Demo Lab" with no literal "AmeriGas" text, so it is not a trademark/brand violation. However, its listed commands and services (a `pets` namespace, `order-service`/`product-service`/`makeline-service`, `break-cpu` targeting a "new stress pod") do not match this repository's actual current devcontainer menu or the `propane` namespace services, meaning the image is stale/outdated relative to the current lab regardless of branding. It should be regenerated to reflect the current ZavaGas-branded `menu` command output. Regenerating a screenshot is outside what this rebrand task can produce in this environment.
+- **`media/menu.png`** — this stale screenshot (generic terminal help menu with a mismatched `pets` namespace and `order-service`/`product-service`/`makeline-service` commands that did not match this repository's actual current devcontainer menu or the `propane` namespace services) has been **removed** along with its `README.md` reference, rather than regenerated: this environment cannot capture a real, accurate terminal screenshot of the current `menu` command output, and fabricating or sourcing a replacement image was explicitly ruled out. The README's `menu` command instructions remain documented in text. A dangling-media-reference check (see "Media reference check" below) now runs as part of the standard audit so a broken or stale image reference can never silently reappear.
 - **Open GitHub issues** — non-#27 open issue bodies referencing the old brand were updated where `gh issue edit` permissions allowed. Issues #24, #25, and #26 (the only other open issues at the time of this rebrand) each had one `AmeriGas` reference in their body and were updated to `ZavaGas`; no real retailer/location references were found in any open issue body. See the final task summary for exact links.
 - **Renaming the GitHub repository itself** — optional, owner-only administrative action, entirely separate from this code change. See [`docs/REPO-RENAME-CHECKLIST.md`](REPO-RENAME-CHECKLIST.md).

@@ -52,8 +52,6 @@ The platform simulates a retail propane distributor with propane distribution an
 - [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) installed
 - [VS Code](https://code.visualstudio.com/) with [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) (optional but recommended)
 
-![Menu](media/menu.png)
-
 ### Deploy
 
 ```powershell
