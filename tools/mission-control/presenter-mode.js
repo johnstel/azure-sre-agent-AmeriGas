@@ -25,6 +25,18 @@ const DEFAULT_TRACK_CATALOG = {
           abortBehavior: 'Stop the track and leave the current incident in place until a fresh run starts.',
         },
         {
+          id: 'baseline-health',
+          title: 'Baseline health confirmation',
+          presenterNotes: ['Reconfirm the workload is healthy before the active scenario is introduced.'],
+          expectedEvidence: ['baseline confirmed healthy'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['presenter-panel', 'timeline-panel'],
+          controls: ['continue'],
+          gate: { id: 'baseline-health', kind: 'baseline', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline before the live scenario is shown.',
+          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+        },
+        {
           id: 'review-approval',
           title: 'Review approval',
           presenterNotes: ['Review the exact approved action before proceeding.'],
@@ -927,27 +939,33 @@ module.exports = {
   buildPresenterRehearsal(trackId, options = {}) {
     const track = getTrackById(trackId);
     const targetMinutes = Number(track.durationMinutes || 0);
-    const defaultSteps = track.steps.map((step, index) => {
-      const base = targetMinutes / track.steps.length;
-      const weight = (track.id === 'fast-wow' && index < 2) || (track.id === 'deep-dive' && index < 2) ? 0.8 : 1;
-      return {
-        stepId: step.id,
-        durationMinutes: Number(Math.max(0.25, base * weight).toFixed(2)),
-      };
-    });
+    const defaultSteps = track.steps.map((step) => ({
+      stepId: step.id,
+      durationMinutes: Number((targetMinutes / track.steps.length).toFixed(2)),
+    }));
     const stepDurations = Array.isArray(options.stepDurations)
-      ? options.stepDurations
+      ? options.stepDurations.map((item) => ({
+          stepId: item.stepId,
+          durationMinutes: Number(Number(item.durationMinutes || 0).toFixed(2)),
+        }))
       : defaultSteps;
+
     let plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
-    if (plannedMinutes > targetMinutes) {
-      const excess = plannedMinutes - targetMinutes;
-      const lastIndex = stepDurations.length - 1;
+    const lastIndex = stepDurations.length - 1;
+    if (lastIndex >= 0) {
       const lastEntry = stepDurations[lastIndex];
-      const prior = Number(lastEntry.durationMinutes || 0);
-      const reduced = Math.max(0.25, Number((prior - excess).toFixed(2)));
-      stepDurations[lastIndex] = { ...lastEntry, durationMinutes: reduced };
+      if (plannedMinutes < targetMinutes) {
+        const delta = Number((targetMinutes - plannedMinutes).toFixed(2));
+        lastEntry.durationMinutes = Number((Number(lastEntry.durationMinutes || 0) + delta).toFixed(2));
+      }
+      if (plannedMinutes > targetMinutes) {
+        const excess = Number((plannedMinutes - targetMinutes).toFixed(2));
+        const reduced = Math.max(0.25, Number((Number(lastEntry.durationMinutes || 0) - excess).toFixed(2)));
+        lastEntry.durationMinutes = reduced;
+      }
       plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
     }
+
     return {
       trackId: track.id,
       totalTargetMinutes: Number(plannedMinutes.toFixed(2)),

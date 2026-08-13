@@ -230,17 +230,211 @@ function computeBaselineFingerprint(clusterSnapshot) {
   return sha256(JSON.stringify(canonical));
 }
 
+const LOCK_TTL_MS = Number(process.env.SCENARIO_LIFECYCLE_LOCK_TTL_MS || 300000);
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeRunnerResult(result) {
+  if (result && typeof result === 'object' && 'stdout' in result) {
+    return {
+      ok: result && Number(result.status ?? result.exitCode ?? 0) === 0,
+      stdout: String(result.stdout || ''),
+      stderr: String(result.stderr || ''),
+      status: Number(result.status ?? result.exitCode ?? 0),
+      error: result.error ? String(result.error.message || result.error) : null,
+    };
+  }
+
+  const text = String(result || '');
+  return {
+    ok: true,
+    stdout: text,
+    stderr: '',
+    status: 0,
+    error: null,
+  };
+}
+
+function isNotFoundError(result) {
+  const text = `${result && result.stderr ? result.stderr : ''}\n${result && result.stdout ? result.stdout : ''}`.toLowerCase();
+  return text.includes('not found') || text.includes('notfound') || text.includes('404');
+}
+
+function isConflictError(result) {
+  const text = `${result && result.stderr ? result.stderr : ''}\n${result && result.stdout ? result.stdout : ''}`.toLowerCase();
+  return text.includes('conflict') || text.includes('the object has been modified') || text.includes('resource version');
+}
+
+function isTimeoutOrTransportFailure(result) {
+  const text = `${result && result.stderr ? result.stderr : ''}\n${result && result.stdout ? result.stdout : ''}`.toLowerCase();
+  return text.includes('timed out') || text.includes('timeout') || text.includes('connection refused') || text.includes('transport') || text.includes('i/o timeout');
+}
+
+function parseJsonValue(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function buildConfigMapManifest(name, namespace, payload, { resourceVersion = null } = {}) {
+  const encoded = JSON.stringify(payload);
+  const lines = [
+    'apiVersion: v1',
+    'kind: ConfigMap',
+    'metadata:',
+    `  name: ${name}`,
+    `  namespace: ${namespace}`,
+    '  labels:',
+    '    app.kubernetes.io/name: demo-scenario-lifecycle',
+    '    app.kubernetes.io/component: lifecycle',
+  ];
+
+  if (resourceVersion) {
+    lines.push(`  resourceVersion: "${String(resourceVersion).replace(/"/g, '\\"')}"`);
+  }
+
+  lines.push('data:');
+  lines.push(`  value: ${JSON.stringify(encoded)}`);
+  return `${lines.join('\n')}\n`;
+}
+
+async function executeKubectl(runner, args, stdinText = null) {
+  if (runner && typeof runner.execFile === 'function') {
+    const payload = stdinText ? await runner.execFile('kubectl', args, { input: stdinText }) : await runner.execFile('kubectl', args);
+    return normalizeRunnerResult(payload);
+  }
+
+  if (runner && typeof runner.exec === 'function') {
+    const payload = stdinText ? await runner.exec('kubectl', args, stdinText) : await runner.exec('kubectl', args);
+    return normalizeRunnerResult(payload);
+  }
+
+  const child = spawnSync('kubectl', args, {
+    encoding: 'utf8',
+    input: stdinText || undefined,
+  });
+  return {
+    ok: child.status === 0,
+    stdout: child.stdout || '',
+    stderr: child.stderr || '',
+    status: child.status || 0,
+    error: child.error ? String(child.error.message || child.error) : null,
+  };
+}
+
+async function readConfigMapValue(runner, name, namespace) {
+  const args = ['get', 'configmap', name, '-n', namespace, '-o', 'json'];
+
+  if (runner && typeof runner.readJson === 'function') {
+    const raw = await runner.readJson(args);
+    if (!raw || !raw.data) return null;
+    const value = raw.data && raw.data.value ? parseJsonValue(raw.data.value) : null;
+    if (!value) return null;
+    return { ...value, resourceVersion: raw.metadata && raw.metadata.resourceVersion ? String(raw.metadata.resourceVersion) : null };
+  }
+
+  const result = await executeKubectl(runner, args);
+  if (!result.ok) {
+    if (isNotFoundError(result)) return null;
+    throw new Error(`kubectl get configmap ${name} -n ${namespace} failed: ${result.stderr || result.stdout || result.error || 'unknown error'}`);
+  }
+
+  try {
+    const parsed = JSON.parse(result.stdout || '{}');
+    const value = parsed && parsed.data && parsed.data.value ? parseJsonValue(parsed.data.value) : null;
+    if (!value) return null;
+    return { ...value, resourceVersion: parsed.metadata && parsed.metadata.resourceVersion ? String(parsed.metadata.resourceVersion) : null };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function writeConfigMapValue(runner, name, namespace, payload, { expectedResourceVersion = null } = {}) {
+  const current = await readConfigMapValue(runner, name, namespace);
+  const manifest = buildConfigMapManifest(name, namespace, payload, {
+    resourceVersion: current && current.resourceVersion ? current.resourceVersion : expectedResourceVersion,
+  });
+
+  if (!current) {
+    const createArgs = ['create', 'configmap', name, '-n', namespace, '--from-literal', `value=${JSON.stringify(payload)}`];
+    const createResult = await executeKubectl(runner, createArgs);
+    if (!createResult.ok) {
+      return {
+        ok: false,
+        code: 'CONFIGMAP_CREATE_FAILED',
+        message: `kubectl create configmap ${name} -n ${namespace} failed: ${createResult.stderr || createResult.stdout || createResult.error || 'unknown error'}`,
+      };
+    }
+    const next = await readConfigMapValue(runner, name, namespace);
+    return { ok: true, state: next, resourceVersion: next && next.resourceVersion ? next.resourceVersion : null };
+  }
+
+  if (expectedResourceVersion && String(current.resourceVersion || '') !== String(expectedResourceVersion)) {
+    return {
+      ok: false,
+      code: 'CONFIGMAP_VERSION_CONFLICT',
+      message: `ConfigMap ${name} resourceVersion mismatch. Expected ${expectedResourceVersion} but found ${current.resourceVersion || 'unknown'}.`,
+    };
+  }
+
+  const replaceResult = await executeKubectl(runner, ['replace', '-f', '-'], manifest);
+  if (!replaceResult.ok) {
+    const reason = replaceResult.stderr || replaceResult.stdout || replaceResult.error || 'unknown error';
+    return {
+      ok: false,
+      code: isNotFoundError(replaceResult) ? 'CONFIGMAP_NOT_FOUND' : isConflictError(replaceResult) ? 'CONFIGMAP_VERSION_CONFLICT' : 'CONFIGMAP_WRITE_FAILED',
+      message: `kubectl replace configmap ${name} -n ${namespace} failed: ${reason}`,
+    };
+  }
+
+  const next = await readConfigMapValue(runner, name, namespace);
+  return { ok: true, state: next, resourceVersion: next && next.resourceVersion ? next.resourceVersion : null };
+}
+
+function isLockExpired(lock, nowMs = Date.now()) {
+  if (!lock || !lock.locked || !lock.expiresAt) return false;
+  const expiresAt = Date.parse(lock.expiresAt);
+  if (!Number.isFinite(expiresAt)) return false;
+  return nowMs >= expiresAt;
+}
+
+function buildOwnerToken() {
+  const random = (typeof crypto.randomUUID === 'function')
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  return `scenario-${process.pid || 'worker'}-${random}`;
+}
+
 function readLifecycleState(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
   const statePath = path.join(repoRoot, '.data', 'scenario-lifecycle-state.json');
   if (runner && typeof runner.readState === 'function') return Promise.resolve(runner.readState(namespace));
   if (runner && typeof runner.readLifecycleState === 'function') return Promise.resolve(runner.readLifecycleState(namespace));
 
-  try {
-    const raw = fs.readFileSync(statePath, 'utf8');
-    return Promise.resolve(raw ? JSON.parse(raw) : null);
-  } catch {
-    return Promise.resolve(null);
-  }
+  return (async () => {
+    try {
+      const configMap = await readConfigMapValue(runner, STATE_CONFIGMAP_NAME, namespace);
+      if (configMap && typeof configMap === 'object' && configMap.component) {
+        return configMap;
+      }
+    } catch {
+      // fallthrough to file-based state for environments without the cluster API available
+    }
+
+    try {
+      const raw = fs.readFileSync(statePath, 'utf8');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
 }
 
 function writeLifecycleState(repoRoot, runner, state, namespace = DEFAULT_NAMESPACE) {
@@ -251,24 +445,58 @@ function writeLifecycleState(repoRoot, runner, state, namespace = DEFAULT_NAMESP
   if (runner && typeof runner.writeLifecycleState === 'function') {
     return Promise.resolve(runner.writeLifecycleState(namespace, state));
   }
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-  return Promise.resolve(state);
+
+  return (async () => {
+    try {
+      const result = await writeConfigMapValue(runner, STATE_CONFIGMAP_NAME, namespace, {
+        ...state,
+        updatedAt: nowIso(),
+        namespace,
+      });
+      if (result && result.ok) {
+        return result.state || { ...state, namespace, updatedAt: nowIso() };
+      }
+      if (result && result.message) {
+        throw new Error(result.message);
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      if (!runner || !/not found|enoent|command not found|no such file/i.test(message)) {
+        throw error;
+      }
+    }
+
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+    return state;
+  })();
 }
 
 function readLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
   const lockPath = path.join(repoRoot, '.data', 'scenario-lifecycle-lock.json');
   if (runner && typeof runner.readLock === 'function') return Promise.resolve(runner.readLock(namespace));
   if (runner && typeof runner.readLifecycleLock === 'function') return Promise.resolve(runner.readLifecycleLock(namespace));
-  try {
-    const raw = fs.readFileSync(lockPath, 'utf8');
-    return Promise.resolve(raw ? JSON.parse(raw) : null);
-  } catch {
-    return Promise.resolve(null);
-  }
+
+  return (async () => {
+    try {
+      const lock = await readConfigMapValue(runner, LOCK_CONFIGMAP_NAME, namespace);
+      if (lock && typeof lock === 'object' && ('locked' in lock || 'scenarioId' in lock || 'ownerToken' in lock)) {
+        return lock;
+      }
+    } catch {
+      // fallthrough to file-based lock for environments without the cluster API available
+    }
+
+    try {
+      const raw = fs.readFileSync(lockPath, 'utf8');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
 }
 
-function writeLifecycleLock(repoRoot, runner, state, namespace = DEFAULT_NAMESPACE) {
+function writeLifecycleLock(repoRoot, runner, state, namespace = DEFAULT_NAMESPACE, options = {}) {
   const lockPath = path.join(repoRoot, '.data', 'scenario-lifecycle-lock.json');
   if (runner && typeof runner.writeLock === 'function') {
     return Promise.resolve(runner.writeLock(namespace, state));
@@ -276,44 +504,159 @@ function writeLifecycleLock(repoRoot, runner, state, namespace = DEFAULT_NAMESPA
   if (runner && typeof runner.writeLifecycleLock === 'function') {
     return Promise.resolve(runner.writeLifecycleLock(namespace, state));
   }
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  fs.writeFileSync(lockPath, JSON.stringify(state, null, 2));
-  return Promise.resolve(state);
+
+  return (async () => {
+    const lockState = {
+      ...state,
+      namespace,
+      updatedAt: nowIso(),
+    };
+
+    try {
+      const result = await writeConfigMapValue(runner, LOCK_CONFIGMAP_NAME, namespace, lockState, {
+        expectedResourceVersion: options.expectedResourceVersion || null,
+      });
+      if (result && result.ok) {
+        return result.state || lockState;
+      }
+      if (result && result.message) {
+        throw new Error(result.message);
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      if (runner || !/not found|enoent|command not found|no such file/i.test(message)) {
+        throw error;
+      }
+    }
+
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(lockState, null, 2));
+    return lockState;
+  })();
 }
 
-function releaseLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
-  return writeLifecycleLock(repoRoot, runner, { locked: false, namespace, releasedAt: new Date().toISOString() }, namespace);
-}
-
-async function acquireLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE, scenarioId = null, { allowStacking = false } = {}) {
+async function releaseLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE, options = {}) {
   const current = await readLifecycleLock(repoRoot, runner, namespace);
-  const runId = `scenario-${scenarioId || 'reset'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const lockState = {
-    locked: true,
+  const ownerToken = options.ownerToken || current && current.ownerToken;
+  const resourceVersion = options.resourceVersion || current && current.resourceVersion;
+
+  if (!current || !current.locked) {
+    return { ok: true, released: false, lockState: current || null };
+  }
+
+  if (ownerToken && current.ownerToken && String(current.ownerToken) !== String(ownerToken)) {
+    return {
+      ok: false,
+      code: 'LOCK_RELEASE_MISMATCH',
+      phase: 'blocked',
+      message: `Lifecycle lock owner mismatch: expected token ${current.ownerToken}, received ${ownerToken}.`,
+      lockState: current,
+    };
+  }
+
+  if (resourceVersion && current.resourceVersion && String(current.resourceVersion) !== String(resourceVersion)) {
+    return {
+      ok: false,
+      code: 'LOCK_RELEASE_MISMATCH',
+      phase: 'blocked',
+      message: `Lifecycle lock version mismatch: expected resourceVersion ${current.resourceVersion}, received ${resourceVersion}.`,
+      lockState: current,
+    };
+  }
+
+  const releasedState = {
+    locked: false,
     namespace,
-    scenarioId,
-    allowStacking,
-    runId,
-    acquiredAt: new Date().toISOString(),
+    scenarioId: current.scenarioId || null,
+    ownerToken: null,
+    runId: current.runId || null,
+    releasedAt: nowIso(),
+    phase: 'released',
+    expiresAt: null,
+    resourceVersion: current.resourceVersion || null,
   };
 
-  if (current && current.locked && current.scenarioId && !allowStacking) {
+  let written;
+  try {
+    written = await writeLifecycleLock(repoRoot, runner, releasedState, namespace, {
+      expectedResourceVersion: current.resourceVersion || null,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'LOCK_RELEASE_FAILED',
+      phase: 'failed',
+      message: error && error.message ? error.message : String(error),
+      lockState: current,
+    };
+  }
+  return { ok: true, released: true, lockState: written, resourceVersion: written && written.resourceVersion ? written.resourceVersion : current.resourceVersion || null };
+}
+
+async function acquireLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE, scenarioId = null, { allowStacking = false, ownerToken = null, ttlMs = LOCK_TTL_MS } = {}) {
+  const current = await readLifecycleLock(repoRoot, runner, namespace);
+  const runId = `scenario-${scenarioId || 'reset'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const freshOwnerToken = ownerToken || buildOwnerToken();
+  const expired = current && isLockExpired(current, Date.now());
+
+  if (current && current.locked && !expired && !allowStacking) {
     const sameScenario = current.scenarioId === scenarioId;
     return {
       ok: false,
       code: sameScenario ? 'SCENARIO_REENTRY_BLOCKED' : 'SCENARIO_LOCKED',
       phase: 'blocked',
       scenarioId,
-      activeScenarioId: current.scenarioId,
+      activeScenarioId: current.scenarioId || null,
       message: sameScenario
         ? `Scenario "${scenarioId || 'unknown'}" is already active or unresolved. Reset the lifecycle or explicitly use -AllowStacking for unsupported testing.`
-        : `Scenario "${scenarioId || 'unknown'}" cannot start while "${current.scenarioId}" owns the lifecycle lock. Reset or use -AllowStacking only for unsupported testing.`,
+        : `Scenario "${scenarioId || 'unknown'}" cannot start while "${current.scenarioId || 'unknown'}" owns the lifecycle lock. Reset or use -AllowStacking only for unsupported testing.`,
       lockState: current,
     };
   }
 
-  await writeLifecycleLock(repoRoot, runner, lockState, namespace);
-  return { ok: true, runId, lockState };
+  const lockState = {
+    locked: true,
+    namespace,
+    scenarioId,
+    allowStacking,
+    runId,
+    ownerToken: freshOwnerToken,
+    acquiredAt: nowIso(),
+    expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+    phase: 'acquired',
+    resourceVersion: current && current.resourceVersion ? current.resourceVersion : null,
+  };
+
+  let writeResult;
+  try {
+    writeResult = await writeLifecycleLock(repoRoot, runner, lockState, namespace, {
+      expectedResourceVersion: current && current.resourceVersion ? current.resourceVersion : null,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'SCENARIO_LOCK_WRITE_FAILED',
+      phase: 'blocked',
+      scenarioId,
+      message: error && error.message ? error.message : String(error),
+      lockState: current,
+    };
+  }
+
+  if (!writeResult || writeResult.ok === false) {
+    const message = writeResult && writeResult.message ? writeResult.message : 'Lifecycle lock update failed.';
+    return {
+      ok: false,
+      code: 'SCENARIO_LOCK_WRITE_FAILED',
+      phase: 'blocked',
+      scenarioId,
+      message,
+      lockState: current,
+    };
+  }
+
+  const finalLock = writeResult && writeResult.resourceVersion ? { ...lockState, resourceVersion: writeResult.resourceVersion } : { ...lockState };
+  return { ok: true, runId, ownerToken: freshOwnerToken, resourceVersion: finalLock.resourceVersion || null, lockState: finalLock };
 }
 
 function inventoryScenarioResources(repoRoot) {
@@ -451,9 +794,32 @@ async function applyScenarioJob(runner, manifestPath, { whatIf = false } = {}) {
   }
 }
 
+async function listScenarioOwnedResources(runner, namespace, { kind, scenarioIds = [] } = {}) {
+  const selector = scenarioIds.length > 0 ? `sre-demo=breakable,scenario in (${scenarioIds.join(',')})` : 'sre-demo=breakable';
+  const args = ['get', kind, '-n', namespace, '-l', selector, '-o', 'json'];
+  const result = await executeKubectl(runner, args);
+  if (!result.ok) {
+    if (isNotFoundError(result)) return [];
+    throw new Error(`kubectl get ${kind} -n ${namespace} -l ${selector} failed: ${result.stderr || result.stdout || result.error || 'unknown error'}`);
+  }
+
+  try {
+    const parsed = JSON.parse(result.stdout || '{}');
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+    return items.map((item) => ({
+      kind,
+      name: item && item.metadata ? item.metadata.name : null,
+      labels: item && item.metadata ? item.metadata.labels || {} : {},
+    })).filter((item) => item.name);
+  } catch {
+    return [];
+  }
+}
+
 async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', whatIf = false, namespace = DEFAULT_NAMESPACE } = {}) {
   const inventory = inventoryScenarioResources(repoRoot);
   const namesByKind = new Map();
+  const scenarioIds = inventory.map((item) => item.scenarioId);
   for (const scenario of inventory) {
     for (const resource of scenario.resources) {
       if (!resource.kind || !resource.name) continue;
@@ -465,6 +831,7 @@ async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', wh
     }
   }
 
+  const failures = [];
   const results = [];
   for (const [kind, names] of namesByKind.entries()) {
     const uniqueNames = [...new Set(names)];
@@ -473,20 +840,48 @@ async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', wh
       results.push({ kind, names: uniqueNames, message: `WhatIf: would delete ${uniqueNames.join(', ')}` });
       continue;
     }
-    const args = ['delete', kind, ...uniqueNames, '-n', namespace, '--ignore-not-found'];
-    let output = '';
-    if (runner && typeof runner.exec === 'function') {
-      output = await runner.exec('kubectl', args);
-    } else {
-      try {
-        output = execFileSync('kubectl', args, { encoding: 'utf8' });
-      } catch (error) {
-        const msg = String(error && error.stderr ? error.stderr : error.message || error);
-        output = msg;
+
+    for (const name of uniqueNames) {
+      const commandArgs = ['delete', kind, name, '-n', namespace];
+      const commandText = ['kubectl', ...commandArgs].join(' ');
+      const deleteResult = await executeKubectl(runner, commandArgs);
+      if (!deleteResult.ok) {
+        const detail = deleteResult.stderr || deleteResult.stdout || deleteResult.error || 'unknown error';
+        if (isNotFoundError(deleteResult)) {
+          results.push({ kind, name, command: commandText, message: `NotFound: ${name} already absent` });
+          continue;
+        }
+        failures.push({ kind, name, command: commandText, error: detail, message: detail });
+        continue;
       }
+      results.push({ kind, name, command: commandText, message: `Deleted ${name}` });
     }
-    results.push({ kind, names: uniqueNames, message: output && output.trim() ? output.trim() : `Deleted ${uniqueNames.join(', ')}` });
+
+    const survivors = await listScenarioOwnedResources(runner, namespace, { kind, scenarioIds }).catch(() => []);
+    const remainingNames = survivors.map((item) => item.name).filter((name) => uniqueNames.includes(name));
+    for (const survivorName of remainingNames) {
+      const commandText = ['kubectl', 'get', kind, '-n', namespace, '-l', `sre-demo=breakable,scenario in (${scenarioIds.join(',')})`].join(' ');
+      failures.push({
+        kind,
+        name: survivorName,
+        command: commandText,
+        error: `surviving scenario-owned resource detected after delete`,
+        message: `surviving scenario-owned resource detected after delete: ${kind}/${survivorName}`,
+      });
+    }
   }
+
+  if (failures.length > 0) {
+    return {
+      ok: false,
+      scope,
+      code: 'SCENARIO_RESOURCE_CLEANUP_FAILED',
+      failures,
+      results,
+      message: failures.map((failure) => `${failure.kind}/${failure.name}: ${failure.message}`).join('; '),
+    };
+  }
+
   return { ok: true, results, scope };
 }
 
@@ -557,11 +952,14 @@ async function startDemoScenario(scenarioId, options = {}) {
     };
   }
 
+  const ownerToken = lockResult.ownerToken;
+  const lockResourceVersion = lockResult.resourceVersion || lockResult.lockState && lockResult.lockState.resourceVersion;
+
   const clusterSnapshot = options.clusterSnapshot || await collectClusterSnapshot(repoRoot, runner, namespace);
   const fingerprint = options.baselineFingerprint || computeBaselineFingerprint(clusterSnapshot);
   const baselineValidation = verifyBaselineState(clusterSnapshot);
   if (!baselineValidation.ok) {
-    await releaseLifecycleLock(repoRoot, runner, namespace);
+    await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken, resourceVersion: lockResourceVersion });
     return {
       ok: false,
       code: 'BASELINE_DEGRADED',
@@ -592,7 +990,7 @@ async function startDemoScenario(scenarioId, options = {}) {
 
   const applyResult = await applyScenarioJob(runner, manifestPath, { whatIf: Boolean(options.whatIf) });
   if (!applyResult.ok) {
-    await releaseLifecycleLock(repoRoot, runner, namespace);
+    await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken, resourceVersion: lockResourceVersion });
     const nextState = {
       ...startingState,
       phase: 'apply-failed',
@@ -618,7 +1016,7 @@ async function startDemoScenario(scenarioId, options = {}) {
   });
 
   if (!activation.ok) {
-    await releaseLifecycleLock(repoRoot, runner, namespace);
+    await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken, resourceVersion: lockResourceVersion });
     const nextState = {
       ...startingState,
       phase: 'activation-timeout',
@@ -652,7 +1050,7 @@ async function startDemoScenario(scenarioId, options = {}) {
     active: true,
   };
   await writeLifecycleState(repoRoot, runner, nextState, namespace);
-  await releaseLifecycleLock(repoRoot, runner, namespace);
+  await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken, resourceVersion: lockResourceVersion });
 
   return {
     ok: true,
@@ -685,10 +1083,31 @@ async function resetDemoBaseline(options = {}) {
     };
   }
 
+  const resetOwnerToken = lockResult.ownerToken;
+  const resetLockResourceVersion = lockResult.resourceVersion || lockResult.lockState && lockResult.lockState.resourceVersion;
+
   try {
     const cleanup = await resetScenarioOwnedResources(repoRoot, runner, { scope, whatIf, namespace });
     if (!cleanup.ok) {
-      return { ok: false, phase: 'failed', message: cleanup.message || 'Reset failed while removing scenario-owned resources.' };
+      const failedState = {
+        component: 'scenario-lifecycle',
+        phase: 'failed',
+        namespace,
+        scenarioId: 'reset',
+        scenarioIds: inventory.map((item) => item.scenarioId),
+        resetRequired: true,
+        reason: cleanup.message || 'Reset failed while removing scenario-owned resources.',
+        cleanup,
+      };
+      await writeLifecycleState(repoRoot, runner, failedState, namespace);
+      await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken: resetOwnerToken, resourceVersion: resetLockResourceVersion });
+      return {
+        ok: false,
+        code: 'RESET_CLEANUP_FAILED',
+        phase: 'failed',
+        message: cleanup.message || 'Reset failed while removing scenario-owned resources.',
+        lifecycleState: failedState,
+      };
     }
 
     const manifestPath = path.join(repoRoot, 'k8s', 'base', 'application.yaml');
@@ -700,9 +1119,11 @@ async function resetDemoBaseline(options = {}) {
         namespace,
         scenarioId: null,
         scenarioIds: inventory.map((item) => item.scenarioId),
+        resetRequired: true,
         reason: baselineApply.message,
       };
       await writeLifecycleState(repoRoot, runner, state, namespace);
+      await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken: resetOwnerToken, resourceVersion: resetLockResourceVersion });
       return {
         ok: false,
         code: 'BASELINE_REAPPLY_FAILED',
@@ -723,11 +1144,13 @@ async function resetDemoBaseline(options = {}) {
         namespace,
         scenarioId: null,
         scenarioIds: inventory.map((item) => item.scenarioId),
+        resetRequired: true,
         fingerprint,
         remaining: verification.remaining,
         reason: 'Baseline verification failed after reset.',
       };
       await writeLifecycleState(repoRoot, runner, state, namespace);
+      await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken: resetOwnerToken, resourceVersion: resetLockResourceVersion });
       return {
         ok: false,
         code: 'BASELINE_VERIFICATION_FAILED',
@@ -751,7 +1174,7 @@ async function resetDemoBaseline(options = {}) {
       allowStacking: false,
     };
     await writeLifecycleState(repoRoot, runner, nextState, namespace);
-    await releaseLifecycleLock(repoRoot, runner, namespace);
+    await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken: resetOwnerToken, resourceVersion: resetLockResourceVersion });
 
     return {
       ok: true,
@@ -763,7 +1186,7 @@ async function resetDemoBaseline(options = {}) {
       cleanup,
     };
   } catch (error) {
-    await releaseLifecycleLock(repoRoot, runner, namespace);
+    await releaseLifecycleLock(repoRoot, runner, namespace, { ownerToken: resetOwnerToken, resourceVersion: resetLockResourceVersion });
     throw error;
   }
 }
@@ -876,8 +1299,13 @@ module.exports = {
   isUnresolvedLifecycleState,
   readLifecycleState,
   writeLifecycleState,
+  readLifecycleLock,
+  writeLifecycleLock,
+  acquireLifecycleLock,
+  releaseLifecycleLock,
   startDemoScenario,
   resetDemoBaseline,
+  resetScenarioOwnedResources,
   waitForActivation,
   runCli,
   measureBaselineFingerprint: computeBaselineFingerprint,
