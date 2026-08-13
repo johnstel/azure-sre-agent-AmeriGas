@@ -1,6 +1,8 @@
-# Azure SRE Agent AmeriGas Propane Demo Lab 🔥
+# Azure SRE Agent ZavaGas Propane Demo Lab 🔥
 
-A fully automated Azure environment for demonstrating **Azure SRE Agent** capabilities using an **AmeriGas Propane Distribution Platform**. Deploy a breakable multi-service propane distribution application on AKS and let SRE Agent diagnose and fix the issues!
+A fully automated Azure environment for demonstrating **Azure SRE Agent** capabilities using a **ZavaGas Propane Distribution Platform**. Deploy a breakable multi-service propane distribution application on AKS and let SRE Agent diagnose and fix the issues!
+
+> ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.
 
 ## 🎤 Presenter Mode Is the Primary Demo Flow
 
@@ -23,7 +25,7 @@ The presenter flow is the primary demo experience. Free-form operator mode remai
 - **Mission Control dashboard** with built-in GitHub Copilot SDK AI assistant
 - **Dev container** for consistent development experience
 
-## 🔥 AmeriGas Propane Architecture
+## 🔥 ZavaGas Propane Architecture
 
 The platform simulates a retail propane distributor with propane distribution and customer services. It supports **two distinct business domains** — see [`docs/sre-agent-knowledge.md`](docs/sre-agent-knowledge.md#domain-model) for the full domain model:
 
@@ -49,8 +51,6 @@ The platform simulates a retail propane distributor with propane distribution an
 - Azure region supporting SRE Agent: `East US 2`, `Sweden Central`, or `Australia East`
 - [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) installed
 - [VS Code](https://code.visualstudio.com/) with [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) (optional but recommended)
-
-![Menu](media/menu.png)
 
 ### Deploy
 
@@ -128,7 +128,7 @@ See [docs/COSTS.md](docs/COSTS.md) for detailed breakdown and optimization tips.
 
 ## 🔧 Available Scenarios
 
-| Scenario | AmeriGas Narrative | SRE Agent Diagnoses |
+| Scenario | ZavaGas Narrative | SRE Agent Diagnoses |
 |----------|-------------------|---------------------|
 | OOMKilled | Tank monitor overwhelmed by winter peak readings | Memory exhaustion, limit recommendations |
 | CrashLoop | Inventory service crashes — invalid pricing config | Exit codes, log analysis |

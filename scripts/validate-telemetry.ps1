@@ -275,7 +275,7 @@ function Start-TelemetryProbe {
         }
         note                = "Observed order-pricing-dependency GET /controlled-failure HTTP 503; transaction.id=$TransactionId"
         type                = 'Warning'
-        reportingController = 'amerigas.telemetry.validation'
+        reportingController = 'zavagas.telemetry.validation'
         reportingInstance   = 'validate-telemetry'
     }
     $event | ConvertTo-Json -Depth 10 -Compress | kubectl create -f - | Out-Null

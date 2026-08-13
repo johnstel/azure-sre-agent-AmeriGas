@@ -30,7 +30,7 @@ BeforeAll {
     . $script:ScriptPath -ResourceGroupName 'rg-test' -AgentName 'agent-test'
 
     function New-TempKnowledgeFile {
-        param([string]$Content = "# AmeriGas Propane Knowledge`nSample content.")
+        param([string]$Content = "# ZavaGas Propane Knowledge`nSample content.")
         $path = Join-Path ([System.IO.Path]::GetTempPath()) "knowledge-$([guid]::NewGuid()).md"
         Set-Content -Path $path -Value $Content -NoNewline
         return $path

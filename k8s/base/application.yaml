@@ -1,7 +1,10 @@
 # =============================================================================
-# AmeriGas Propane Distribution Platform - Base Application Deployment
+# ZavaGas Propane Distribution Platform - Base Application Deployment
 # =============================================================================
-# This is the healthy baseline deployment of the AmeriGas Propane Distribution
+# ZavaGas and all companies, people, locations, operational data, and
+# incidents in this lab are fictional and used only for demonstration.
+#
+# This is the healthy baseline deployment of the ZavaGas Propane Distribution
 # Platform for demonstrating Azure SRE Agent diagnosis capabilities.
 #
 # Domain Model — this platform supports TWO distinct propane business
@@ -41,7 +44,7 @@ kind: Namespace
 metadata:
   name: propane
   labels:
-    app.kubernetes.io/part-of: amerigas-propane-demo
+    app.kubernetes.io/part-of: zavagas-propane-demo
     sre-agent-demo: "true"
 
 ---
@@ -54,7 +57,7 @@ metadata:
   name: propane-telemetry-config
   namespace: propane
   labels:
-    app.kubernetes.io/part-of: amerigas-propane-demo
+    app.kubernetes.io/part-of: zavagas-propane-demo
 data:
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.propane.svc.cluster.local:4318"
   OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
@@ -1281,6 +1284,14 @@ spec:
 #      percentage, consumption, refill recommendation, delivery scheduling)
 #   2. Cylinder Exchange (retail cage locations: full/empty/reserved
 #      cylinder counts, cage replenishment, exchange-location terminology)
+#
+# The Cylinder Exchange section here and the dispatch console below both
+# read partner/site names, regions, and capacities at runtime from
+# GET /partner-catalog.json — a single shared, fictional catalog mounted
+# from the partner-catalog-config ConfigMap. That ConfigMap is generated
+# from the repo-owned tools/mission-control/data/partner-catalog.json by
+# scripts/deploy.ps1 (same pattern as telemetry-probe-source below), so
+# there is exactly one real source of truth for partner/site data.
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -1294,12 +1305,12 @@ data:
     <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AmeriGas — My Account</title>
+    <title>ZavaGas — My Account</title>
     <style>
-      :root { --bg: #0f172a; --card: #1e293b; --accent: #003DA5; --orange: #FF6900; --green: #34d399; --amber: #fbbf24; --red: #f87171; --text: #e2e8f0; --muted: #94a3b8; --border: #334155; }
+      :root { --bg: #0f172a; --card: #1e293b; --accent: #3454D1; --orange: #F5A623; --green: #34d399; --amber: #fbbf24; --red: #f87171; --text: #e2e8f0; --muted: #94a3b8; --border: #334155; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-      header { background: linear-gradient(135deg, #001d52 0%, #003DA5 100%); border-bottom: 3px solid var(--orange); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+      header { background: linear-gradient(135deg, #141E4D 0%, #3454D1 100%); border-bottom: 3px solid var(--orange); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
       header h1 { font-size: 1.4rem; font-weight: 600; display: flex; align-items: center; gap: .5rem; }
       .status-bar { display: flex; gap: 1.5rem; font-size: .85rem; align-items: center; }
       .status-bar .item { display: flex; align-items: center; gap: .4rem; }
@@ -1348,7 +1359,7 @@ data:
     </head>
     <body>
     <header>
-      <h1>&#128293; AmeriGas Propane &mdash; My Account</h1>
+      <h1>&#128293; ZavaGas Propane &mdash; My Account</h1>
       <div class="status-bar">
         <div class="item"><span class="dot green"></span> Account Active</div>
         <div class="item" id="clock"></div>
@@ -1418,7 +1429,7 @@ data:
       <h2 class="section-title">&#128295; Service Health</h2>
       <div class="health-grid" id="health-cards"></div>
     </main>
-    <div class="footer">AmeriGas &mdash; Propane Distribution Platform &mdash; Azure SRE Agent Demo Lab</div>
+    <div class="footer">ZavaGas &mdash; Propane Distribution Platform &mdash; Azure SRE Agent Demo Lab<br>ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.</div>
 
     <script>
     /* ---- helpers (Domain: Shared) ---- */
@@ -1482,7 +1493,7 @@ data:
       banner.innerHTML='<strong>' + (status==='healthy'?'All systems normal':'Customer visibility is temporarily degraded') + '.</strong> ' + message + (timestamp ? ' Last updated ' + new Date(timestamp).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) + '.' : '');
     }
     /* ---- bulk tank forecast (Domain: Bulk Tank) ---- */
-    // Simulated operational defaults for the demo only — AmeriGas operations SMEs must validate before describing these thresholds as policy.
+    // Simulated operational defaults for the demo only — ZavaGas operations SMEs must validate before describing these thresholds as policy.
     var BULK_TANK_POLICY = {
       profileId: 'bulk-tank-fixture-01',
       customerId: 'CUST-1842',
@@ -1639,17 +1650,30 @@ data:
       be.style.color=snapshot.balanceColor;
     }
 
-    /* ---- exchange locations (Domain: Cylinder Exchange) ---- */
-    var LOCATIONS=[
-      {name:'Home Depot King of Prussia',region:'PA-East',cageSize:20,dist:'2.3 mi'},
-      {name:'Walmart Collegeville',region:'PA-East',cageSize:20,dist:'4.1 mi'},
-      {name:"Lowe's Exton",region:'PA-East',cageSize:12,dist:'6.8 mi'},
-      {name:'ACE Hardware Lansdale',region:'PA-East',cageSize:12,dist:'8.2 mi'},
-      {name:'Wawa Wayne',region:'PA-East',cageSize:12,dist:'3.5 mi'},
-      {name:'ShopRite Norristown',region:'PA-Central',cageSize:20,dist:'5.6 mi'},
-      {name:'Giant Pottstown',region:'PA-Central',cageSize:20,dist:'12.4 mi'},
-      {name:'Costco Plymouth Meeting',region:'NJ-North',cageSize:24,dist:'7.9 mi'}
-    ];
+    /* ---- exchange locations (Domain: Cylinder Exchange) ----
+       Loaded from the single shared partner catalog (fictional Microsoft
+       demo-brand sites — see tools/mission-control/data/partner-catalog.json
+       and docs/BRAND-POLICY.md). The customer portal shows each partner's
+       primary site; the dispatch console (Retail Cage Operations Center)
+       shows every site from the same catalog. */
+    var LOCATIONS = loadPartnerCatalog(true);
+    function loadPartnerCatalog(primaryOnly){
+      var fallback = [{name:'Contoso Market #104',region:'Zava-East',cageSize:20,dist:'2.3 mi'}];
+      try{
+        var xhr=new XMLHttpRequest();
+        xhr.open('GET','/partner-catalog.json',false);
+        xhr.send(null);
+        if(xhr.status<200||xhr.status>=300) return fallback;
+        var catalog=JSON.parse(xhr.responseText);
+        var sites=(catalog&&catalog.sites)||[];
+        return sites.filter(function(s){return !primaryOnly||s.primary;}).map(function(s){
+          return {name:s.siteLabel,region:s.region,cageSize:s.cageSize,dist:s.distanceMiles.toFixed(1)+' mi'};
+        });
+      }catch(e){
+        console.error('Failed to load shared partner catalog',e);
+        return fallback;
+      }
+    }
 
     function computeLocationRows(){
       return LOCATIONS.map(function(loc){
@@ -1932,6 +1956,10 @@ spec:
               mountPath: /usr/share/nginx/html
             - name: nginx-conf
               mountPath: /etc/nginx/conf.d
+            - name: partner-catalog
+              mountPath: /usr/share/nginx/html/partner-catalog.json
+              subPath: partner-catalog.json
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -1951,6 +1979,9 @@ spec:
         - name: nginx-conf
           configMap:
             name: customer-portal-nginx
+        - name: partner-catalog
+          configMap:
+            name: partner-catalog-config
 
 ---
 apiVersion: v1
@@ -1984,9 +2015,9 @@ data:
     <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AmeriGas Retail Cage Operations Center</title>
+    <title>ZavaGas Retail Cage Operations Center</title>
     <style>
-      :root { --bg: #0f172a; --card: #1e293b; --accent: #a78bfa; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee; --text: #e2e8f0; --muted: #94a3b8; --blue: #003DA5; --orange: #FF6900; --empty: #334155; }
+      :root { --bg: #0f172a; --card: #1e293b; --accent: #a78bfa; --green: #34d399; --amber: #fbbf24; --red: #f87171; --cyan: #22d3ee; --text: #e2e8f0; --muted: #94a3b8; --blue: #3454D1; --orange: #F5A623; --empty: #334155; }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
       header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); border-bottom: 2px solid var(--accent); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
@@ -2078,7 +2109,7 @@ data:
     </head>
     <body>
     <header>
-      <h1>&#9881;&#65039; AmeriGas &mdash; Retail Cage Operations Center</h1>
+      <h1>&#9881;&#65039; ZavaGas &mdash; Retail Cage Operations Center</h1>
       <div class="status-bar">
         <div class="item"><span class="dot green"></span> Dispatcher Mode</div>
         <div class="item">Cylinder Exchange Domain</div>
@@ -2142,24 +2173,33 @@ data:
       <h2 class="section-title">&#128295; Platform Health</h2>
       <div class="grid" id="health-grid"></div>
     </main>
-    <div class="footer">AmeriGas &mdash; Retail Cage Operations Center &mdash; Azure SRE Agent Demo Lab</div>
+    <div class="footer">ZavaGas &mdash; Retail Cage Operations Center &mdash; Azure SRE Agent Demo Lab<br>ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.</div>
 
     <script>
     // Domain: Cylinder Exchange
-    const LOCATIONS = [
-      { name: 'Home Depot KoP', region: 'PA-East' },
-      { name: 'Walmart Collegeville', region: 'PA-East' },
-      { name: "Lowe's Exton", region: 'PA-East' },
-      { name: 'ACE Lansdale', region: 'PA-East' },
-      { name: 'Wawa Wayne', region: 'PA-East' },
-      { name: 'ShopRite Norristown', region: 'PA-East' },
-      { name: 'Giant Pottstown', region: 'PA-Central' },
-      { name: 'Costco Plymouth Meeting', region: 'PA-East' },
-      { name: 'Home Depot Allentown', region: 'PA-Central' },
-      { name: "BJ's Whitehall", region: 'PA-Central' },
-      { name: 'Tractor Supply Quakertown', region: 'PA-Central' },
-      { name: 'Walmart Easton', region: 'PA-Central' },
-    ];
+    // Loaded from the single shared partner catalog (fictional Microsoft
+    // demo-brand sites — see tools/mission-control/data/partner-catalog.json
+    // and docs/BRAND-POLICY.md). The dispatch console (Retail Cage Operations
+    // Center) shows every site; the customer portal shows each partner's
+    // primary site from the same catalog.
+    const LOCATIONS = loadPartnerCatalog(false);
+    function loadPartnerCatalog(primaryOnly){
+      const fallback = [{ name: 'Contoso Market #104', region: 'Zava-East', cageSize: 20 }];
+      try{
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', '/partner-catalog.json', false);
+        xhr.send(null);
+        if (xhr.status < 200 || xhr.status >= 300) return fallback;
+        const catalog = JSON.parse(xhr.responseText);
+        const sites = (catalog && catalog.sites) || [];
+        return sites.filter(s => !primaryOnly || s.primary).map(s => ({
+          name: s.siteLabel, region: s.region, cageSize: s.cageSize
+        }));
+      }catch(e){
+        console.error('Failed to load shared partner catalog', e);
+        return fallback;
+      }
+    }
 
     const DELIVERY_TIMES = ['Tomorrow 6AM', 'Tomorrow 2PM', 'Thu 8AM', 'Thu 2PM', 'Fri 6AM', 'Fri 10AM', 'Sat 7AM', 'None Scheduled'];
     const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -2236,14 +2276,15 @@ data:
     // Domain: Cylinder Exchange
     function generateLocationData() {
       const next = LOCATIONS.map(loc => {
-        const full = rand(2, 18);
-        const transit = rand(0, 3);
-        const empty = 20 - full - transit;
+        const cageSize = loc.cageSize || 20;
+        const full = rand(1, Math.max(1, cageSize - 2));
+        const transit = rand(0, Math.max(0, Math.min(3, cageSize - full)));
+        const empty = cageSize - full - transit;
         const turnover = randF(1.5, 5.0);
         const stockoutHrs = full > 0 ? +(full / (turnover / 24)).toFixed(1) : 0;
         const nextDelivery = (full <= 6 && transit > 0) ? DELIVERY_TIMES[rand(0, 5)] :
                               full <= 10 ? DELIVERY_TIMES[rand(0, 6)] : DELIVERY_TIMES[rand(5, 7)];
-        return { ...loc, full, empty, transit, turnover, stockoutHrs, nextDelivery };
+        return { ...loc, cageSize, full, empty, transit, turnover, stockoutHrs, nextDelivery };
       });
       LAST_KNOWN_LOCATION_DATA = next;
       locationData = next;
@@ -2255,7 +2296,7 @@ data:
       const totalLocs = source.length ? source.length : rand(42, 48);
       const totalCylinders = source.reduce((sum, loc) => sum + loc.full + loc.transit, 0) || rand(680, 720);
       const critCount = source.filter(l => l.full <= 3).length || rand(2, 6);
-      const avgFill = source.length ? (source.reduce((s, l) => s + l.full, 0) / (source.length * 20) * 100).toFixed(1) : randF(65, 85);
+      const avgFill = source.length ? (source.reduce((s, l) => s + l.full / l.cageSize, 0) / source.length * 100).toFixed(1) : randF(65, 85);
       const deliveries = rand(8, 18);
       const temps = [28, 35, 42, 55, 62, 70, 78];
       const tomorrowTemp = temps[rand(0, temps.length - 1)];
@@ -2287,8 +2328,11 @@ data:
 
         let cylinders = '';
         let idx = 0;
-        for (let r = 0; r < 4; r++) {
-          for (let c = 0; c < 5; c++) {
+        const cols = 5;
+        const rows = Math.ceil(loc.cageSize / cols);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            if (idx >= loc.cageSize) break;
             let cls = 'cylinder ';
             if (idx < loc.full) cls += 'full';
             else if (idx < loc.full + loc.transit) cls += 'transit';
@@ -2324,7 +2368,7 @@ data:
         const tr = document.createElement('tr');
         tr.innerHTML =
           '<td>' + loc.name + '</td>' +
-          '<td>' + loc.full + ' / 20</td>' +
+          '<td>' + loc.full + ' / ' + loc.cageSize + '</td>' +
           '<td>' + loc.empty + '</td>' +
           '<td>~' + loc.turnover + '/day</td>' +
           '<td>' + loc.stockoutHrs + 'h</td>' +
@@ -2803,7 +2847,7 @@ data:
       lastUpdatedAt: '2025-02-11T06:51:12Z',
       processingComponent: 'safety-compliance-monitor',
       processingState: 'suppressed',
-      threshold: 'SIMULATED tank level drop below 20% after 15 minutes; requires AmeriGas safety SME validation.',
+      threshold: 'SIMULATED tank level drop below 20% after 15 minutes; requires ZavaGas safety SME validation.',
       processedExactlyOnce: false,
       recoveredAt: null
     };
@@ -2848,7 +2892,7 @@ data:
         '  <div class="alarm-metric"><span class="label">Last Update</span><span class="value">' + formatAlarmTimestamp(BULK_TANK_SAFETY_ALARM.lastUpdatedAt) + '</span></div>' +
         '  <div class="alarm-metric"><span class="label">Processor</span><span class="value">' + BULK_TANK_SAFETY_ALARM.processingComponent + '</span></div>' +
         '</div>' +
-        '<div class="alarm-note"><strong>SIMULATED threshold:</strong> ' + BULK_TANK_SAFETY_ALARM.threshold + ' This wording requires AmeriGas safety SME validation before production use.</div>' +
+        '<div class="alarm-note"><strong>SIMULATED threshold:</strong> ' + BULK_TANK_SAFETY_ALARM.threshold + ' This wording requires ZavaGas safety SME validation before production use.</div>' +
         '<div class="alarm-note" style="margin-top:.55rem"><strong>Processing state:</strong> ' + statusSummary + '</div>';
     }
 
@@ -2880,19 +2924,20 @@ data:
     }
 
     const LOG_MESSAGES = [
-      { level: 'info', msg: 'Bulk delivery route updated for Brookside: +120 gallons scheduled' },
-      { level: 'warn', msg: 'Low tank warning: Oak Ridge reserve down to {n}% tank fill' },
-      { level: 'info', msg: 'Delivery truck T-{id} en route to Walmart Collegeville (ETA {n}min)' },
+      { level: 'info', msg: 'Bulk delivery route updated for Zava-East residential customers: +120 gallons scheduled' },
+      { level: 'warn', msg: 'Low tank warning: Zava-North residential customers reserve down to {n}% tank fill' },
+      { level: 'info', msg: 'Delivery truck T-{id} en route to Northwind Traders #412 (ETA {n}min)' },
       { level: 'info', msg: 'Daily tank audit complete: {n} residential sites below threshold' },
       { level: 'warn', msg: 'Temperature drop forecast — demand increase expected Thu-Fri' },
       { level: 'info', msg: 'Refill recommendation recalculated: {n} priority tank sites' },
-      { level: 'info', msg: 'Bulk delivery completed at Giant Pottstown: 1,200 gallons delivered' },
+      { level: 'info', msg: 'Bulk delivery completed at Tailspin Toys #611: 1,200 gallons delivered' },
       { level: 'err',  msg: 'Connection timeout to MongoDB replica' },
-      { level: 'warn', msg: 'Costco Plymouth Meeting tank reserve at capacity — hold deliveries' },
+      { level: 'warn', msg: 'Fourth Coffee #704 tank reserve at capacity — hold deliveries' },
       { level: 'info', msg: 'RabbitMQ consumer reconnected successfully' },
-      { level: 'info', msg: "Lowe's Exton compliance check passed — all tank seals intact" },
-      { level: 'warn', msg: 'Delivery T-{id} delayed: traffic on I-76 ({n}min ETA slip)' },
+      { level: 'info', msg: 'Adventure Works Outfitters #317 compliance check passed — all tank seals intact' },
+      { level: 'warn', msg: 'Delivery T-{id} delayed: traffic on Route Z-58 ({n}min ETA slip)' },
     ];
+
 
     function addLogEntry() {
       const box = document.getElementById('ops-log');
@@ -3107,6 +3152,10 @@ spec:
               mountPath: /usr/share/nginx/html
             - name: nginx-conf
               mountPath: /etc/nginx/conf.d
+            - name: partner-catalog
+              mountPath: /usr/share/nginx/html/partner-catalog.json
+              subPath: partner-catalog.json
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -3126,6 +3175,9 @@ spec:
         - name: nginx-conf
           configMap:
             name: dispatch-console-nginx
+        - name: partner-catalog
+          configMap:
+            name: partner-catalog-config
 
 ---
 apiVersion: v1
@@ -3296,7 +3348,7 @@ metadata:
   namespace: propane
   labels:
     app: telemetry-baseline
-    app.kubernetes.io/part-of: amerigas-propane-demo
+    app.kubernetes.io/part-of: zavagas-propane-demo
 spec:
   schedule: "*/2 * * * *"
   concurrencyPolicy: Forbid

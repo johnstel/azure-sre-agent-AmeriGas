@@ -1,5 +1,5 @@
 // =============================================================================
-// Bicep Parameters File - AmeriGas Propane SRE Agent DEMO Profile (issue #19)
+// Bicep Parameters File - ZavaGas Propane SRE Agent DEMO Profile (issue #19)
 // =============================================================================
 // Version-controlled demo profile: enables ONLY the minimum plumbing needed
 // for the native alert-to-approved-remediation response plan (the dedicated
@@ -69,7 +69,7 @@ param userNodeCount = 3
 
 // Tags
 param tags = {
-  workload: 'amerigas-propane-demo'
+  workload: 'zavagas-propane-demo'
   environment: 'demo'
   managedBy: 'bicep'
   purpose: 'propane-sre-demo'

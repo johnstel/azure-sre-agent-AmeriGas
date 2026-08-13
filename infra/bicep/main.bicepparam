@@ -1,5 +1,5 @@
 // =============================================================================
-// Bicep Parameters File - AmeriGas Propane SRE Agent Sandbox
+// Bicep Parameters File - ZavaGas Propane SRE Agent Sandbox
 // =============================================================================
 // Deploy with: az deployment sub create --location eastus2 --template-file main.bicep
 // =============================================================================
@@ -29,7 +29,7 @@ param userNodeCount = 3
 
 // Tags
 param tags = {
-  workload: 'amerigas-propane-demo'
+  workload: 'zavagas-propane-demo'
   environment: 'sandbox'
   managedBy: 'bicep'
   purpose: 'propane-sre-demo'

@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self';">
-<title>AmeriGas Propane — Mission Control</title>
+<title>ZavaGas Propane — Mission Control</title>
 <style>
 /* ── Reset & Base ──────────────────────────────────────── */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --blue:#003DA5;--blue-dark:#00234f;--orange:#FF6900;--orange-dim:#cc5500;
+  --blue:#3454D1;--blue-dark:#141E4D;--orange:#F5A623;--orange-dim:#C97F0E;
   --bg:#0d1117;--card:#161b22;--card-border:#30363d;--text:#e6edf3;
   --text-dim:#8b949e;--green:#3fb950;--red:#f85149;--yellow:#d29922;
   --cyan:#58a6ff;
@@ -66,7 +66,7 @@ header .meta .ctx{background:rgba(255,255,255,.12);padding:3px 10px;border-radiu
 .presenter-step-card p{font-size:.82rem;color:var(--text-dim);line-height:1.6}
 .presenter-track-list{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.25rem}
 .presenter-track-button{background:var(--card);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:6px;font-weight:600;cursor:pointer}
-.presenter-track-button.active{background:rgba(255,105,0,.18);border-color:rgba(255,105,0,.4);color:var(--orange)}
+.presenter-track-button.active{background:rgba(245,166,35,.18);border-color:rgba(245,166,35,.4);color:var(--orange)}
 .presenter-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
 .presenter-actions button{padding:8px 14px;border-radius:6px;border:none;font-weight:700;font-size:.8rem;cursor:pointer}
 .presenter-actions .primary{background:var(--orange);color:#fff}
@@ -77,7 +77,7 @@ header .meta .ctx{background:rgba(255,255,255,.12);padding:3px 10px;border-radiu
 .presenter-meta{font-size:.75rem;color:var(--text-dim)}
 .presenter-step-list{display:flex;flex-direction:column;gap:.5rem;margin-top:.2rem}
 .presenter-step-item{padding:.5rem .6rem;border-radius:6px;background:var(--card);border:1px solid var(--card-border);font-size:.78rem;color:var(--text-dim)}
-.presenter-step-item.current{border-color:rgba(255,105,0,.5);color:var(--orange)}
+.presenter-step-item.current{border-color:rgba(245,166,35,.5);color:var(--orange)}
 .presenter-step-item.done{border-color:rgba(63,185,80,.4);color:var(--green)}
 .presenter-step-item.locked{opacity:.6}
 .presenter-focus-label{font-size:.72rem;color:var(--text-dim);padding-top:.2rem}
@@ -157,6 +157,9 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 
 /* ── Connection Banner ─────────────────────────────────── */
 #conn-banner{display:none;background:var(--red);color:#fff;text-align:center;padding:6px;font-size:.82rem;font-weight:600}
+
+/* ── Fictional Data Disclaimer ─────────────────────────── */
+.disclaimer-footer{text-align:center;padding:1rem;color:var(--text-dim);font-size:.75rem;border-top:1px solid var(--card-border);margin-top:1rem}
 
 /* ── Infrastructure Grid ──────────────────────────────── */
 .infra-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.75rem}
@@ -350,7 +353,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
 <div id="conn-banner">⚠ Cannot reach cluster — is kubectl configured?</div>
 
 <header>
-  <div class="brand"><span class="fire">🔥</span> AmeriGas Propane — Mission Control</div>
+  <div class="brand"><span class="fire">🔥</span> ZavaGas Propane — Mission Control</div>
   <div class="meta">
     <span id="cluster-ctx" class="ctx">loading…</span>
     <span id="azure-sub" class="ctx">loading…</span>
@@ -565,6 +568,8 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
     <div id="terminal-output" class="terminal-output"></div>
   </div>
 
+  <footer class="disclaimer-footer">ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.</footer>
+
 </div>
 
 <!-- Destroy Confirmation Modal -->
@@ -621,7 +626,7 @@ tr.status-failed{animation:pulse 2s ease-in-out infinite}
   </div>
   <div class="chat-messages" id="chat-messages">
     <div class="chat-welcome" id="chat-welcome">
-      <h4>🔥 AmeriGas AI Operations Assistant</h4>
+      <h4>🔥 ZavaGas AI Operations Assistant</h4>
       <p>Powered by GitHub Copilot SDK — ask me anything about your propane platform.</p>
       <div class="quick-prompts">
         <button class="quick-prompt" data-action="quick-prompt">What's the health of my cluster?</button>

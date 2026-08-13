@@ -413,7 +413,7 @@ async function evaluateReadiness(input = {}, runtime = {}) {
         status: 'pass',
         blocking: true,
         evidence: { name: group.name, location: group.location || 'unknown' },
-        remediation: 'Keep the active resource group aligned to the deployed AmeriGas environment before the demo begins.',
+        remediation: 'Keep the active resource group aligned to the deployed ZavaGas environment before the demo begins.',
         durationMs: 30,
       }));
     }

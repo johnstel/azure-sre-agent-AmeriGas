@@ -119,14 +119,14 @@ Describe "Test-CustomAgentSemanticMatch / Test-FilterSemanticMatch / Test-Handle
     }
 
     It "matches an incident-filter spec round-tripped through real JSON encode/decode" {
-        $spec = New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'AmeriGas Propane Demo - MongoDB Down' -AlertSeverity 1
+        $spec = New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'ZavaGas Propane Demo - MongoDB Down' -AlertSeverity 1
         $decoded = ConvertTo-DecodedSpec -Spec $spec
         Test-FilterSemanticMatch -Expected $spec -Actual $decoded | Should -Be $true
     }
 
     It "detects a filter semantic mismatch (different severity)" {
-        $spec = New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'AmeriGas Propane Demo - MongoDB Down' -AlertSeverity 1
-        $tampered = ConvertTo-DecodedSpec -Spec (New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'AmeriGas Propane Demo - MongoDB Down' -AlertSeverity 2)
+        $spec = New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'ZavaGas Propane Demo - MongoDB Down' -AlertSeverity 1
+        $tampered = ConvertTo-DecodedSpec -Spec (New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'ZavaGas Propane Demo - MongoDB Down' -AlertSeverity 2)
         Test-FilterSemanticMatch -Expected $spec -Actual $tampered | Should -Be $false
     }
 
@@ -192,7 +192,7 @@ Describe "New-IncidentHandlerDataPlaneSpec — always Review mode" {
 
 Describe "Get-RenderedCustomAgentInstructions" {
     It "substitutes every documented placeholder and leaves none unrendered" {
-        $rendered = Get-RenderedCustomAgentInstructions -InstructionsFilePath $script:InstructionsPath -SubscriptionId 'sub-123' -ResourceGroupName 'rg-srelab-eastus2' -AksClusterName 'aks-srelab' -AlertTitle 'AmeriGas Propane Demo - MongoDB Down' -AlertSeverity 1
+        $rendered = Get-RenderedCustomAgentInstructions -InstructionsFilePath $script:InstructionsPath -SubscriptionId 'sub-123' -ResourceGroupName 'rg-srelab-eastus2' -AksClusterName 'aks-srelab' -AlertTitle 'ZavaGas Propane Demo - MongoDB Down' -AlertSeverity 1
         $rendered | Should -Match 'sub-123'
         $rendered | Should -Match 'rg-srelab-eastus2'
         $rendered | Should -Match 'aks-srelab'
@@ -335,7 +335,7 @@ Describe "Set-CustomAgentDataPlaneIdempotent" {
 
 Describe "Set-IncidentFilterDataPlaneIdempotent / Set-IncidentHandlerDataPlaneIdempotent" {
     BeforeEach {
-        $script:filterSpec = New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'AmeriGas Propane Demo - MongoDB Down' -AlertSeverity 1
+        $script:filterSpec = New-IncidentFilterDataPlaneSpec -Id 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder' -AlertTitle 'ZavaGas Propane Demo - MongoDB Down' -AlertSeverity 1
         $script:handlerSpec = New-IncidentHandlerDataPlaneSpec -Id 'mongodb-down-response-plan' -IncidentFilterId 'mongodb-down-response-plan' -CustomAgentName 'mongodb-down-responder'
     }
 

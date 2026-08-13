@@ -1,6 +1,6 @@
 # Cost Estimation Guide
 
-This document provides estimated costs for running the Azure SRE Agent AmeriGas Propane Demo Lab.
+This document provides estimated costs for running the Azure SRE Agent ZavaGas Propane Demo Lab.
 
 > **Note:** Costs are estimates based on US East 2 region pay-as-you-go pricing as of April 2026. Actual costs may vary based on region, usage patterns, and Azure pricing changes. All resources are tagged with `SecurityControl=Ignore`.
 

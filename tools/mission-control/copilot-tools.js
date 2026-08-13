@@ -1,5 +1,5 @@
 /**
- * Copilot SDK custom tool definitions for AmeriGas Mission Control.
+ * Copilot SDK custom tool definitions for ZavaGas Mission Control.
  *
  * Each tool wraps kubectl / az CLI operations that the Copilot agent
  * can invoke to inspect, diagnose, and remediate the propane platform.
@@ -20,6 +20,7 @@ const {
 } = require('./security-policy');
 const { getApprovalContext } = require('./auth');
 const { SCENARIO_MAP } = require('./scenario-catalog');
+const { resolveDeployedScope } = require('./deployment-scope');
 
 const execFileAsync = util.promisify(execFile);
 const IS_WIN = process.platform === 'win32';
@@ -436,22 +437,15 @@ function createTools(securityState = createSecurityState(), incidentStore = null
       description: 'Get Azure cluster context information: current kube context, subscription, resource group, and region.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => runTool('get_cluster_info', {}, async () => {
-        const configuredSubscription = String(process.env.MISSION_CONTROL_SUBSCRIPTION_ID || process.env.AZURE_SUBSCRIPTION_ID || '').trim();
-        const configuredResourceGroup = String(process.env.MISSION_CONTROL_RESOURCE_GROUP || process.env.MISSION_CONTROL_RESOURCE_GROUP_NAME || process.env.AZURE_RESOURCE_GROUP || '').trim();
-        const [context, account, rg] = await Promise.all([
+        const [context, scope] = await Promise.all([
           kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster configured'),
-          az('account', 'show', '-o', 'json').catch(() => '{}'),
-          configuredSubscription && configuredResourceGroup
-            ? az('group', 'show', '--subscription', configuredSubscription, '--name', configuredResourceGroup, '-o', 'json').catch(() => '{}')
-            : '{}',
+          resolveDeployedScope({ az }),
         ]);
-        const acct = JSON.parse(account || '{}');
-        const group = JSON.parse(rg || '{}');
         return [
           `Kubernetes Context: ${context}`,
-          `Subscription: ${acct.name || 'Unknown'} (${acct.id || configuredSubscription || ''})`,
-          `Resource Group: ${group.name || configuredResourceGroup || 'Not found'}`,
-          `Region: ${group.location || 'Unknown'}`,
+          `Subscription: ${scope.subscriptionName || 'Unknown'} (${scope.subscriptionId || ''})`,
+          `Resource Group: ${scope.resourceGroupName}`,
+          `Region: ${scope.location || 'Unknown'}`,
         ].join('\n');
       }, { telemetry: true }),
     }),

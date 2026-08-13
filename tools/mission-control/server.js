@@ -29,6 +29,7 @@ const { createAssertionScheduler } = require('./assertion-scheduler');
 const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
 const { evaluateReadiness, resolveProfileRequirements, resolveRequirementFlag } = require('./readiness');
 const operationLifecycle = require('./operation-lifecycle');
+const { resolveDeployedScope } = require('./deployment-scope');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -570,48 +571,24 @@ app.get('/api/events', async (req, res) => {
 
 app.get('/api/cluster-info', async (req, res) => {
   try {
-    const configuredScope = resolveConfiguredReadinessScope();
-    const [context, accountRaw, rgRaw] = await Promise.all([
+    const query = (req && req.query) || {};
+    const [context, scope] = await Promise.all([
       kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster'),
-      az('account', 'show', '-o', 'json').catch(() => '{}'),
-      az('group', 'show', '--subscription', configuredScope.subscriptionId, '--name', configuredScope.resourceGroupName, '-o', 'json').catch(() => '{}'),
+      resolveDeployedScope({
+        az,
+        subscriptionId: query.subscriptionId || query.subscription,
+        resourceGroupName: query.resourceGroupName || query.resourceGroup,
+      }),
     ]);
-    const account = JSON.parse(accountRaw || '{}');
-    const group = JSON.parse(rgRaw || '{}');
     res.json({
       context,
-      subscription: account.name || 'Unknown',
-      subscriptionId: account.id || configuredScope.subscriptionId || '',
-      resourceGroup: group.name || configuredScope.resourceGroupName || 'Not found',
-      location: group.location || 'Unknown',
+      subscription: scope.subscriptionName || 'Unknown',
+      subscriptionId: scope.subscriptionId,
+      resourceGroup: scope.resourceGroupName,
+      location: scope.location || '',
     });
   } catch (err) { res.status(err && err.statusCode === 400 ? 400 : 500).json({ error: err.message }); }
 });
-
-function isValidGuid(value) {
-  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(String(value || ''));
-}
-
-function isValidResourceGroupName(value) {
-  return /^[A-Za-z0-9][A-Za-z0-9._()\-]{0,88}$/.test(String(value || ''));
-}
-
-function resolveConfiguredReadinessScope() {
-  const subscriptionId = String(process.env.MISSION_CONTROL_SUBSCRIPTION_ID || process.env.AZURE_SUBSCRIPTION_ID || '').trim();
-  const resourceGroupName = String(process.env.MISSION_CONTROL_RESOURCE_GROUP || process.env.MISSION_CONTROL_RESOURCE_GROUP_NAME || process.env.AZURE_RESOURCE_GROUP || '').trim();
-
-  if (!subscriptionId || !resourceGroupName) {
-    throw Object.assign(new Error('Server readiness scope is not configured. Set MISSION_CONTROL_SUBSCRIPTION_ID and MISSION_CONTROL_RESOURCE_GROUP on the server.'), { statusCode: 400 });
-  }
-  if (!isValidGuid(subscriptionId)) {
-    throw Object.assign(new Error(`MISSION_CONTROL_SUBSCRIPTION_ID must be a valid GUID, received: ${subscriptionId}`), { statusCode: 400 });
-  }
-  if (!isValidResourceGroupName(resourceGroupName)) {
-    throw Object.assign(new Error(`MISSION_CONTROL_RESOURCE_GROUP must be a valid Azure resource group name, received: ${resourceGroupName}`), { statusCode: 400 });
-  }
-
-  return { subscriptionId, resourceGroupName };
-}
 
 async function resolveNativeSreAgentEvidence(scope) {
   try {
@@ -637,35 +614,16 @@ async function resolveNativeSreAgentEvidence(scope) {
 
 async function resolveAuthorizedReadinessScope(req) {
   const query = req && req.query ? req.query : {};
-  const configured = resolveConfiguredReadinessScope();
-  const suppliedSubscription = String(query.subscriptionId || query.subscription || '').trim();
-  const suppliedResourceGroup = String(query.resourceGroupName || query.resourceGroup || '').trim();
-
-  if (suppliedSubscription && suppliedSubscription !== configured.subscriptionId) {
-    throw Object.assign(new Error(`Request subscriptionId "${suppliedSubscription}" does not match the server-configured subscription "${configured.subscriptionId}".`), { statusCode: 400 });
-  }
-  if (suppliedResourceGroup && suppliedResourceGroup !== configured.resourceGroupName) {
-    throw Object.assign(new Error(`Request resourceGroupName "${suppliedResourceGroup}" does not match the server-configured resource group "${configured.resourceGroupName}".`), { statusCode: 400 });
-  }
-
-  const account = JSON.parse(await az('account', 'show', '-o', 'json').catch(() => '{}'));
-  const actualSubscriptionId = String(account.id || account.subscriptionId || '').trim();
-  if (!actualSubscriptionId) {
-    throw Object.assign(new Error('No active Azure account subscription is available for the readiness gate.'), { statusCode: 400 });
-  }
-  if (actualSubscriptionId !== configured.subscriptionId) {
-    throw Object.assign(new Error(`Azure account context subscription "${actualSubscriptionId}" does not match the configured readiness subscription "${configured.subscriptionId}".`), { statusCode: 400 });
-  }
-
-  const group = JSON.parse(await az('group', 'show', '--subscription', configured.subscriptionId, '--name', configured.resourceGroupName, '-o', 'json').catch(() => '{}'));
-  if (!group || !group.name || String(group.name).toLowerCase() !== configured.resourceGroupName.toLowerCase()) {
-    throw Object.assign(new Error(`Configured resource group "${configured.resourceGroupName}" was not found in subscription "${configured.subscriptionId}".`), { statusCode: 400 });
-  }
+  const scope = await resolveDeployedScope({
+    az,
+    subscriptionId: query.subscriptionId || query.subscription,
+    resourceGroupName: query.resourceGroupName || query.resourceGroup,
+  });
 
   return {
     context: 'server-configured',
-    subscriptionId: configured.subscriptionId,
-    resourceGroupName: configured.resourceGroupName,
+    subscriptionId: scope.subscriptionId,
+    resourceGroupName: scope.resourceGroupName,
     profile: String(query.profile || process.env.MISSION_CONTROL_PROFILE || 'default').trim() || 'default',
     runId: String(query.runId || process.env.MISSION_CONTROL_RUN_ID || 'mission-control').trim() || 'mission-control',
     timeoutMs: Number(query.timeoutMs ?? query.timeout ?? 90000),
@@ -1023,7 +981,7 @@ let chatHistory = [];
 async function createCopilotSession() {
   const tools = createTools(securityState, incidentStore, { scheduleAssertion: schedulePostActionAssertion });
   return copilotClient.createSession({
-    clientName: 'amerigas-mission-control',
+    clientName: 'zavagas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
     tools, availableTools: tools.map(t => t.name),
   });
@@ -1164,7 +1122,7 @@ async function preflight() {
 if (require.main === module) {
   (async () => {
     console.log('');
-    console.log('  🔥 AmeriGas Propane — Mission Control');
+    console.log('  🔥 ZavaGas Propane — Mission Control');
     console.log('  ─────────────────────────────────────');
     console.log('  Powered by GitHub Copilot SDK');
     console.log('');

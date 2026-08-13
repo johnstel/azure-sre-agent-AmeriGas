@@ -21,7 +21,7 @@ exactly one PATCH.
 
 # Task details (verbatim prompt sent to the agent)
 
-Review the operational health of the AmeriGas propane distribution platform
+Review the operational health of the ZavaGas propane distribution platform
 in resource group {{RESOURCE_GROUP}} (subscription {{SUBSCRIPTION_ID}}),
 AKS cluster {{AKS_CLUSTER_NAME}}, namespace `propane`. This is a read-only
 review — do not take, propose, or request approval for any write action.

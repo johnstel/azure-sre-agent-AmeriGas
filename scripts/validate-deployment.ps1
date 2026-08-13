@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Validates that the Azure SRE Agent AmeriGas Propane Demo Lab deployment is healthy.
+    Validates that the Azure SRE Agent ZavaGas Propane Demo Lab deployment is healthy.
 
 .DESCRIPTION
     This script checks:
@@ -82,7 +82,7 @@ function Write-Section {
 Write-Host @"
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                  AmeriGas Propane SRE Demo Lab - Validation                   ║
+║                  ZavaGas Propane SRE Demo Lab - Validation                   ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Checking deployment health and readiness...                                 ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -596,7 +596,7 @@ if (Write-Check "All nodes are Ready" ($healthyNodes -eq $totalNodes) "$healthyN
 # =============================================================================
 # APPLICATION HEALTH
 # =============================================================================
-Write-Section "AmeriGas Propane Application (propane namespace)"
+Write-Section "ZavaGas Propane Application (propane namespace)"
 
 # Check if namespace exists
 $namespace = kubectl get namespace propane -o json 2>$null | ConvertFrom-Json

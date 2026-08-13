@@ -1,0 +1,127 @@
+{
+  "$comment": "Machine-readable brand/data policy for the ZavaGas Propane Demo Lab (issue #27). This is the single source of truth for the allowlist/denylist/exclusions used by scripts/audit-brand-policy.ps1. See docs/BRAND-POLICY.md for the human-readable explanation. The canonical fictional partner/site catalog lives in a separate single file (referenced below, not duplicated here): tools/mission-control/data/partner-catalog.json.",
+  "displayName": "ZavaGas",
+  "slug": "zavagas-propane-demo",
+  "partnerCatalogFile": "tools/mission-control/data/partner-catalog.json",
+  "disclaimer": "ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.",
+  "allowlist": [
+    "Microsoft", "Azure", "GitHub", "Kubernetes", "MongoDB", "RabbitMQ", "OpenTelemetry",
+    "Copilot", "AKS", "Bicep", "PowerShell", "Node.js", "Vue.js", "Rust", "Go", "Python",
+    "nginx", "Docker", "Grafana", "Prometheus", "Log Analytics", "Application Insights",
+    "Key Vault", "Container Registry", "OTLP", "OTel", "Pester", "npm", "kubectl",
+    "Contoso", "Fabrikam", "Adventure Works", "Northwind Traders", "Wide World Importers",
+    "Tailspin Toys", "Fourth Coffee", "Woodgrove", "ZavaGas", "Zava-East", "Zava-Central",
+    "Zava-North"
+  ],
+  "allowlistNotes": "Contoso, Fabrikam, Adventure Works, Northwind Traders, Wide World Importers, Tailspin Toys, Fourth Coffee, and Woodgrove are well-known FICTIONAL Microsoft sample/demo brands (see docs/BRAND-POLICY.md for source links). They are allowlisted here because they are the approved canonical fictional partner catalog for this lab, not because they are real ZavaGas partners or real companies.",
+  "denylist": [
+    "AmeriGas",
+    "Walmart",
+    "Home Depot",
+    "Lowe's",
+    "Wawa",
+    "ShopRite",
+    "Giant Pottstown",
+    "Costco",
+    "ACE Hardware",
+    "BJ's",
+    "Tractor Supply",
+    "King of Prussia",
+    "Collegeville",
+    "Exton",
+    "Lansdale",
+    "Norristown",
+    "Pottstown",
+    "Plymouth Meeting",
+    "Allentown",
+    "Whitehall",
+    "Quakertown",
+    "Easton",
+    "Philadelphia"
+  ],
+  "denylistNotes": "'Giant Pottstown' (not the bare common word 'giant') is denylisted to avoid false positives on ordinary English usage of 'giant' elsewhere in the repo, while still catching the specific real Giant Food Stores + Pottstown, PA reference named in issue #27's evidence section. Apostrophe-free variants like 'Lowes' and 'BJs' are intentionally NOT separately denylisted: they collide with ordinary camelCase code identifiers (e.g. 'BJs' matches inside 'jobJson'), so only the apostrophe forms actually used in this repo's historical content ('Lowe's', 'BJ's') are checked. All other denylist terms are specific enough (proper nouns / multi-word phrases) not to collide with ordinary prose or code identifiers.",
+  "exclusions": [
+    {
+      "path": ".git/",
+      "reason": "Git internal object store and history. Immutable and out of scope for a non-destructive rebrand; git history is never rewritten."
+    },
+    {
+      "path": "governance/brand-policy.json",
+      "reason": "This policy file itself must legitimately contain every denylisted term in order to check for it."
+    },
+    {
+      "path": "docs/BRAND-POLICY.md",
+      "reason": "The human-readable policy document legitimately quotes the denylist terms it documents."
+    },
+    {
+      "path": "scripts/audit-brand-policy.ps1",
+      "reason": "The audit tool's own source may reference denylist term examples in comments/tests."
+    },
+    {
+      "path": "scripts/tests/audit-brand-policy.tests.ps1",
+      "reason": "Pester fixtures intentionally inject banned terms to verify the audit tool flags them (positive test cases)."
+    },
+    {
+      "path": "scripts/tests/brand-slug-consistency.tests.ps1",
+      "reason": "Test descriptions/comments reference 'AmeriGas' only to document a pre-existing, unrelated infra/terraform naming finding and to describe what the slug-drift regex checks for (a regression guard, not banned content)."
+    },
+    {
+      "path": "scripts/tests/fixtures/brand-policy/invalid.md",
+      "reason": "Negative-case Pester fixture. Intentionally contains banned real-brand/retailer terms so the audit tool can be tested against known-bad content."
+    },
+    {
+      "path": "tools/mission-control/test/partner-catalog.test.js",
+      "reason": "This test intentionally quotes denylisted retailer/location terms as literal negative-check strings, asserting they do NOT appear elsewhere in the deployed manifest (a regression guard, not banned content)."
+    },
+    {
+      "path": "tools/mission-control/test/deployment-scope.test.js",
+      "reason": "This test's comments reference the pre-migration 'amerigas-propane-demo' tag value only to document and verify tag-migration determinism (a regression guard, not banned content)."
+    },
+    {
+      "path": "*.png",
+      "reason": "Binary image files are not scanned for text content."
+    },
+    {
+      "path": "*.jpg",
+      "reason": "Binary image files are not scanned for text content."
+    },
+    {
+      "path": "*.zip",
+      "reason": "Binary archive files are not scanned for text content."
+    },
+    {
+      "path": "*.ico",
+      "reason": "Binary image files are not scanned for text content."
+    },
+    {
+      "path": "package-lock.json",
+      "reason": "Dependency lockfile metadata is generated by npm and out of scope for brand content review."
+    },
+    {
+      "path": "node_modules/",
+      "reason": "Third-party dependency source code is not repository-owned content and is not tracked by git."
+    },
+    {
+      "path": "CHANGELOG.md",
+      "reason": "Historical changelog entries are an archival record of past releases, similar to closed issue/PR history."
+    }
+  ],
+  "intentionalLegacyReferencesNotes": "Narrow (path, term) exemptions for files that legitimately must contain a literal old-brand term as DATA (not audience-facing prose praising/naming the old brand) -- e.g. a migration script matching the literal old tag value it replaces, or an admin checklist documenting the repository's actual current GitHub name. Unlike the file-level 'exclusions' above, an entry here exempts ONLY the exact declared term in the exact declared file: any OTHER denylist term appearing in that same file (e.g. a real retailer name) is still a violation. Prefer removing an unnecessary old-brand mention over adding an entry here; only use this for cases where the old term must literally appear.",
+  "intentionalLegacyReferences": [
+    {
+      "path": "docs/REPO-RENAME-CHECKLIST.md",
+      "term": "AmeriGas",
+      "rationale": "Documents the repository's actual current GitHub name (azure-sre-agent-AmeriGas) for the optional admin rename checklist; renaming the repo is explicitly out of scope for this code-only rebrand (see issue #27's non-goals)."
+    },
+    {
+      "path": "scripts/migrate-brand-tags.ps1",
+      "term": "AmeriGas",
+      "rationale": "Old workload tag/brand slug literal value (amerigas-propane-demo) that the non-destructive migration script detects and merges to the new zavagas-propane-demo value."
+    },
+    {
+      "path": "scripts/tests/migrate-brand-tags.tests.ps1",
+      "term": "AmeriGas",
+      "rationale": "Pester fixtures mock the literal old tag value (amerigas-propane-demo) the migration script above detects and migrates from."
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-# Security Findings — AmeriGas Propane SRE Demo Lab
+# Security Findings — ZavaGas Propane SRE Demo Lab
 
 > **Scope**: Full security scan of infrastructure-as-code (Bicep), Kubernetes manifests,
 > deployment scripts, and application configuration.

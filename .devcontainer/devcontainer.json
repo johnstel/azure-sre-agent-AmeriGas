@@ -1,5 +1,5 @@
 {
-    "name": "AmeriGas Propane SRE Demo Lab",
+    "name": "ZavaGas Propane SRE Demo Lab",
     "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
     "features": {
         "ghcr.io/devcontainers/features/azure-cli:1": {

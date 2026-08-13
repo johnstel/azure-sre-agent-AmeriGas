@@ -8,7 +8,7 @@
 
 set -e
 
-echo "🔧 Setting up AmeriGas Propane SRE Demo Lab dev container..."
+echo "🔧 Setting up ZavaGas Propane SRE Demo Lab dev container..."
 
 # Install additional tools
 echo "📦 Installing additional tools..."
@@ -55,7 +55,7 @@ EOF
 echo "📝 Setting up shell aliases..."
 cat >> ~/.bashrc << 'EOF'
 
-# AmeriGas Propane SRE Demo Lab aliases
+# ZavaGas Propane SRE Demo Lab aliases
 alias k='kubectl'
 alias kgp='kubectl get pods -n propane'
 alias kgs='kubectl get svc -n propane'
@@ -111,7 +111,7 @@ EOF
 # Same for PowerShell
 mkdir -p ~/.config/powershell
 cat > ~/.config/powershell/Microsoft.PowerShell_profile.ps1 << 'EOF'
-# AmeriGas Propane SRE Demo Lab PowerShell Profile
+# ZavaGas Propane SRE Demo Lab PowerShell Profile
 
 # Aliases
 Set-Alias -Name k -Value kubectl
@@ -173,7 +173,7 @@ function menu {
     Write-Host @"
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                    AmeriGas Propane SRE Demo Lab                                ║
+║                    ZavaGas Propane SRE Demo Lab                                 ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Commands:                                                                   ║
 ║    az login --use-device-code  - Login to Azure                              ║

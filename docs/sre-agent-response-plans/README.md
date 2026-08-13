@@ -1,7 +1,7 @@
 # Alert-to-Approved-Remediation Response Plan (MongoDB-Down Demo Scenario)
 
 This directory holds the version-controlled artifacts for the native Azure
-SRE Agent response plan implemented for [issue #19](https://github.com/johnstel/azure-sre-agent-AmeriGas/issues/19):
+SRE Agent response plan implemented for issue #19:
 a genuine Azure Monitor alert, routed through a native SRE Agent **response
 plan** to a **custom agent**, that investigates, proposes exactly one
 approved remediation action, and verifies recovery — with a full native
@@ -63,8 +63,7 @@ This selects `infra/bicep/main.demo.bicepparam` instead of the standard
 
 - `deployAlerts = true` (the four baseline alerts)
 - `deployDemoResponsePlan = true`, which turns on, and ONLY on:
-  - the dedicated `mongoDbDownDemoAlert` (title `AmeriGas Propane Demo -
-    MongoDB Down`, severity 1)
+  - the dedicated `mongoDbDownDemoAlert` (title `ZavaGas Propane Demo - MongoDB Down`, severity 1)
   - `incidentManagementConfiguration.type = AzMonitor` on the SRE Agent
   - `demoLeastPrivilegeRbac = true` on the SRE Agent's resource-group RBAC
     (Reader + Log Analytics Reader only — **no** Contributor / Log

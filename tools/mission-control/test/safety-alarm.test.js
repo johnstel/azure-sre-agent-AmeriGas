@@ -87,7 +87,7 @@ test('the bulk tank safety alarm is deterministic and includes the required tele
   assert.match(appText, /triggeredAt:\s*'2025-02-11T06:41:52Z'/);
   assert.match(appText, /lastUpdatedAt:\s*'2025-02-11T06:51:12Z'/);
   assert.match(appText, /processingComponent:\s*'safety-compliance-monitor'/);
-  assert.match(appText, /SIMULATED tank level drop below 20% after 15 minutes; requires AmeriGas safety SME validation\./);
+  assert.match(appText, /SIMULATED tank level drop below 20% after 15 minutes; requires ZavaGas safety SME validation\./);
   assert.match(scenarioText, /alarm_id: "BT-SAFETY-ALM-00042"/);
   assert.match(scenarioText, /simulated_severity: "SEV-1"/);
   assert.match(scenarioText, /ack_state: "pending"/);

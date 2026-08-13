@@ -1,10 +1,10 @@
 # Breakable Scenarios Guide
 
-This guide explains each failure scenario available in the AmeriGas Propane SRE Demo Lab and how to use them for demonstrating Azure SRE Agent capabilities.
+This guide explains each failure scenario available in the ZavaGas Propane SRE Demo Lab and how to use them for demonstrating Azure SRE Agent capabilities.
 
 ## Quick Reference
 
-| Scenario | File | Domain | AmeriGas Narrative | SRE Agent Diagnosis |
+| Scenario | File | Domain | ZavaGas Narrative | SRE Agent Diagnosis |
 |----------|------|--------|-------------------|---------------------|
 | OOMKilled | `oom-killed.yaml` | Bulk Tank | Tank monitor overwhelmed by winter peak readings | Identifies OOM events, recommends memory limits |
 | CrashLoop | `crash-loop.yaml` | Shared | Inventory service crash — invalid pricing config | Shows exit codes, logs analysis |
@@ -18,7 +18,6 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |
 | MongoDB Down | `mongodb-down.yaml` | Shared | Tank database outage — cascading order failure | Dependency tracing, root cause; native alert-to-approved-remediation response plan in the demo profile (see [sre-agent-response-plans/README.md](sre-agent-response-plans/README.md)) |
 | Service Mismatch | `service-mismatch.yaml` | Bulk Tank | Tank monitor service failure after "v2 upgrade" | Endpoint/selector analysis |
-| Dependency Latency | `dependency-latency.yaml` | Shared | Order checkout pricing-lookup dependency gradually slows down after an emergency config change while all pods stay Ready | SLO/trace/metric correlation, config-change clue |
 
 > **Telemetry proof is not a break scenario.** `scripts/validate-telemetry.ps1` calls the repo-owned `order-pricing-dependency` `GET /controlled-failure` route, verifies its deterministic HTTP 503, and then creates the correlated Kubernetes event without changing the healthy baseline. The `telemetry-probe` resource emits truthful CLIENT dependency telemetry; it never impersonates tank-monitor, inventory-service, or order-service. `AppRequests` contains only the repo-owned failure endpoint's truthful server span. Use the transaction ID to verify `AppRequests`, `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`, and `KubeEvents` before applying any scenario.
 
@@ -226,7 +225,7 @@ kubectl delete deployment fleet-telemetry-monitor -n propane
 - Simulates a bulk tank reading that drops from ~71% to ~12% within a short window.
 - The alarm is generated with a deterministic asset ID, reading age, simulated severity, acknowledgement state, and timestamps.
 - The workload pods remain healthy while the alarm-processing component delays and suppresses the incoming safety event.
-- The scenario is clearly labeled as simulated and requires AmeriGas safety SME validation before acting as production policy.
+- The scenario is clearly labeled as simulated and requires ZavaGas demo safety SME validation before acting as production policy.
 
 **How to break:**
 ```bash
@@ -414,7 +413,7 @@ kubectl apply -f k8s/base/application.yaml
 This is the only scenario wired to a native Azure SRE Agent response plan — a genuine Azure Monitor alert routed to a custom agent, not Mission Control Copilot and not a generic webhook. Deploy with the demo profile (`.\scripts\deploy.ps1 -Location eastus2 -Demo -AcceptSubscriptionScopeMonitoringRbac`, or `infra/bicep/main.demo.bicepparam` directly) to enable it. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for the full flow, bounded alert timing, the required subscription-scope Monitoring Contributor acknowledgement, and the three rehearsal variants (approve / deny / expiry — required before calling this demo proven). With the demo profile active:
 
 1. Applying `k8s/scenarios/mongodb-down.yaml` is the only step required — no chat prompt needed.
-2. A dedicated Azure Monitor alert (`AmeriGas Propane Demo - MongoDB Down`, severity 1) fires within a documented bounded time (~10 minutes: PT1M evaluation + Log Analytics ingestion latency).
+2. A dedicated Azure Monitor alert (`ZavaGas Propane Demo - MongoDB Down`, severity 1) fires within a documented bounded time (~10 minutes: PT1M evaluation + Log Analytics ingestion latency).
 3. The alert routes to the `mongodb-down-responder` custom agent via the `mongodb-down-response-plan` response plan (Review autonomy).
 4. The agent gathers Kubernetes + Application Insights/Log Analytics evidence, proposes exactly one action (`az aks command invoke` scaling `propane/mongodb` back to 1 replica), and waits for an SRE Agent Administrator to approve it.
 5. Approval executes the action once; denial or expiry leaves the environment unchanged. The agent verifies recovery and closes out the thread.
@@ -476,7 +475,7 @@ kubectl apply -f k8s/base/application.yaml
 
 **File:** `k8s/scenarios/dependency-latency.yaml`
 
-**Business narrative:** Order checkout calls a synthetic pricing/tax lookup dependency (`order-pricing-dependency`) during fulfillment. An on-call engineer pushes an "emergency" config change that raises the pricing-lookup timeout from 45ms to 950ms to work around a vendor rate limit. Every order-service pod, the dependency pod, and the synthetic traffic generator (`order-checkout-probe`) stay Running and Ready the entire time — there is no crash, no restart, no scheduling failure. The only symptom is that checkout gets slower and slower over about 75 seconds, exactly the kind of subtle, application-level incident that a pure Kubernetes pod-status view will miss.
+**Business narrative:** Order checkout calls a synthetic pricing/tax lookup dependency (`order-pricing-dependency`) during fulfillment. An on-call engineer pushes an "emergency" config change that raises the pricing-lookup timeout from 45ms to 950ms to work around a vendor rate limit. Every order-service pod, the dependency pod, and the synthetic traffic generator (`order-checkout-probe`) stay Running and Ready the entire time — there is no crash, no restart, no scheduling failure. The only symptom is that checkout latency rises steadily over about 75 seconds, exactly the kind of subtle, application-level incident that a pure Kubernetes pod-status view will miss.
 
 **Documented SLO / error ceiling:** p95 checkout latency must stay at or below **500ms**; the synthetic error rate must stay at or below **2%**. Baseline p95 is ~58ms. During the incident p95 ramps from ~45ms toward ~950ms over ~75 seconds while the error rate stays under 0.5% — the incident is genuinely latency-led, not error-led.
 

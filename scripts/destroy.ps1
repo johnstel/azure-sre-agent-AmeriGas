@@ -33,7 +33,7 @@ $ErrorActionPreference = 'Stop'
 Write-Host @"
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                   AmeriGas Propane SRE Demo Lab - DESTROY                     ║
+║                   ZavaGas Propane SRE Demo Lab - DESTROY                     ║
 ║                                                                              ║
 ║                         ⚠️  WARNING ⚠️                                        ║
 ║                                                                              ║

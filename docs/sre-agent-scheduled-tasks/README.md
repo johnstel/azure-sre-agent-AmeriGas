@@ -2,7 +2,7 @@
 
 This directory holds the version-controlled artifacts for the native Azure
 SRE Agent **scheduled task** `daily-propane-health-report`, implemented for
-[issue #24](https://github.com/johnstel/azure-sre-agent-AmeriGas/issues/24):
+issue #24:
 a genuine, native, recurring Azure SRE Agent automation — **not** a cron
 job, **not** a GitHub Action, **not** Mission Control Copilot, and **not**
 a manual portal click.
@@ -53,8 +53,8 @@ body schema** is not. `New-ScheduledTaskDataPlaneSpec` in the bootstrap
 script is a best-effort mapping from the documented portal workflow
 (<https://learn.microsoft.com/azure/sre-agent/create-scheduled-task>: task
 name, task details, frequency, time of day, response custom agent, message
-grouping, agent autonomy level) — every write is followed by a semantic
-re-read that compares the platform's own interpreted fields against what
+grouping, agent autonomy level) — every write is then semantically
+re-read so the platform's own interpreted fields are compared against what
 was sent, exactly like `bootstrap-sre-agent-response-plan.ps1`. A silently
 dropped/reinterpreted field surfaces as `SchemaMismatch`, never a false
 success.

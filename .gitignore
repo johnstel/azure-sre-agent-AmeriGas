@@ -42,6 +42,8 @@ crash.*.log
 !settings.json
 !extensions.json
 !tools/mission-control/scenario-catalog.json
+!tools/mission-control/data/partner-catalog.json
+!governance/brand-policy.json
 !**/bicepconfig.json
 
 # Bicep lock files

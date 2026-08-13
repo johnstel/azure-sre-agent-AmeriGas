@@ -1,4 +1,4 @@
-# AmeriGas Propane Platform — Helpdesk Supportability Guide
+# ZavaGas Propane Platform — Helpdesk Supportability Guide
 
 > **Audience**: L1/L2 support staff, on-call engineers, helpdesk operators
 > **Platform**: Azure Kubernetes Service (AKS) · Namespace: `propane`
@@ -24,7 +24,7 @@
 
 ## 1. Platform Overview
 
-The AmeriGas Propane Platform is a retail propane distribution system running on AKS. It manages:
+The ZavaGas Propane Platform is a retail propane distribution system running on AKS. It manages:
 
 - **Customer self-service** — account management, delivery scheduling, tank level viewing
 - **Dispatch operations** — fleet management, order fulfillment tracking
