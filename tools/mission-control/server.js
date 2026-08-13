@@ -113,6 +113,8 @@ const PRESENT_SESSION_FORBIDDEN_FIELDS = new Set([
   'approved',
   'runApproved',
   'actionKey',
+  'expectedActionKey',
+  'expectedActionIdentity',
   'actionId',
   'selectedAction',
   'remediationExecuted',
@@ -196,7 +198,7 @@ function sanitizePresenterRequestBody(body = {}) {
       rejected.push(key);
       continue;
     }
-    if (key === 'focusMode' || key === 'notesVisible' || key === 'trackId' || key === 'correlationId' || key === 'incidentCorrelationId' || key === 'scenarioId' || key === 'lastEvent') {
+    if (key === 'focusMode' || key === 'notesVisible' || key === 'trackId' || key === 'stepId' || key === 'correlationId' || key === 'incidentCorrelationId' || key === 'scenarioId' || key === 'lastEvent') {
       clean[key] = value;
     }
   }
@@ -216,6 +218,7 @@ function handlePresenterMutation(req, res, operation) {
 
   const context = {
     trackId: clean.trackId,
+    stepId: clean.stepId,
     scenarioId: clean.scenarioId,
     correlationId: clean.correlationId,
     incidentCorrelationId: clean.incidentCorrelationId,

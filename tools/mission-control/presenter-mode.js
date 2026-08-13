@@ -91,6 +91,11 @@ function validatePresenterStep(step, catalog = TRACK_CATALOG) {
     if (!step.gate.action || typeof step.gate.action !== 'string') {
       errors.push(`Step ${step.id || 'unknown'} gate must include an action name`);
     }
+    if (['approval', 'remediation', 'recovery'].includes(step.gate.kind)) {
+      if (!step.gate.expectedActionKey || typeof step.gate.expectedActionKey !== 'string') {
+        errors.push(`Step ${step.id || 'unknown'} gate for kind ${step.gate.kind} must declare expectedActionKey`);
+      }
+    }
   }
   if (!step.resetBehavior || typeof step.resetBehavior !== 'string') {
     errors.push(`Step ${step.id || 'unknown'} is missing resetBehavior`);
@@ -183,6 +188,8 @@ const CLIENT_GATE_TRUTH_KEYS = new Set([
   'actionKey',
   'actionId',
   'selectedAction',
+  'expectedActionKey',
+  'expectedActionIdentity',
   'remediationExecuted',
   'actionExecuted',
   'executed',
@@ -212,6 +219,104 @@ const CLIENT_GATE_TRUTH_KEYS = new Set([
   'skipGate',
 ]);
 
+function getIncidentForTrustContext(currentState = {}, serverState = {}) {
+  const incident = serverState.activeIncident || serverState.incident || null;
+  if (!incident || typeof incident !== 'object') return null;
+
+  const expectedIncidentCorrelationId = currentState.incidentCorrelationId || serverState.incidentCorrelationId || null;
+  if (expectedIncidentCorrelationId && incident.correlationId && expectedIncidentCorrelationId !== incident.correlationId) {
+    return null;
+  }
+
+  return incident;
+}
+
+function deriveExpectedActionKeyFromIncident(step, currentState = {}, serverState = {}) {
+  if (!step || !step.gate || !['approval', 'remediation', 'recovery'].includes(step.gate.kind)) {
+    return null;
+  }
+
+  const incident = getIncidentForTrustContext(currentState, serverState);
+  if (!incident || !Array.isArray(incident.milestones)) {
+    return null;
+  }
+
+  const expectedScenarioId = currentState.scenarioId || serverState.scenarioId || (incident && incident.scenarioId) || null;
+  const candidateMilestones = incident.milestones.filter((milestone) => {
+    if (!milestone || !milestone.data || milestone.type !== 'action_proposed') {
+      return false;
+    }
+    const actionKey = milestone.data.actionKey || milestone.data.key || null;
+    if (!actionKey) {
+      return false;
+    }
+    if (expectedScenarioId && milestone.data.scenarioId && milestone.data.scenarioId !== expectedScenarioId) {
+      return false;
+    }
+    return true;
+  });
+
+  const chosen = candidateMilestones.length > 0 ? candidateMilestones[candidateMilestones.length - 1] : null;
+  return chosen && chosen.data && (chosen.data.actionKey || chosen.data.key) ? (chosen.data.actionKey || chosen.data.key) : null;
+}
+
+function bindExpectedActionKey(step, currentState = {}, serverState = {}) {
+  const incident = getIncidentForTrustContext(currentState, serverState);
+  const derivedExpectedActionKey = deriveExpectedActionKeyFromIncident(step, currentState, serverState);
+  const storedExpectedActionKey = currentState.expectedActionKey || serverState.expectedActionKey || null;
+
+  if (storedExpectedActionKey && derivedExpectedActionKey && storedExpectedActionKey !== derivedExpectedActionKey) {
+    return {
+      expectedActionKey: null,
+      expectedActionKeyRunCorrelationId: null,
+      expectedActionKeyIncidentCorrelationId: null,
+      expectedActionKeyScenarioId: null,
+      expectedActionKeyStepId: null,
+      hadTrustedActionBinding: false,
+      mismatch: true,
+    };
+  }
+
+  if (storedExpectedActionKey && !derivedExpectedActionKey) {
+    return {
+      expectedActionKey: null,
+      expectedActionKeyRunCorrelationId: null,
+      expectedActionKeyIncidentCorrelationId: null,
+      expectedActionKeyScenarioId: null,
+      expectedActionKeyStepId: null,
+      hadTrustedActionBinding: false,
+      mismatch: true,
+    };
+  }
+
+  const expectedActionKey = derivedExpectedActionKey || null;
+  if (!expectedActionKey || !incident) {
+    return {
+      expectedActionKey: null,
+      expectedActionKeyRunCorrelationId: null,
+      expectedActionKeyIncidentCorrelationId: null,
+      expectedActionKeyScenarioId: null,
+      expectedActionKeyStepId: null,
+      hadTrustedActionBinding: false,
+      mismatch: false,
+    };
+  }
+
+  const expectedActionKeyRunCorrelationId = currentState.correlationId || serverState.correlationId || null;
+  const expectedActionKeyIncidentCorrelationId = currentState.incidentCorrelationId || serverState.incidentCorrelationId || incident.correlationId || null;
+  const expectedActionKeyScenarioId = currentState.scenarioId || serverState.scenarioId || incident.scenarioId || null;
+
+  return {
+    expectedActionKey,
+    expectedActionKeyRunCorrelationId,
+    expectedActionKeyIncidentCorrelationId,
+    expectedActionKeyScenarioId,
+    expectedActionKeyStepId: step && step.id ? step.id : null,
+    hadTrustedActionBinding: true,
+    mismatch: false,
+  };
+}
+
 function containsClientGateTruth(context = {}) {
   if (!context || typeof context !== 'object') return false;
   return Object.keys(context).some((key) => CLIENT_GATE_TRUTH_KEYS.has(key));
@@ -238,15 +343,43 @@ function resolveTrustedPresenterGate(step, currentState = {}, serverState = {}) 
     return { allowed: false, reason: `stale gate callback for another presenter run (${suppliedCorrelationId} !== ${expectedRunCorrelationId})` };
   }
 
+  const incident = getIncidentForTrustContext(currentState, serverState);
   const expectedIncidentCorrelationId = currentState.incidentCorrelationId || serverState.incidentCorrelationId || null;
-  const incident = serverState.activeIncident || serverState.incident || null;
+  const expectedScenarioId = currentState.scenarioId || serverState.scenarioId || (incident && incident.scenarioId) || null;
+
   if (expectedIncidentCorrelationId && incident && incident.correlationId && expectedIncidentCorrelationId !== incident.correlationId) {
     return { allowed: false, reason: `stale incident callback for another run (${incident.correlationId} !== ${expectedIncidentCorrelationId})` };
   }
 
-  const expectedScenarioId = currentState.scenarioId || serverState.scenarioId || (incident && incident.scenarioId) || null;
-  const currentActionKey = currentState.actionKey || serverState.actionKey || null;
+  if (currentState.expectedActionKeyRunCorrelationId && expectedRunCorrelationId && currentState.expectedActionKeyRunCorrelationId !== expectedRunCorrelationId) {
+    return { allowed: false, reason: `stale action binding for another presenter run (${currentState.expectedActionKeyRunCorrelationId} !== ${expectedRunCorrelationId})` };
+  }
+  if (currentState.expectedActionKeyIncidentCorrelationId && incident && incident.correlationId && currentState.expectedActionKeyIncidentCorrelationId !== incident.correlationId) {
+    return { allowed: false, reason: `stale action binding for another incident (${currentState.expectedActionKeyIncidentCorrelationId} !== ${incident.correlationId})` };
+  }
+  if (currentState.expectedActionKeyScenarioId && expectedScenarioId && currentState.expectedActionKeyScenarioId !== expectedScenarioId) {
+    return { allowed: false, reason: `stale action binding for another scenario (${currentState.expectedActionKeyScenarioId} !== ${expectedScenarioId})` };
+  }
+  if (currentState.expectedActionKeyStepId && step && step.id && currentState.expectedActionKeyStepId !== step.id) {
+    return { allowed: false, reason: `stale action binding for a different step (${currentState.expectedActionKeyStepId} !== ${step.id})` };
+  }
+  const trustedActionBinding = bindExpectedActionKey(step, currentState, serverState);
+  const priorExpectedActionKey = currentState.expectedActionKey || serverState.expectedActionKey || null;
+  const expectedActionKey = trustedActionBinding.expectedActionKey || null;
+  if (priorExpectedActionKey && trustedActionBinding.expectedActionKey && priorExpectedActionKey !== trustedActionBinding.expectedActionKey) {
+    return { allowed: false, reason: `stale or mismatched action key for current incident (${priorExpectedActionKey} !== ${trustedActionBinding.expectedActionKey})` };
+  }
+  if (priorExpectedActionKey && !trustedActionBinding.expectedActionKey) {
+    return { allowed: false, reason: `stale or mismatched action key for current incident (${priorExpectedActionKey} does not match the trusted current incident proposal)` };
+  }
+  if (trustedActionBinding.mismatch) {
+    return { allowed: false, reason: `stale or mismatched action key for current incident (${priorExpectedActionKey || 'unknown'} does not match the trusted current incident proposal)` };
+  }
   const milestones = Array.isArray(incident && incident.milestones) ? incident.milestones : Array.isArray(serverState.milestones) ? serverState.milestones : [];
+  const keyMatches = (milestone) => {
+    const actionKey = milestone && milestone.data ? (milestone.data.actionKey || milestone.data.key || null) : null;
+    return Boolean(actionKey) && Boolean(expectedActionKey) && actionKey === expectedActionKey;
+  };
 
   const readiness = serverState.readiness || serverState.baselineHealth || serverState.health || {};
   const readinessStatus = readiness.status || readiness.state || 'unknown';
@@ -259,17 +392,17 @@ function resolveTrustedPresenterGate(step, currentState = {}, serverState = {}) 
   const nativeEvidence = serverState.nativeEvidence || {};
   const nativeEvidenceAvailable = serverState.nativeEvidenceAvailable === true || nativeEvidence.available === true || (Array.isArray(nativeEvidence.categories) && nativeEvidence.categories.some((item) => item && item.available === true)) || (Array.isArray(serverState.evidenceCategories) && serverState.evidenceCategories.some((item) => item && item.available === true));
 
-  const actionProposed = milestones.some((m) => (m.type === 'action_proposed' || m.type === 'action_proposal') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
-  const actionApproved = milestones.some((m) => (m.type === 'action_approved' || m.type === 'approval_approved') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true) && (m.data && (m.data.approved === true || m.data.status === 'approved' || m.data.decision === 'approved')));
-  const actionDenied = milestones.some((m) => (m.type === 'action_denied' || m.type === 'approval_denied') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
-  const actionExpired = milestones.some((m) => (m.type === 'action_expired' || m.type === 'approval_expired') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
+  const actionProposed = milestones.some((m) => (m.type === 'action_proposed' || m.type === 'action_proposal') && keyMatches(m));
+  const actionApproved = milestones.some((m) => ['action_approved', 'approval_approved'].includes(m.type) && keyMatches(m) && m.data && (m.data.approved === true || m.data.status === 'approved' || m.data.decision === 'approved'));
+  const actionDenied = milestones.some((m) => ['action_denied', 'approval_denied'].includes(m.type) && keyMatches(m));
+  const actionExpired = milestones.some((m) => ['action_expired', 'approval_expired'].includes(m.type) && keyMatches(m));
 
-  const remediationExecuted = milestones.some((m) => (m.type === 'action_executed' || m.type === 'remediation_executed') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true) && (m.data && (m.data.success === true || m.data.status === 'success')));
+  const remediationExecuted = milestones.some((m) => ['action_result', 'action_executed', 'remediation_executed'].includes(m.type) && keyMatches(m) && m.data && (m.data.success === true || m.data.status === 'success'));
   const recoveryRecorded = incident ? incident.finalState === 'recovered' : false;
-  const postAssertionPassed = milestones.some((m) => (m.type === 'post_action_assertion' || m.type === 'recovery_assertion') && (m.data && (m.data.passed === true || m.data.status === 'passed')) && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
-  const finalRecovered = recoveryRecorded || milestones.some((m) => (m.type === 'recovery') && (m.data && m.data.recovered === true)) || postAssertionPassed;
+  const postAssertionPassed = milestones.some((m) => ['post_action_assertion', 'recovery_assertion'].includes(m.type) && keyMatches(m) && m.data && (m.data.passed === true || m.data.status === 'passed'));
+  const finalRecovered = recoveryRecorded || milestones.some((m) => m.type === 'recovery' && m.data && m.data.recovered === true) || postAssertionPassed;
 
-  const valueObserved = incident && (incident.finalState === 'recovered' || incident.scorecard || incident.valueSummary || (Array.isArray(incident.milestones) && incident.milestones.some((m) => m.type === 'recovery')));
+  const valueObserved = Boolean(incident && (incident.finalState === 'recovered' || incident.scorecard || incident.valueSummary || (Array.isArray(incident.milestones) && incident.milestones.some((m) => m.type === 'recovery'))));
 
   switch (gate.kind) {
     case 'readiness':
@@ -285,15 +418,33 @@ function resolveTrustedPresenterGate(step, currentState = {}, serverState = {}) 
       if (nativeEvidenceAvailable) return { allowed: true, reason: 'native evidence available' };
       if (serverState.nativeEvidenceStatus === 'Unavailable / requires scheduled-task setup') return { allowed: false, reason: 'Unavailable / requires scheduled-task setup' };
       return { allowed: false, reason: 'native evidence is not available for the current run' };
-    case 'approval':
+    case 'approval': {
+      if (!expectedActionKey) {
+        return { allowed: false, reason: 'approval is blocked because the exact action key is missing for this incident run' };
+      }
       return {
-        allowed: Boolean((serverState.approved === true || actionApproved) && actionProposed && !actionDenied && !actionExpired),
-        reason: (serverState.approved === true || actionApproved) && actionProposed && !actionDenied && !actionExpired ? 'approval is present and matches the current incident/action' : 'approval is required before the step can continue',
+        allowed: Boolean(actionProposed && actionApproved && !actionDenied && !actionExpired),
+        reason: actionProposed && actionApproved && !actionDenied && !actionExpired ? 'approval is present and matches the exact bound action for this incident' : 'approval is required before the step can continue for the exact action key',
       };
-    case 'remediation':
-      return { allowed: Boolean(remediationExecuted || serverState.remediationExecuted === true || serverState.actionExecuted === true), reason: remediationExecuted ? 'exact remediation completed' : 'exact remediation must be executed before continuing' };
-    case 'recovery':
-      return { allowed: Boolean(finalRecovered && postAssertionPassed), reason: finalRecovered && postAssertionPassed ? 'recovery verified with fresh evidence' : 'recovery must be verified with fresh assertions' };
+    }
+    case 'remediation': {
+      if (!expectedActionKey) {
+        return { allowed: false, reason: 'remediation is blocked because the exact action key is missing for this incident run' };
+      }
+      return {
+        allowed: Boolean(remediationExecuted),
+        reason: remediationExecuted ? 'exact remediation completed for the bound action' : 'exact remediation result must succeed for the exact bound action before continuing',
+      };
+    }
+    case 'recovery': {
+      if (!expectedActionKey) {
+        return { allowed: false, reason: 'recovery is blocked because the exact action key is missing for this incident run' };
+      }
+      return {
+        allowed: Boolean(finalRecovered && postAssertionPassed),
+        reason: finalRecovered && postAssertionPassed ? 'recovery verified with fresh evidence for the exact bound action' : 'recovery must be verified with fresh post-action assertions for the exact bound action',
+      };
+    }
     case 'incident-value':
       return { allowed: Boolean(valueObserved || serverState.valueSummaryRecorded === true || serverState.incidentValueRecorded === true), reason: valueObserved ? 'incident value summary is backed by the measured incident run' : 'incident value summary requires observed evidence' };
     case 'scheduled-task':
@@ -366,6 +517,11 @@ function defaultPresenterState() {
     correlationId: null,
     scenarioId: null,
     incidentCorrelationId: null,
+    expectedActionKey: null,
+    expectedActionKeyRunCorrelationId: null,
+    expectedActionKeyIncidentCorrelationId: null,
+    expectedActionKeyScenarioId: null,
+    expectedActionKeyStepId: null,
     notesVisible: false,
     focusMode: false,
     focusedPanels: [],
@@ -434,11 +590,12 @@ function createPresenterStateMachine(options = {}) {
       lastEvent: 'started',
     };
 
-    const gateResult = resolveTrustedPresenterGate(firstStep, nextState, context.serverProof || context.serverState || context.trustedState || {
+    const trustedEvidence = context.serverProof || context.serverState || context.trustedState || {
       correlationId: runCorrelationId,
       scenarioId: context.scenarioId || null,
       incidentCorrelationId: context.incidentCorrelationId || null,
-    });
+    };
+    const gateResult = resolveTrustedPresenterGate(firstStep, nextState, trustedEvidence);
     if (!gateResult.allowed) {
       return {
         ok: false,
@@ -448,7 +605,17 @@ function createPresenterStateMachine(options = {}) {
       };
     }
 
-    const saved = writeState(nextState);
+    const actionBinding = bindExpectedActionKey(firstStep, nextState, trustedEvidence);
+    const readyState = {
+      ...nextState,
+      expectedActionKey: actionBinding.expectedActionKey || null,
+      expectedActionKeyRunCorrelationId: actionBinding.expectedActionKeyRunCorrelationId || null,
+      expectedActionKeyIncidentCorrelationId: actionBinding.expectedActionKeyIncidentCorrelationId || null,
+      expectedActionKeyScenarioId: actionBinding.expectedActionKeyScenarioId || null,
+      expectedActionKeyStepId: actionBinding.expectedActionKeyStepId || null,
+    };
+
+    const saved = writeState(readyState);
     return { ok: true, allowed: true, state: saved, reason: 'presenter track started' };
   }
 
@@ -481,11 +648,12 @@ function createPresenterStateMachine(options = {}) {
 
     const track = getTrackById(current.trackId);
     const currentStep = track.steps.find((step) => step.id === current.currentStepId) || track.steps[0];
-    const gateResult = resolveTrustedPresenterGate(currentStep, current, context.serverProof || context.serverState || context.trustedState || {
+    const trustedEvidence = context.serverProof || context.serverState || context.trustedState || {
       correlationId: current.correlationId,
       scenarioId: current.scenarioId,
       incidentCorrelationId: current.incidentCorrelationId,
-    });
+    };
+    const gateResult = resolveTrustedPresenterGate(currentStep, current, trustedEvidence);
     if (!gateResult.allowed) {
       return {
         ok: false,
@@ -497,17 +665,31 @@ function createPresenterStateMachine(options = {}) {
 
     const nextIndex = track.steps.findIndex((step) => step.id === current.currentStepId);
     const nextStep = track.steps[nextIndex + 1] || null;
+    const actionBinding = nextStep ? bindExpectedActionKey(nextStep, { ...current, currentStepId: nextStep.id }, trustedEvidence) : { expectedActionKey: null, expectedActionKeyRunCorrelationId: null, expectedActionKeyIncidentCorrelationId: null, expectedActionKeyScenarioId: null, expectedActionKeyStepId: null };
     const updated = {
       ...current,
       completedSteps: Array.from(new Set([...current.completedSteps, current.currentStepId].filter(Boolean))),
       currentStepId: nextStep ? nextStep.id : null,
       status: nextStep ? 'running' : 'complete',
+      expectedActionKey: actionBinding.expectedActionKey || current.expectedActionKey || null,
+      expectedActionKeyRunCorrelationId: actionBinding.expectedActionKeyRunCorrelationId || current.expectedActionKeyRunCorrelationId || null,
+      expectedActionKeyIncidentCorrelationId: actionBinding.expectedActionKeyIncidentCorrelationId || current.expectedActionKeyIncidentCorrelationId || null,
+      expectedActionKeyScenarioId: actionBinding.expectedActionKeyScenarioId || current.expectedActionKeyScenarioId || null,
+      expectedActionKeyStepId: actionBinding.expectedActionKeyStepId || current.expectedActionKeyStepId || null,
       lastUpdated: new Date().toISOString(),
       lastEvent: nextStep ? 'continued' : 'completed',
       notesVisible: Boolean(context.notesVisible ?? current.notesVisible),
       focusMode: Boolean(context.focusMode ?? current.focusMode),
       focusedPanels: Array.isArray(context.focusedPanels) ? context.focusedPanels : current.focusedPanels,
     };
+
+    if (!nextStep && current.expectedActionKey) {
+      updated.expectedActionKey = null;
+      updated.expectedActionKeyRunCorrelationId = null;
+      updated.expectedActionKeyIncidentCorrelationId = null;
+      updated.expectedActionKeyScenarioId = null;
+      updated.expectedActionKeyStepId = null;
+    }
 
     const saved = writeState(updated);
     return { ok: true, allowed: true, state: saved, reason: nextStep ? 'continued' : 'completed' };
@@ -551,6 +733,11 @@ function createPresenterStateMachine(options = {}) {
     const updated = {
       ...current,
       status: 'aborted',
+      expectedActionKey: null,
+      expectedActionKeyRunCorrelationId: null,
+      expectedActionKeyIncidentCorrelationId: null,
+      expectedActionKeyScenarioId: null,
+      expectedActionKeyStepId: null,
       lastUpdated: new Date().toISOString(),
       lastEvent: 'aborted',
       notesVisible: Boolean(context.notesVisible ?? current.notesVisible),
@@ -577,6 +764,11 @@ function createPresenterStateMachine(options = {}) {
       currentStepId: firstStep.id,
       correlationId: null,
       incidentCorrelationId: context.incidentCorrelationId || null,
+      expectedActionKey: null,
+      expectedActionKeyRunCorrelationId: null,
+      expectedActionKeyIncidentCorrelationId: null,
+      expectedActionKeyScenarioId: null,
+      expectedActionKeyStepId: null,
       notesVisible: false,
       focusMode: false,
       focusedPanels: [],

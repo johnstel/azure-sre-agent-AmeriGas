@@ -127,6 +127,81 @@ test('stale callbacks, mismatched incidents, and out-of-order assertions are rej
   assert.match(mismatch.reason, /scenario assertion mismatch|inactive scenario/i);
 });
 
+test('exact action binding is required for approval, remediation, and recovery gates and rejects other action milestones', () => {
+  const machine = createPresenterStateMachine({ storage: createMemoryStore() });
+  const actionKey = 'mongo-restart-incident-42';
+  const incident = {
+    correlationId: 'INC-EXACT',
+    scenarioId: 'mongodb',
+    finalState: 'recovered',
+    milestones: [
+      { type: 'action_proposed', data: { actionKey, key: actionKey, scenarioId: 'mongodb' } },
+      { type: 'action_approved', data: { actionKey, approved: true, scenarioId: 'mongodb' } },
+      { type: 'action_result', data: { actionKey, success: true, scenarioId: 'mongodb' } },
+      { type: 'post_action_assertion', data: { actionKey, passed: true, scenarioId: 'mongodb' } },
+    ],
+  };
+  const proof = trustedServerProof({
+    correlationId: 'RUN-EXACT',
+    scenarioId: 'mongodb',
+    incidentCorrelationId: 'INC-EXACT',
+    activeIncident: incident,
+    baselineReady: true,
+    nativeEvidenceAvailable: true,
+    scenarioHealth: { scenarioId: 'mongodb', active: true },
+  });
+
+  const started = machine.startTrack('fast-wow', { correlationId: 'RUN-EXACT', serverProof: proof });
+  assert.equal(started.ok, true);
+
+  const approvalStep = machine.getTrackById('fast-wow').steps.find((step) => step.id === 'review-approval');
+  const remediationStep = machine.getTrackById('fast-wow').steps.find((step) => step.id === 'exact-remediation');
+  const recoveryStep = machine.getTrackById('fast-wow').steps.find((step) => step.id === 'verified-recovery');
+
+  assert.equal(evaluateGate(approvalStep, { serverProof: proof }, { correlationId: 'RUN-EXACT', scenarioId: 'mongodb', incidentCorrelationId: 'INC-EXACT' }).allowed, true);
+  assert.equal(evaluateGate(remediationStep, { serverProof: proof }, { correlationId: 'RUN-EXACT', scenarioId: 'mongodb', incidentCorrelationId: 'INC-EXACT' }).allowed, true);
+  assert.equal(evaluateGate(recoveryStep, { serverProof: proof }, { correlationId: 'RUN-EXACT', scenarioId: 'mongodb', incidentCorrelationId: 'INC-EXACT' }).allowed, true);
+
+  const otherActionProof = {
+    ...proof,
+    activeIncident: {
+      ...incident,
+      milestones: [
+        { type: 'action_proposed', data: { actionKey: 'other-action', key: 'other-action', scenarioId: 'mongodb' } },
+        { type: 'action_approved', data: { actionKey: 'other-action', approved: true, scenarioId: 'mongodb' } },
+      ],
+    },
+  };
+  const blockedOtherAction = evaluateGate(approvalStep, { serverProof: otherActionProof }, { correlationId: 'RUN-EXACT', scenarioId: 'mongodb', incidentCorrelationId: 'INC-EXACT', expectedActionKey: actionKey });
+  assert.equal(blockedOtherAction.allowed, false);
+  assert.match(blockedOtherAction.reason, /exact action key|mismatch|stale|blocked/i);
+
+  const missingKeyProof = {
+    ...proof,
+    activeIncident: {
+      ...incident,
+      milestones: [
+        { type: 'action_approved', data: { approved: true, scenarioId: 'mongodb' } },
+      ],
+    },
+  };
+  const blockedMissingKey = evaluateGate(approvalStep, { serverProof: missingKeyProof }, { correlationId: 'RUN-EXACT', scenarioId: 'mongodb', incidentCorrelationId: 'INC-EXACT', expectedActionKey: actionKey });
+  assert.equal(blockedMissingKey.allowed, false);
+  assert.match(blockedMissingKey.reason, /exact action key|missing|mismatch|stale/i);
+
+  const staleActionProof = {
+    ...proof,
+    correlationId: 'RUN-STALE',
+    activeIncident: {
+      ...incident,
+      correlationId: 'INC-OLD',
+    },
+  };
+  const blockedStaleAction = evaluateGate(approvalStep, { serverProof: staleActionProof }, { correlationId: 'RUN-EXACT', scenarioId: 'mongodb', incidentCorrelationId: 'INC-EXACT', expectedActionKey: actionKey });
+  assert.equal(blockedStaleAction.allowed, false);
+  assert.match(blockedStaleAction.reason, /stale|another/i);
+});
+
 test('pause, resume, reconnect, abort, and reset remain idempotent and restore the clean baseline safely', () => {
   const machine = createPresenterStateMachine({ storage: createMemoryStore() });
   machine.startTrack('deep-dive', {
