@@ -2410,38 +2410,224 @@ data:
       configChangedAt: '2025-01-01T00:00:00Z',
       runId: null,
       status: 'healthy',
+      mode: 'baseline',
       lastUpdatedAt: '2025-01-01T00:00:00Z'
     };
+
+    const ORDER_DEPENDENCY_LATENCY_POLL_INTERVAL_MS = 15000;
+    const ORDER_DEPENDENCY_LATENCY_STALE_AFTER_MS = 30000;
+
+    function coerceFiniteNumber(rawValue, fallbackValue, minValue, maxValue) {
+      const candidate = Number(rawValue);
+      if (!Number.isFinite(candidate)) return fallbackValue;
+      if (typeof minValue === 'number' && candidate < minValue) return fallbackValue;
+      if (typeof maxValue === 'number' && candidate > maxValue) return fallbackValue;
+      return candidate;
+    }
+
+    function sanitizeOrderDependencyLatencyStatus(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+
+      const config = payload.config && typeof payload.config === 'object' ? payload.config : {};
+      const modeValue = String(payload.mode || config.mode || payload.delayMode || config.delayMode || '').trim().toLowerCase();
+      const mode = ['baseline', 'ramp', 'recovery'].includes(modeValue) ? modeValue : null;
+      const metrics = payload.quantilesMs && typeof payload.quantilesMs === 'object' ? payload.quantilesMs : {};
+      const p50 = coerceFiniteNumber(payload.p50Ms ?? payload.p50 ?? metrics.p50 ?? config.p50Ms ?? config.p50, 0, 0, 10000);
+      const p95 = coerceFiniteNumber(payload.p95Ms ?? payload.p95 ?? metrics.p95 ?? config.p95Ms ?? config.p95, 0, 0, 10000);
+      const p99 = coerceFiniteNumber(payload.p99Ms ?? payload.p99 ?? metrics.p99 ?? config.p99Ms ?? config.p99, 0, 0, 10000);
+      const errorRate = coerceFiniteNumber(payload.errorRatePct ?? payload.errorRate ?? config.errorRatePct ?? config.errorRate, 0, 0, 100);
+      const readinessValue = payload.readiness ?? payload.readyPct ?? config.readiness ?? config.readyPct ?? 1;
+      const readinessRaw = Number(readinessValue);
+      const readiness = Number.isFinite(readinessRaw) ? (readinessRaw > 1 ? readinessRaw / 100 : readinessRaw) : 1;
+      if (!Number.isFinite(readiness) || readiness < 0 || readiness > 1) return null;
+      if (!Number.isFinite(p50) || !Number.isFinite(p95) || !Number.isFinite(p99) || p50 < 0 || p95 < 0 || p99 < 0) return null;
+      if (p95 < p50 || p99 < p95) return null;
+      if (errorRate < 0 || errorRate > 100) return null;
+
+      const runId = String(payload.runId || payload.run_id || config.runId || config.run_id || payload.correlationId || payload.correlation_id || '').trim();
+      const configVersion = String(payload.configVersion || payload.config_version || config.configVersion || config.config_version || '').trim();
+      const configChangeReason = String(payload.configChangeReason || payload.config_change_reason || config.configChangeReason || config.config_change_reason || 'Live scenario status from order-checkout-probe').trim();
+      const configChangedBy = String(payload.configChangedBy || payload.config_changed_by || config.configChangedBy || config.config_changed_by || 'platform-live').trim();
+      const lastUpdatedAt = String(payload.lastUpdatedAt || payload.updatedAt || payload.timestamp || config.lastUpdatedAt || config.updatedAt || config.timestamp || new Date().toISOString()).trim();
+      const timestamp = new Date(lastUpdatedAt).getTime();
+      if (!lastUpdatedAt || Number.isNaN(timestamp)) return null;
+      if (!runId || !configVersion) return null;
+
+      const inferredMode = mode || (p95 > ORDER_DEPENDENCY_LATENCY.sloP95ThresholdMs ? 'ramp' : (ORDER_DEPENDENCY_LATENCY.status === 'active' && p95 <= ORDER_DEPENDENCY_LATENCY.sloP95ThresholdMs ? 'recovery' : 'baseline'));
+      return {
+        mode: inferredMode,
+        p50Ms: p50,
+        p95Ms: p95,
+        p99Ms: p99,
+        errorRatePct: errorRate,
+        readiness: readiness,
+        runId: runId,
+        configVersion: configVersion,
+        configChangeReason: configChangeReason,
+        configChangedBy: configChangedBy,
+        configChangedAt: payload.configChangedAt || payload.config_changed_at || config.configChangedAt || config.config_changed_at || lastUpdatedAt,
+        lastUpdatedAt: lastUpdatedAt,
+        service: payload.service || config.service || 'order-checkout-probe'
+      };
+    }
+
+    function applyOrderDependencyLatencyStatus(payload) {
+      const sanitized = sanitizeOrderDependencyLatencyStatus(payload);
+      if (!sanitized) {
+        ORDER_DEPENDENCY_LATENCY.status = 'unavailable';
+        ORDER_DEPENDENCY_LATENCY.mode = 'baseline';
+        ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+        ORDER_DEPENDENCY_LATENCY.configChangeReason = 'Order dependency latency status is unavailable or malformed.';
+        renderOrderDependencyLatency();
+        return false;
+      }
+
+      const stale = Date.now() - new Date(sanitized.lastUpdatedAt).getTime() > ORDER_DEPENDENCY_LATENCY_STALE_AFTER_MS;
+      const derivedStatus = stale ? 'stale' : sanitized.mode === 'ramp' ? 'active' : sanitized.mode === 'recovery' ? 'recovered' : 'healthy';
+
+      ORDER_DEPENDENCY_LATENCY.status = derivedStatus;
+      ORDER_DEPENDENCY_LATENCY.mode = sanitized.mode;
+      ORDER_DEPENDENCY_LATENCY.currentP50Ms = sanitized.p50Ms;
+      ORDER_DEPENDENCY_LATENCY.currentP95Ms = sanitized.p95Ms;
+      ORDER_DEPENDENCY_LATENCY.currentP99Ms = sanitized.p99Ms;
+      ORDER_DEPENDENCY_LATENCY.errorRatePct = sanitized.errorRatePct;
+      ORDER_DEPENDENCY_LATENCY.runId = sanitized.runId;
+      ORDER_DEPENDENCY_LATENCY.configVersion = sanitized.configVersion;
+      ORDER_DEPENDENCY_LATENCY.configChangeReason = sanitized.configChangeReason;
+      ORDER_DEPENDENCY_LATENCY.configChangedBy = sanitized.configChangedBy;
+      ORDER_DEPENDENCY_LATENCY.configChangedAt = sanitized.configChangedAt;
+      ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = sanitized.lastUpdatedAt;
+      renderOrderDependencyLatency();
+      return true;
+    }
+
+    function fetchOrderDependencyLatencyStatus() {
+      if (typeof fetch !== 'function') {
+        ORDER_DEPENDENCY_LATENCY.status = 'unavailable';
+        ORDER_DEPENDENCY_LATENCY.mode = 'baseline';
+        ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+        renderOrderDependencyLatency();
+        return Promise.resolve(false);
+      }
+
+      return fetch('/api/orders/latency-status', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined,
+      })
+        .then(function (response) {
+          if (!response || !response.ok) {
+            throw new Error('HTTP ' + (response && response.status ? response.status : 'unavailable'));
+          }
+          return response.json();
+        })
+        .then(function (payload) {
+          const sanitized = sanitizeOrderDependencyLatencyStatus(payload);
+          if (!sanitized) {
+            throw new Error('Malformed latency status payload');
+          }
+          return applyOrderDependencyLatencyStatus(sanitized);
+        })
+        .catch(function (error) {
+          ORDER_DEPENDENCY_LATENCY.status = 'unavailable';
+          ORDER_DEPENDENCY_LATENCY.mode = 'baseline';
+          ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+          ORDER_DEPENDENCY_LATENCY.configChangeReason = 'Order dependency latency status unavailable: ' + (error && error.message ? error.message : 'unknown error');
+          renderOrderDependencyLatency();
+          return false;
+        });
+    }
 
     function renderOrderDependencyLatency() {
       const panel = document.getElementById('order-dependency-latency');
       if (!panel) return;
 
       const latency = ORDER_DEPENDENCY_LATENCY;
-      const breached = latency.currentP95Ms > latency.sloP95ThresholdMs;
-      const withinErrorCeiling = latency.errorRatePct <= latency.errorRateCeilingPct;
+      const breached = Number(latency.currentP95Ms) > Number(latency.sloP95ThresholdMs);
+      const withinErrorCeiling = Number(latency.errorRatePct) <= Number(latency.errorRateCeilingPct);
+      const isUnavailable = latency.status === 'unavailable' || latency.status === 'stale';
       const statusLabel = latency.status === 'active'
         ? 'SLO breached — latency-led incident'
         : latency.status === 'recovered'
           ? 'Recovered — below SLO threshold'
-          : 'Healthy — below SLO threshold';
+          : latency.status === 'stale'
+            ? 'Stale — last live status exceeded the freshness window'
+            : latency.status === 'unavailable'
+              ? 'Unavailable — status endpoint is not returning trusted data'
+              : 'Healthy — below SLO threshold';
 
-      panel.innerHTML =
-        '<div class="metric-grid">' +
-        '  <div class="metric-card"><div class="metric-label">p50 latency</div><div class="metric-value">' + latency.currentP50Ms + ' ms</div></div>' +
-        '  <div class="metric-card"><div class="metric-label">p95 latency</div><div class="metric-value">' + latency.currentP95Ms + ' ms</div></div>' +
-        '  <div class="metric-card"><div class="metric-label">p99 latency</div><div class="metric-value">' + latency.currentP99Ms + ' ms</div></div>' +
-        '  <div class="metric-card"><div class="metric-label">Error rate</div><div class="metric-value">' + latency.errorRatePct.toFixed(1) + '%</div></div>' +
-        '</div>' +
-        '<div class="queue-detail-row"><strong>Transaction:</strong> ' + latency.impactedTransaction + ' <strong>Delayed dependency:</strong> ' + latency.dependencyName + ' <strong>Status:</strong> ' + statusLabel + '</div>' +
-        '<div class="queue-detail-row"><strong>SLO:</strong> p95 &le; ' + latency.sloP95ThresholdMs + ' ms, error rate &le; ' + latency.errorRateCeilingPct + '% <strong>SLO breached:</strong> ' + (breached ? 'yes' : 'no') + ' <strong>Errors within ceiling:</strong> ' + (withinErrorCeiling ? 'yes' : 'no') + '</div>' +
-        '<div class="queue-detail-row"><strong>Config change:</strong> ' + latency.configChangeReason + ' (v' + latency.configVersion + ' by ' + latency.configChangedBy + ' at ' + latency.configChangedAt + ')</div>' +
-        (latency.runId ? '<div class="queue-detail-row"><strong>Run correlation id:</strong> ' + latency.runId + '</div>' : '');
+      panel.textContent = '';
+
+      const metrics = document.createElement('div');
+      metrics.className = 'metric-grid';
+      [
+        ['p50 latency', latency.currentP50Ms + ' ms'],
+        ['p95 latency', latency.currentP95Ms + ' ms'],
+        ['p99 latency', latency.currentP99Ms + ' ms'],
+        ['Error rate', Number(latency.errorRatePct).toFixed(1) + '%'],
+      ].forEach(function (entry) {
+        const card = document.createElement('div');
+        card.className = 'metric-card';
+        const label = document.createElement('div');
+        label.className = 'metric-label';
+        label.textContent = entry[0];
+        const value = document.createElement('div');
+        value.className = 'metric-value';
+        value.textContent = entry[1];
+        card.appendChild(label);
+        card.appendChild(value);
+        metrics.appendChild(card);
+      });
+      panel.appendChild(metrics);
+
+      [
+        ['Transaction:', latency.impactedTransaction],
+        ['Delayed dependency:', latency.dependencyName],
+        ['Status:', statusLabel],
+      ].forEach(function (entry) {
+        const row = document.createElement('div');
+        row.className = 'queue-detail-row';
+        const label = document.createElement('strong');
+        label.textContent = entry[0];
+        const value = document.createElement('span');
+        value.textContent = ' ' + entry[1];
+        row.appendChild(label);
+        row.appendChild(value);
+        panel.appendChild(row);
+      });
+
+      const sloRow = document.createElement('div');
+      sloRow.className = 'queue-detail-row';
+      sloRow.textContent = 'SLO: p95 <= ' + latency.sloP95ThresholdMs + ' ms, error rate <= ' + latency.errorRateCeilingPct + '%; SLO breached: ' + (breached ? 'yes' : 'no') + '; Errors within ceiling: ' + (withinErrorCeiling ? 'yes' : 'no');
+      panel.appendChild(sloRow);
+
+      const configRow = document.createElement('div');
+      configRow.className = 'queue-detail-row';
+      configRow.textContent = 'Config change: ' + (latency.configChangeReason || 'No config change reported') + ' (v' + (latency.configVersion || 'unknown') + ' by ' + (latency.configChangedBy || 'unknown') + ' at ' + (latency.configChangedAt || 'unknown') + ')';
+      panel.appendChild(configRow);
+
+      if (latency.runId) {
+        const runRow = document.createElement('div');
+        runRow.className = 'queue-detail-row';
+        runRow.textContent = 'Run correlation id: ' + latency.runId;
+        panel.appendChild(runRow);
+      }
+
+      const freshness = document.createElement('div');
+      freshness.className = 'queue-detail-row';
+      freshness.textContent = 'Last updated: ' + (latency.lastUpdatedAt ? new Date(latency.lastUpdatedAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : 'unknown');
+      if (isUnavailable) {
+        freshness.textContent += ' · unavailable';
+      } else if (latency.status === 'stale') {
+        freshness.textContent += ' · stale';
+      }
+      panel.appendChild(freshness);
     }
 
     function startOrderDependencyLatencyIncident(runId) {
       ORDER_DEPENDENCY_LATENCY.runId = runId || ('run-' + Date.now());
       ORDER_DEPENDENCY_LATENCY.delayMode = 'ramp';
+      ORDER_DEPENDENCY_LATENCY.mode = 'ramp';
       ORDER_DEPENDENCY_LATENCY.currentP50Ms = ORDER_DEPENDENCY_LATENCY.rampFromMs;
       ORDER_DEPENDENCY_LATENCY.currentP95Ms = ORDER_DEPENDENCY_LATENCY.rampFromMs;
       ORDER_DEPENDENCY_LATENCY.currentP99Ms = ORDER_DEPENDENCY_LATENCY.rampFromMs;
@@ -2470,6 +2656,7 @@ data:
 
     function recoverOrderDependencyLatency() {
       ORDER_DEPENDENCY_LATENCY.delayMode = 'fixed';
+      ORDER_DEPENDENCY_LATENCY.mode = 'recovery';
       ORDER_DEPENDENCY_LATENCY.currentP50Ms = 45;
       ORDER_DEPENDENCY_LATENCY.currentP95Ms = ORDER_DEPENDENCY_LATENCY.baselineP95Ms;
       ORDER_DEPENDENCY_LATENCY.currentP99Ms = 72;
@@ -2679,6 +2866,7 @@ data:
     generateLocationData();
     setDispatchBanner('healthy', 'Live dispatch telemetry is current.', new Date().toISOString());
     updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); renderRefillOrderBacklog(); renderOrderDependencyLatency(); renderBulkTankSafetyAlarm(); appendSafetyLog('warn', 'SIMULATED bulk tank alarm ' + BULK_TANK_SAFETY_ALARM.alarmId + ' remains pending in safety-compliance-monitor while workload pods stay healthy.');
+    fetchOrderDependencyLatencyStatus();
     loadHealth();
     for (let i = 0; i < 10; i++) addLogEntry();
     setInterval(updateClock, 1000);
@@ -2686,6 +2874,7 @@ data:
     setInterval(refreshCages, 10000);
     setInterval(addLogEntry, 4000);
     setInterval(loadHealth, 30000);
+    setInterval(fetchOrderDependencyLatencyStatus, ORDER_DEPENDENCY_LATENCY_POLL_INTERVAL_MS);
     setInterval(renderForecast, 60000);
     </script>
     </body>
@@ -2744,6 +2933,17 @@ data:
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_pass http://order-service.propane.svc.cluster.local:3001/health;
+        }
+        location = /api/orders/latency-status {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://order-checkout-probe.propane.svc.cluster.local:4100/status;
         }
         location /api/ {
             return 404;
