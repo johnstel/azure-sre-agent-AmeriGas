@@ -7,18 +7,30 @@
 .DESCRIPTION
     Loads the machine-readable policy from governance/brand-policy.json
     (denylist of banned real-world terms, allowlist of legitimate
-    vendor/product terms used only for documentation/reference, and
-    documented path exclusions), then walks every file returned by
-    `git ls-files` (or an explicit -Paths override, useful for tests and
-    generated demo-artifact fixtures) looking for denylisted terms.
+    vendor/product terms used only for documentation/reference, documented
+    path exclusions, and a narrow (path, term) `intentionalLegacyReferences`
+    allowlist), then walks every file returned by `git ls-files` (or an
+    explicit -Paths override, useful for tests and generated demo-artifact
+    fixtures) looking for denylisted terms.
 
-    Excluded by design (see governance/brand-policy.json's `exclusions`):
-      - .git/ (immutable git history)
-      - the policy file and this doc/script/test themselves, which must
-        legitimately contain the banned words to check for them
-      - binary files (detected both by extension and by a null-byte sniff)
-      - dependency lockfiles / node_modules (not repository-owned content)
-      - archival records such as CHANGELOG.md
+    Two distinct escape hatches exist, deliberately kept separate:
+
+      1. `exclusions` (file/directory/extension-level) — the ENTIRE file is
+         never scanned at all. Reserved for content that is not
+         audience-facing demo prose: git internals, binary files,
+         dependency metadata, and the policy/audit-tool's own source where
+         quoting every denylisted term is unavoidable and expected.
+      2. `intentionalLegacyReferences` (exact path+term level) — the file
+         IS scanned, but one specific declared term is exempted in that one
+         specific file only. Used for the small number of real files (e.g.
+         a migration script, an admin rename checklist) that must contain a
+         literal old-brand term as DATA, while still being fully audited
+         for every OTHER banned term (a different real retailer/location
+         name appearing in that same file is still a violation).
+
+    Binary detection is by extension first, then by sniffing the first 8KB
+    for a NUL byte, so binaries with no/unrecognized extension are still
+    safely skipped without erroring.
 
     This never flags allowlisted vendor/product terms (Microsoft, Azure,
     GitHub, Kubernetes, MongoDB, RabbitMQ, OpenTelemetry, the canonical
@@ -36,21 +48,35 @@
 .PARAMETER Paths
     Optional explicit list of repo-relative file paths to audit instead of
     walking `git ls-files`. Used by tests to audit fixture content without
-    needing it to be tracked by git.
+    needing it to be tracked by git. Path-level `exclusions` still apply to
+    an explicit list, for consistent behavior with a full repo walk.
+
+.PARAMETER OutputFormat
+    'Human' (default): colorized summary + exemptions + violations text.
+    'Json': prints the full deterministic JSON report to stdout and nothing
+    else. Both formats exit non-zero when unexplained violations remain —
+    JSON mode never silently swallows a non-zero exit.
 
 .PARAMETER PassThru
-    Returns the report object instead of printing JSON/exiting. This is
-    what the Pester tests use (via dot-sourcing this file).
+    Returns the report object instead of printing/exiting. This is what the
+    Pester tests use (via dot-sourcing this file).
 
 .OUTPUTS
-    A deterministic JSON report: checkedFileCount, violationCount,
-    exclusionsApplied, skippedExcludedCount, skippedBinaryCount, and a
-    violations array (File, Line, Term, Text), sorted by File then Line
-    then Term so repeated runs against the same tree produce identical
-    output.
+    A deterministic JSON report (schemaVersion 2):
+      - summary: { checkedFileCount, violationCount, exemptionCount, skippedExcludedCount, skippedBinaryCount }
+      - checkedFiles: sorted array of every file path actually scanned
+      - exclusions: the policy's file-level exclusions, sorted by path
+      - intentionalLegacyReferences: the policy's full declared (path, term) allowlist, sorted
+      - exemptions: the (path, term) hits that were actually matched and suppressed this run, each with its rationale, evidence line(s), and text — sorted by File, Term
+      - violations: unexplained hits, sorted by File, Line, Term
+    All arrays are sorted so repeated runs against the same tree produce
+    byte-identical JSON.
 
 .EXAMPLE
     pwsh scripts/audit-brand-policy.ps1
+
+.EXAMPLE
+    pwsh scripts/audit-brand-policy.ps1 -OutputFormat Json
 
 .EXAMPLE
     pwsh scripts/audit-brand-policy.ps1 -Paths @('docs/DEMO-SCRIPT.md')
@@ -60,6 +86,8 @@ param(
     [string]$PolicyPath = (Join-Path $PSScriptRoot ".." "governance/brand-policy.json"),
     [string]$RepoRoot = (Join-Path $PSScriptRoot ".."),
     [string[]]$Paths,
+    [ValidateSet('Human', 'Json')]
+    [string]$OutputFormat = 'Human',
     [switch]$PassThru
 )
 
@@ -76,7 +104,9 @@ $script:BinaryExtensions = @(
 function Get-BrandPolicy {
     <#
     .SYNOPSIS
-        Loads and parses the machine-readable brand policy JSON file.
+        Loads, parses, and validates the machine-readable brand policy JSON
+        file. Fails clearly (not with a raw parser stack trace) on a
+        missing file, malformed JSON, or a policy missing required fields.
     #>
     [CmdletBinding()]
     param(
@@ -87,15 +117,36 @@ function Get-BrandPolicy {
         throw "Brand policy file not found: $Path"
     }
 
-    return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json -Depth 20
+    $raw = Get-Content -Raw -LiteralPath $Path
+    try {
+        $policy = $raw | ConvertFrom-Json -Depth 20
+    }
+    catch {
+        throw "Brand policy file at '$Path' is not valid JSON: $($_.Exception.Message)"
+    }
+
+    foreach ($requiredArrayField in @('denylist', 'exclusions')) {
+        $value = $policy.$requiredArrayField
+        if ($null -eq $value) {
+            throw "Brand policy file at '$Path' is missing required array field '$requiredArrayField'."
+        }
+    }
+
+    # intentionalLegacyReferences is optional in older policy files; default
+    # to an empty array rather than requiring every caller to null-check it.
+    if ($null -eq $policy.intentionalLegacyReferences) {
+        $policy | Add-Member -NotePropertyName intentionalLegacyReferences -NotePropertyValue @() -Force
+    }
+
+    return $policy
 }
 
 function Test-BrandPolicyPathExcluded {
     <#
     .SYNOPSIS
         Returns $true if the given repo-relative path matches one of the
-        policy's documented exclusions (exact path, "prefix/" directory
-        match, or "*.ext" extension match).
+        policy's documented file-level exclusions (exact path, "prefix/"
+        directory match, or "*.ext" extension match).
     #>
     [CmdletBinding()]
     param(
@@ -173,8 +224,10 @@ function Test-BrandPolicyBinaryPath {
 function Get-BrandPolicyViolations {
     <#
     .SYNOPSIS
-        Returns violation objects for the given text lines against the
-        policy's denylist. Importable via dot-sourcing for Pester tests.
+        Returns raw hit objects for the given text lines against the
+        policy's denylist — BEFORE intentionalLegacyReferences exemption
+        filtering (see Split-BrandPolicyExemptions). Importable via
+        dot-sourcing for Pester tests.
     #>
     [CmdletBinding()]
     param(
@@ -204,6 +257,54 @@ function Get-BrandPolicyViolations {
     return $violations
 }
 
+function Split-BrandPolicyExemptions {
+    <#
+    .SYNOPSIS
+        Partitions raw denylist hits into (still-a-violation) vs
+        (exempted-by-intentionalLegacyReferences), matching on the EXACT
+        (path, term) pair only. A hit for a DIFFERENT term in an exempted
+        file is never suppressed by this — only the exact declared term is.
+    .OUTPUTS
+        A [pscustomobject] with `Violations` and `Exemptions` array
+        properties (Exemptions additionally carry a `Rationale`).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()][object[]]$Hits,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$IntentionalLegacyReferences
+    )
+
+    $exemptionLookup = @{}
+    foreach ($ref in $IntentionalLegacyReferences) {
+        $key = "$([string]$ref.path)|$([string]$ref.term)"
+        $exemptionLookup[$key] = [string]$ref.rationale
+    }
+
+    $violations = @()
+    $exemptions = @()
+
+    foreach ($hit in $Hits) {
+        $key = "$($hit.File)|$($hit.Term)"
+        if ($exemptionLookup.ContainsKey($key)) {
+            $exemptions += [pscustomobject]@{
+                File      = $hit.File
+                Line      = $hit.Line
+                Term      = $hit.Term
+                Text      = $hit.Text
+                Rationale = $exemptionLookup[$key]
+            }
+        }
+        else {
+            $violations += $hit
+        }
+    }
+
+    return [pscustomobject]@{
+        Violations = $violations
+        Exemptions = $exemptions
+    }
+}
+
 function Get-BrandPolicyAuditFileList {
     <#
     .SYNOPSIS
@@ -230,7 +331,8 @@ function Get-BrandPolicyAuditFileList {
 function Invoke-BrandPolicyAudit {
     <#
     .SYNOPSIS
-        Runs the full audit and returns a deterministic report object.
+        Runs the full audit and returns a deterministic report object
+        (schemaVersion 2). See the script's .OUTPUTS help for the shape.
     #>
     [CmdletBinding()]
     param(
@@ -241,8 +343,8 @@ function Invoke-BrandPolicyAudit {
 
     $filesToCheck = if ($Paths) { $Paths } else { Get-BrandPolicyAuditFileList -RepoRoot $RepoRoot }
 
-    $violations = @()
-    $checkedCount = 0
+    $rawHits = @()
+    $checkedFiles = @()
     $skippedExcludedCount = 0
     $skippedBinaryCount = 0
 
@@ -263,20 +365,40 @@ function Invoke-BrandPolicyAudit {
         }
 
         $lines = Get-Content -LiteralPath $fullPath
-        $checkedCount++
-        $violations += Get-BrandPolicyViolations -Lines $lines -FileName $relativePath -Policy $Policy
+        $checkedFiles += $relativePath
+        $rawHits += Get-BrandPolicyViolations -Lines $lines -FileName $relativePath -Policy $Policy
     }
 
-    $sortedViolations = @($violations | Sort-Object -Property File, Line, Term)
+    $split = Split-BrandPolicyExemptions -Hits $rawHits -IntentionalLegacyReferences $Policy.intentionalLegacyReferences
+
+    $sortedCheckedFiles = @($checkedFiles | Sort-Object)
+    $sortedExclusions = @($Policy.exclusions | Sort-Object -Property path)
+    $sortedLegacyReferences = @($Policy.intentionalLegacyReferences | Sort-Object -Property path, term)
+    $sortedExemptions = @($split.Exemptions | Sort-Object -Property File, Term, Line)
+    $sortedViolations = @($split.Violations | Sort-Object -Property File, Line, Term)
 
     return [pscustomobject]@{
-        schemaVersion         = 1
-        checkedFileCount      = $checkedCount
-        violationCount        = $sortedViolations.Count
-        skippedExcludedCount  = $skippedExcludedCount
-        skippedBinaryCount    = $skippedBinaryCount
-        exclusionsApplied     = $Policy.exclusions
-        violations            = $sortedViolations
+        schemaVersion                = 2
+        summary                      = [pscustomobject]@{
+            checkedFileCount     = $sortedCheckedFiles.Count
+            violationCount       = $sortedViolations.Count
+            exemptionCount       = $sortedExemptions.Count
+            skippedExcludedCount = $skippedExcludedCount
+            skippedBinaryCount   = $skippedBinaryCount
+        }
+        checkedFiles                 = $sortedCheckedFiles
+        exclusions                   = $sortedExclusions
+        intentionalLegacyReferences  = $sortedLegacyReferences
+        exemptions                   = $sortedExemptions
+        violations                   = $sortedViolations
+        # Backward/convenience top-level mirrors of summary.* — several
+        # existing Pester assertions and the human-readable output below
+        # read these directly.
+        checkedFileCount              = $sortedCheckedFiles.Count
+        violationCount                = $sortedViolations.Count
+        exemptionCount                = $sortedExemptions.Count
+        skippedExcludedCount          = $skippedExcludedCount
+        skippedBinaryCount            = $skippedBinaryCount
     }
 }
 
@@ -290,17 +412,37 @@ if ($MyInvocation.InvocationName -ne '.') {
         return $report
     }
 
-    $report | ConvertTo-Json -Depth 10 | Write-Output
+    if ($OutputFormat -eq 'Json') {
+        $report | ConvertTo-Json -Depth 12 | Write-Output
+    }
+    else {
+        Write-Host "Brand policy audit — schemaVersion $($report.schemaVersion)" -ForegroundColor Cyan
+        Write-Host "  Checked:  $($report.summary.checkedFileCount) file(s)"
+        Write-Host "  Excluded: $($report.summary.skippedExcludedCount) file(s) (file-level exclusions)"
+        Write-Host "  Binary:   $($report.summary.skippedBinaryCount) file(s) skipped"
+        Write-Host "  Exempted: $($report.summary.exemptionCount) declared legacy reference hit(s)"
 
-    if ($report.violationCount -gt 0) {
-        Write-Host "`nBrand policy violations found:" -ForegroundColor Red
-        foreach ($v in $report.violations) {
-            Write-Host ("  {0}:{1} contains banned term '{2}': {3}" -f $v.File, $v.Line, $v.Term, $v.Text) -ForegroundColor Red
+        if ($report.exemptions.Count -gt 0) {
+            Write-Host "`nIntentional legacy references applied:" -ForegroundColor DarkYellow
+            foreach ($e in $report.exemptions) {
+                Write-Host ("  {0}:{1} '{2}' — {3}" -f $e.File, $e.Line, $e.Term, $e.Rationale) -ForegroundColor DarkYellow
+            }
         }
-        Write-Host "`n$($report.violationCount) violation(s) found across $($report.checkedFileCount) checked file(s)." -ForegroundColor Red
-        exit 1
+
+        if ($report.summary.violationCount -gt 0) {
+            Write-Host "`nBrand policy violations found:" -ForegroundColor Red
+            foreach ($v in $report.violations) {
+                Write-Host ("  {0}:{1} contains banned term '{2}': {3}" -f $v.File, $v.Line, $v.Term, $v.Text) -ForegroundColor Red
+            }
+            Write-Host "`n$($report.summary.violationCount) violation(s) found across $($report.summary.checkedFileCount) checked file(s)." -ForegroundColor Red
+        }
+        else {
+            Write-Host "`nBrand policy audit passed — $($report.summary.checkedFileCount) file(s) checked, 0 unexplained violations." -ForegroundColor Green
+        }
     }
 
-    Write-Host "`nBrand policy audit passed — $($report.checkedFileCount) file(s) checked, 0 violations ($($report.skippedExcludedCount) excluded, $($report.skippedBinaryCount) binary)." -ForegroundColor Green
+    if ($report.summary.violationCount -gt 0) {
+        exit 1
+    }
     exit 0
 }

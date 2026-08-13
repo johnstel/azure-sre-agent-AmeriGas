@@ -44,16 +44,12 @@ The former real company name (`AmeriGas`) and every real retailer/location named
 
 ## Exclusions
 
-The audit tool (`scripts/audit-brand-policy.ps1`) does **not** flag denylist terms found in:
+The audit tool (`scripts/audit-brand-policy.ps1`) supports two distinct, deliberately separate escape hatches:
 
-- `.git/` — git internal history and object store. Git history is never rewritten as part of this rebrand.
-- `governance/brand-policy.json` and this document — they must legitimately contain the denylisted terms in order to document/check for them.
-- `scripts/audit-brand-policy.ps1` and `scripts/tests/audit-brand-policy.tests.ps1` — the tool's own source/tests reference denylist terms in comments and intentionally-injected positive test fixtures.
-- Binary files (`*.png`, `*.jpg`, `*.zip`, `*.ico`, …) — not scanned for text content.
-- `package-lock.json` and `node_modules/` — third-party dependency metadata/source, not repository-owned content.
-- `CHANGELOG.md` (if present) and closed GitHub issue/PR bodies — archival historical records, out of scope for a non-destructive rebrand.
+1. **File-level `exclusions`** — the entire file is never scanned. Reserved for non-audience-facing content: `.git/` (git internal history and object store — never rewritten as part of this rebrand), `governance/brand-policy.json` and this document (they must legitimately contain the denylisted terms in order to document/check for them), `scripts/audit-brand-policy.ps1` and `scripts/tests/audit-brand-policy.tests.ps1` (the tool's own source/tests reference denylist terms in comments and intentionally-injected positive/negative test fixtures), binary files (`*.png`, `*.jpg`, `*.zip`, `*.ico`, …), `package-lock.json` and `node_modules/` (third-party dependency metadata/source), and `CHANGELOG.md` (if present) plus closed GitHub issue/PR bodies (archival historical records).
+2. **Narrow `intentionalLegacyReferences`** — an exact `{path, term, rationale}` allowlist for the small number of real files that must legitimately contain one specific old-brand term as data, while remaining fully scanned for every OTHER banned term. Currently: `docs/REPO-RENAME-CHECKLIST.md` (documents the repository's actual current GitHub name), `scripts/migrate-brand-tags.ps1`, and `scripts/tests/migrate-brand-tags.tests.ps1` (the literal old `amerigas-propane-demo` tag value the migration script detects and replaces) — each exempts only the exact term `AmeriGas` in that exact file; a *different* real retailer/location name appearing anywhere in those same files would still fail the audit.
 
-See `governance/brand-policy.json`'s `exclusions` array for the exact, current, machine-readable list.
+See `governance/brand-policy.json`'s `exclusions` and `intentionalLegacyReferences` arrays for the exact, current, machine-readable lists.
 
 ## Running the audit
 
@@ -61,7 +57,15 @@ See `governance/brand-policy.json`'s `exclusions` array for the exact, current, 
 pwsh scripts/audit-brand-policy.ps1
 ```
 
-This walks every `git ls-files`-tracked text file (plus any generated demo artifacts under test), applies the allowlist/denylist/exclusions above, and prints a deterministic JSON report with the checked file count, violation count, exclusions applied, and a list of any violations (file, line, term). It exits non-zero if there are unexplained violations. Pass `-PassThru` to get the violations as PowerShell objects instead (used by the Pester tests in `scripts/tests/audit-brand-policy.tests.ps1`).
+This walks every `git ls-files`-tracked text file (plus any generated demo artifacts under test), applies the allowlist/denylist/exclusions/intentionalLegacyReferences above, and prints a deterministic, schema-versioned report with the checked file count, violation count, exemption count, exclusions applied, and a list of any violations (file, line, term) and applied exemptions (file, line, term, rationale). It exits non-zero if there are unexplained violations — including in JSON mode.
+
+Pass `-OutputFormat Json` for a machine-readable JSON report on stdout (nothing else is printed), suitable for CI or tooling:
+
+```powershell
+pwsh scripts/audit-brand-policy.ps1 -OutputFormat Json
+```
+
+Pass `-PassThru` (when dot-sourcing the script) to get the report as a PowerShell object instead of printing/exiting — used by the Pester tests in `scripts/tests/audit-brand-policy.tests.ps1`.
 
 ## Non-destructive tag/label migration
 

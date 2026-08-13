@@ -54,18 +54,6 @@
       "reason": "The human-readable policy document legitimately quotes the denylist terms it documents."
     },
     {
-      "path": "docs/REPO-RENAME-CHECKLIST.md",
-      "reason": "Legitimately quotes the repository's actual current GitHub name (azure-sre-agent-AmeriGas), which is explicitly out of scope for this code-only rebrand (see issue #27's non-goals)."
-    },
-    {
-      "path": "scripts/migrate-brand-tags.ps1",
-      "reason": "The non-destructive migration script must legitimately reference the literal old tag value (amerigas-propane-demo) it detects and migrates from."
-    },
-    {
-      "path": "scripts/tests/migrate-brand-tags.tests.ps1",
-      "reason": "Test fixtures for the migration script above; they mock the literal old tag value being migrated from (a regression guard, not banned content)."
-    },
-    {
       "path": "scripts/audit-brand-policy.ps1",
       "reason": "The audit tool's own source may reference denylist term examples in comments/tests."
     },
@@ -112,6 +100,24 @@
     {
       "path": "CHANGELOG.md",
       "reason": "Historical changelog entries are an archival record of past releases, similar to closed issue/PR history."
+    }
+  ],
+  "intentionalLegacyReferencesNotes": "Narrow (path, term) exemptions for files that legitimately must contain a literal old-brand term as DATA (not audience-facing prose praising/naming the old brand) -- e.g. a migration script matching the literal old tag value it replaces, or an admin checklist documenting the repository's actual current GitHub name. Unlike the file-level 'exclusions' above, an entry here exempts ONLY the exact declared term in the exact declared file: any OTHER denylist term appearing in that same file (e.g. a real retailer name) is still a violation. Prefer removing an unnecessary old-brand mention over adding an entry here; only use this for cases where the old term must literally appear.",
+  "intentionalLegacyReferences": [
+    {
+      "path": "docs/REPO-RENAME-CHECKLIST.md",
+      "term": "AmeriGas",
+      "rationale": "Documents the repository's actual current GitHub name (azure-sre-agent-AmeriGas) for the optional admin rename checklist; renaming the repo is explicitly out of scope for this code-only rebrand (see issue #27's non-goals)."
+    },
+    {
+      "path": "scripts/migrate-brand-tags.ps1",
+      "term": "AmeriGas",
+      "rationale": "Old workload tag/brand slug literal value (amerigas-propane-demo) that the non-destructive migration script detects and merges to the new zavagas-propane-demo value."
+    },
+    {
+      "path": "scripts/tests/migrate-brand-tags.tests.ps1",
+      "term": "AmeriGas",
+      "rationale": "Pester fixtures mock the literal old tag value (amerigas-propane-demo) the migration script above detects and migrates from."
     }
   ]
 }
