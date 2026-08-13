@@ -17,6 +17,27 @@ const UNRESOLVED_LIFECYCLE_PHASES = new Set([
   'apply-failed',
   'activation-timeout',
 ]);
+const ALLOWED_RESET_KINDS = new Set(['Deployment', 'Service', 'ConfigMap', 'NetworkPolicy']);
+const FORBIDDEN_CLUSTER_SCOPED_KINDS = new Set([
+  'Namespace',
+  'ClusterRole',
+  'ClusterRoleBinding',
+  'CustomResourceDefinition',
+  'PriorityClass',
+  'Node',
+  'PersistentVolume',
+  'StorageClass',
+  'VolumeAttachment',
+  'APIService',
+  'MutatingWebhookConfiguration',
+  'ValidatingWebhookConfiguration',
+  'PodSecurityPolicy',
+  'IngressClass',
+  'RuntimeClass',
+  'Role',
+  'RoleBinding',
+  'ServiceAccount',
+]);
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -111,6 +132,67 @@ function manifestIdForFile(fileName) {
     'dependency-latency': 'latency',
   };
   return aliasMap[name] || name;
+}
+
+function normalizeResourceKind(kind) {
+  if (!kind || typeof kind !== 'string') {
+    return '';
+  }
+
+  const direct = kind.trim();
+  const lowered = direct.toLowerCase();
+  const aliasMap = {
+    deployment: 'Deployment',
+    service: 'Service',
+    configmap: 'ConfigMap',
+    config_map: 'ConfigMap',
+    networkpolicy: 'NetworkPolicy',
+    network_policy: 'NetworkPolicy',
+  };
+
+  return aliasMap[lowered] || direct;
+}
+
+function isSafeResourceName(value) {
+  if (!value || typeof value !== 'string') {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 253) {
+    return false;
+  }
+
+  return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.test(trimmed);
+}
+
+function validateOwnedResource(resource, scenarioId, manifestPath) {
+  const rawKind = resource && resource.kind ? String(resource.kind) : '';
+  const kind = normalizeResourceKind(rawKind);
+
+  if (!kind) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} has a resource without a kind.`);
+  }
+
+  if (FORBIDDEN_CLUSTER_SCOPED_KINDS.has(kind)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares forbidden reset kind ${kind}.`);
+  }
+
+  if (!ALLOWED_RESET_KINDS.has(kind)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares unsupported reset kind ${kind}.`);
+  }
+
+  const metadataName = resource && resource.metadata && resource.metadata.name ? String(resource.metadata.name) : '';
+  if (!isSafeResourceName(metadataName)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares invalid resource name ${metadataName || '<empty>'} for kind ${kind}.`);
+  }
+
+  const namespace = resource && resource.metadata && resource.metadata.namespace ? String(resource.metadata.namespace) : 'default';
+  if (!isSafeResourceName(namespace)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares invalid namespace ${namespace} for kind ${kind}.`);
+  }
+
+  return { kind, name: metadataName, namespace };
 }
 
 function readClusterJson(runner, args) {
@@ -685,21 +767,39 @@ function inventoryScenarioResources(repoRoot) {
     const resources = yamlDocs.map((part) => {
       const kindMatch = part.match(/^kind:\s*(.+)$/m);
       const nameMatch = part.match(/(?:^|\n)metadata:\s*\n(?:.*\n)*?\s*name:\s*(.+)$/m);
+      const namespaceMatch = part.match(/(?:^|\n)metadata:\s*\n(?:.*\n)*?\s*namespace:\s*(.+)$/m);
       const labelsMatch = part.match(/(?:^|\n)metadata:\s*\n(?:.*\n)*?\s*labels:\s*\n((?:\s{2,}.*\n)+)/m);
       return {
         kind: kindMatch ? kindMatch[1].trim() : null,
         name: nameMatch ? nameMatch[1].trim() : null,
+        namespace: namespaceMatch ? namespaceMatch[1].trim() : 'default',
         labels: labelsMatch ? labelsMatch[1].trim() : null,
       };
     }).filter((resource) => resource.kind && resource.name);
 
     const scenarioId = manifestIdForFile(file);
+    const normalizedResources = resources.map((resource) => {
+      const validated = validateOwnedResource({
+        kind: resource.kind,
+        metadata: {
+          name: resource.name,
+          namespace: resource.namespace,
+        },
+      }, scenarioId, filePath);
+      return {
+        ...resource,
+        kind: validated.kind,
+        name: validated.name,
+        namespace: validated.namespace,
+      };
+    });
+
     return {
       scenarioId,
       file,
       filePath,
       manifestHash,
-      resources,
+      resources: normalizedResources,
       metadata: SCENARIO_METADATA[scenarioId] || {},
     };
   });
@@ -809,8 +909,13 @@ async function applyScenarioJob(runner, manifestPath, { whatIf = false } = {}) {
 }
 
 async function listScenarioOwnedResources(runner, namespace, { kind, scenarioIds = [] } = {}) {
+  const canonicalKind = normalizeResourceKind(kind);
+  if (!canonicalKind || !ALLOWED_RESET_KINDS.has(canonicalKind)) {
+    throw new Error(`Refusing to query unsupported or dangerous resource kind ${String(kind || '<empty>')}.`);
+  }
+
   const selector = scenarioIds.length > 0 ? `sre-demo=breakable,scenario in (${scenarioIds.join(',')})` : 'sre-demo=breakable';
-  const args = ['get', kind, '-n', namespace, '-l', selector, '-o', 'json'];
+  const args = ['get', canonicalKind, '-n', namespace, '-l', selector, '-o', 'json'];
   const result = await executeKubectl(runner, args);
   if (!result.ok) {
     if (isNotFoundError(result)) return [];
@@ -834,14 +939,21 @@ async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', wh
   const inventory = inventoryScenarioResources(repoRoot);
   const namesByKind = new Map();
   const scenarioIds = inventory.map((item) => item.scenarioId);
+
   for (const scenario of inventory) {
     for (const resource of scenario.resources) {
       if (!resource.kind || !resource.name) continue;
-      if (scope === 'network' && resource.kind.toLowerCase() !== 'networkpolicy') continue;
-      if (scope === 'extras' && resource.kind.toLowerCase() !== 'deployment' && resource.kind.toLowerCase() !== 'configmap') continue;
-      const key = resource.kind.toLowerCase();
-      if (!namesByKind.has(key)) namesByKind.set(key, []);
-      namesByKind.get(key).push(resource.name);
+      const kind = normalizeResourceKind(resource.kind);
+      if (!kind || !ALLOWED_RESET_KINDS.has(kind)) {
+        throw new Error(`Scenario ${scenario.scenarioId} declares unsupported reset kind ${kind || resource.kind}.`);
+      }
+      if (!isSafeResourceName(resource.name) || !isSafeResourceName(resource.namespace || namespace)) {
+        throw new Error(`Scenario ${scenario.scenarioId} declares invalid reset target ${kind}/${resource.name} in namespace ${resource.namespace || namespace}.`);
+      }
+      if (scope === 'network' && kind !== 'NetworkPolicy') continue;
+      if (scope === 'extras' && !['Deployment', 'ConfigMap'].includes(kind)) continue;
+      if (!namesByKind.has(kind)) namesByKind.set(kind, []);
+      namesByKind.get(kind).push(resource.name);
     }
   }
 
@@ -856,6 +968,11 @@ async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', wh
     }
 
     for (const name of uniqueNames) {
+      if (!isSafeResourceName(name)) {
+        failures.push({ kind, name, command: `kubectl delete ${kind} ${name} -n ${namespace}`, message: `Refusing to delete unsafe resource name ${name}.` });
+        continue;
+      }
+
       const commandArgs = ['delete', kind, name, '-n', namespace];
       const commandText = ['kubectl', ...commandArgs].join(' ');
       const deleteResult = await executeKubectl(runner, commandArgs);
@@ -879,7 +996,7 @@ async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', wh
         kind,
         name: survivorName,
         command: commandText,
-        error: `surviving scenario-owned resource detected after delete`,
+        error: 'surviving scenario-owned resource detected after delete',
         message: `surviving scenario-owned resource detected after delete: ${kind}/${survivorName}`,
       });
     }
