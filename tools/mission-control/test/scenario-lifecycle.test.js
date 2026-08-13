@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const {
   startDemoScenario,
@@ -7,6 +9,8 @@ const {
   acquireLifecycleLock,
   releaseLifecycleLock,
   resetDemoBaseline,
+  inventoryScenarioResources,
+  resetScenarioOwnedResources,
 } = require('../scenario-lifecycle');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -187,6 +191,151 @@ function createAtomicLockRunner({ snapshots = [healthyBaseline()], initialLock =
     },
   };
 }
+
+function writeScenarioFixture(rootDir, fileName, manifestText) {
+  const scenarioDir = path.join(rootDir, 'k8s', 'scenarios');
+  fs.mkdirSync(scenarioDir, { recursive: true });
+  fs.writeFileSync(path.join(scenarioDir, fileName), manifestText);
+  return rootDir;
+}
+
+test('inventoryScenarioResources normalizes missing namespace to propane while rejecting non-propane explicit namespaces before kubectl', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scenario-lifecycle-valid-'));
+  writeScenarioFixture(rootDir, 'valid-missing-namespace.yaml', [
+    'apiVersion: apps/v1',
+    'kind: Deployment',
+    'metadata:',
+    '  name: tank-monitor',
+    'spec:',
+    '  replicas: 1',
+    '  selector:',
+    '    matchLabels:',
+    '      app: tank-monitor',
+    '  template:',
+    '    metadata:',
+    '      labels:',
+    '        app: tank-monitor',
+    '    spec:',
+    '      containers:',
+    '        - name: tank-monitor',
+    '          image: example/tank-monitor:latest',
+    '          ports:',
+    '            - containerPort: 80',
+    '',
+  ].join('\n'));
+
+  const validInventory = inventoryScenarioResources(rootDir);
+  assert.equal(validInventory.length, 1);
+  assert.equal(validInventory[0].resources[0].namespace, 'propane');
+
+  for (const namespace of ['default', 'kube-system']) {
+    const maliciousRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scenario-lifecycle-malicious-'));
+    writeScenarioFixture(maliciousRoot, 'bad-namespace.yaml', [
+      'apiVersion: apps/v1',
+      'kind: Deployment',
+      'metadata:',
+      `  name: tank-monitor`,
+      `  namespace: ${namespace}`,
+      'spec:',
+      '  replicas: 1',
+      '  selector:',
+      '    matchLabels:',
+      '      app: tank-monitor',
+      '  template:',
+      '    metadata:',
+      '      labels:',
+      '        app: tank-monitor',
+      '    spec:',
+      '      containers:',
+      '        - name: tank-monitor',
+      '          image: example/tank-monitor:latest',
+      '',
+    ].join('\n'));
+
+    assert.throws(() => inventoryScenarioResources(maliciousRoot), /namespace .*propane|must be exactly "propane"/i);
+  }
+});
+
+test('resetScenarioOwnedResources rejects malicious namespaces before any kubectl delete call and honors propane-only cleanup', async () => {
+  const validRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scenario-lifecycle-reset-valid-'));
+  writeScenarioFixture(validRoot, 'valid-reset.yaml', [
+    'apiVersion: apps/v1',
+    'kind: Deployment',
+    'metadata:',
+    '  name: tank-monitor',
+    'spec:',
+    '  replicas: 1',
+    '  selector:',
+    '    matchLabels:',
+    '      app: tank-monitor',
+    '  template:',
+    '    metadata:',
+    '      labels:',
+    '        app: tank-monitor',
+    '    spec:',
+    '      containers:',
+    '        - name: tank-monitor',
+    '          image: example/tank-monitor:latest',
+    '',
+  ].join('\n'));
+
+  let deleteCalled = false;
+  const validRunner = {
+    async exec(command, args) {
+      if (command === 'kubectl' && Array.isArray(args) && args[0] === 'delete') {
+        deleteCalled = true;
+        return { ok: true, stdout: 'deleted', stderr: '', status: 0 };
+      }
+      if (command === 'kubectl' && Array.isArray(args) && args[0] === 'get') {
+        return { ok: true, stdout: JSON.stringify({ items: [] }), stderr: '', status: 0 };
+      }
+      return { ok: true, stdout: '', stderr: '', status: 0 };
+    },
+  };
+
+  const validResult = await resetScenarioOwnedResources(validRoot, validRunner, { namespace: 'propane' });
+  assert.equal(validResult.ok, true, 'valid scenario resources must reset in the propane namespace');
+  assert.equal(deleteCalled, true, 'valid cleanup must issue the delete command');
+
+  for (const namespace of ['default', 'kube-system']) {
+    const maliciousRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scenario-lifecycle-reset-malicious-'));
+    writeScenarioFixture(maliciousRoot, 'bad-namespace-reset.yaml', [
+      'apiVersion: apps/v1',
+      'kind: Deployment',
+      'metadata:',
+      '  name: tank-monitor',
+      `  namespace: ${namespace}`,
+      'spec:',
+      '  replicas: 1',
+      '  selector:',
+      '    matchLabels:',
+      '      app: tank-monitor',
+      '  template:',
+      '    metadata:',
+      '      labels:',
+      '        app: tank-monitor',
+      '    spec:',
+      '      containers:',
+      '        - name: tank-monitor',
+      '          image: example/tank-monitor:latest',
+      '',
+    ].join('\n'));
+
+    let maliciousDeleteCalled = false;
+    const maliciousRunner = {
+      async exec() {
+        maliciousDeleteCalled = true;
+        return { ok: true, stdout: 'deleted', stderr: '', status: 0 };
+      },
+    };
+
+    await assert.rejects(
+      () => resetScenarioOwnedResources(maliciousRoot, maliciousRunner, { namespace: 'propane' }),
+      /namespace .*propane|must be exactly "propane"/i,
+    );
+    assert.equal(maliciousDeleteCalled, false, 'malicious namespace fixtures must fail before any kubectl delete is called');
+  }
+});
 
 test('waitForActivation refreshes the live snapshot on every poll and activates once the pod health flips true', async () => {
   const firstSnapshot = healthyBaseline({
