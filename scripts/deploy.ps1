@@ -1089,6 +1089,20 @@ if ($outputs.sreAgentId.value -and -not $sreAgentKnowledgeReady) {
     exit 1
 }
 
+# The daily-propane-health-report scheduled task (issue #24) is bootstrapped
+# unconditionally whenever the SRE Agent is deployed — for BOTH the standard
+# and demo profiles, exactly like the knowledge bootstrap above (it is NOT
+# opt-in behind -DeployDemoResponsePlan the way the response plan is). A
+# failed/unsupported/schema-mismatched bootstrap must therefore gate
+# demo-ready status the same way knowledge readiness does, not just print a
+# warning that a caller could miss.
+if ($outputs.sreAgentId.value -and -not $sreAgentScheduledTaskReady) {
+    Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
+    Write-Host "   The SRE Agent was created, but its proactive daily-propane-health-report scheduled task could not be bootstrapped or verified." -ForegroundColor Red
+    Write-Host "   Do not mark this deployment demo-ready until the scheduled task bootstrap error above is resolved and re-run succeeds." -ForegroundColor Red
+    exit 1
+}
+
 if ($DeployDemoResponsePlan -and $outputs.sreAgentId.value -and -not $sreAgentResponsePlanReady) {
     Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
     Write-Host "   The SRE Agent was created, but its alert-to-approved-remediation response plan could not be bootstrapped or verified." -ForegroundColor Red

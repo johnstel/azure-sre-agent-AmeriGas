@@ -607,6 +607,7 @@ function Test-ScheduledTaskSemanticMatch {
     if ([string]$Actual.frequency -ne [string]$Expected.frequency) { return $false }
     if ([string]$Actual.timeOfDay -ne [string]$Expected.timeOfDay) { return $false }
     if ([string]$Actual.timeZone -ne [string]$Expected.timeZone) { return $false }
+    if ([string]$Actual.responseCustomAgent -ne [string]$Expected.responseCustomAgent) { return $false }
     if ([string]$Actual.messageGrouping -ne [string]$Expected.messageGrouping) { return $false }
     if ([string]$Actual.agentAutonomyLevel -ne 'Autonomous') { return $false }
     if ([bool]$Actual.enabled -ne [bool]$Expected.enabled) { return $false }
