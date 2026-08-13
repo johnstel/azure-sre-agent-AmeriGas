@@ -168,14 +168,159 @@ function validatePresenterTracks(catalog = TRACK_CATALOG) {
   };
 }
 
+const CLIENT_GATE_TRUTH_KEYS = new Set([
+  'gateContext',
+  'baselineReady',
+  'ready',
+  'readinessPass',
+  'baselineHealthPass',
+  'scenarioActive',
+  'scenarioStatus',
+  'nativeEvidenceAvailable',
+  'nativeEvidenceStatus',
+  'approved',
+  'runApproved',
+  'actionKey',
+  'actionId',
+  'selectedAction',
+  'remediationExecuted',
+  'actionExecuted',
+  'executed',
+  'recoveryVerified',
+  'recovered',
+  'assertionPassed',
+  'valueSummaryRecorded',
+  'valueEvidenceObserved',
+  'valueRecorded',
+  'incidentValueRecorded',
+  'scheduledTaskAvailable',
+  'force',
+  'forceBypass',
+  'focusedPanels',
+  'approvalPassed',
+  'approvalDenied',
+  'approvalExpired',
+  'approvalStatus',
+  'recoveryStatus',
+  'evidenceReady',
+  'evidenceAvailable',
+  'evidenceStatus',
+  'evidenceCollected',
+  'denied',
+  'expired',
+  'bypass',
+  'skipGate',
+]);
+
+function containsClientGateTruth(context = {}) {
+  if (!context || typeof context !== 'object') return false;
+  return Object.keys(context).some((key) => CLIENT_GATE_TRUTH_KEYS.has(key));
+}
+
+function rejectClientGeneratedGateTruth(context = {}) {
+  const keys = Object.keys(context || {}).filter((key) => CLIENT_GATE_TRUTH_KEYS.has(key));
+  if (keys.length > 0) {
+    return {
+      allowed: false,
+      reason: `client-supplied gate truth is rejected; trusted server state must resolve the gate (${keys.join(', ')})`,
+    };
+  }
+  return null;
+}
+
+function resolveTrustedPresenterGate(step, currentState = {}, serverState = {}) {
+  const gate = step && step.gate ? step.gate : null;
+  if (!gate) return { allowed: true, reason: 'no gate required' };
+
+  const expectedRunCorrelationId = currentState.correlationId || serverState.correlationId || null;
+  const suppliedCorrelationId = serverState.expectedCorrelationId || serverState.correlationId || null;
+  if (expectedRunCorrelationId && suppliedCorrelationId && expectedRunCorrelationId !== suppliedCorrelationId) {
+    return { allowed: false, reason: `stale gate callback for another presenter run (${suppliedCorrelationId} !== ${expectedRunCorrelationId})` };
+  }
+
+  const expectedIncidentCorrelationId = currentState.incidentCorrelationId || serverState.incidentCorrelationId || null;
+  const incident = serverState.activeIncident || serverState.incident || null;
+  if (expectedIncidentCorrelationId && incident && incident.correlationId && expectedIncidentCorrelationId !== incident.correlationId) {
+    return { allowed: false, reason: `stale incident callback for another run (${incident.correlationId} !== ${expectedIncidentCorrelationId})` };
+  }
+
+  const expectedScenarioId = currentState.scenarioId || serverState.scenarioId || (incident && incident.scenarioId) || null;
+  const currentActionKey = currentState.actionKey || serverState.actionKey || null;
+  const milestones = Array.isArray(incident && incident.milestones) ? incident.milestones : Array.isArray(serverState.milestones) ? serverState.milestones : [];
+
+  const readiness = serverState.readiness || serverState.baselineHealth || serverState.health || {};
+  const readinessStatus = readiness.status || readiness.state || 'unknown';
+  const baselineReady = serverState.baselineReady === true || readiness.ready === true || readiness.baselineReady === true || readinessStatus === 'ready' || readiness.healthy === true || serverState.cleanBaseline === true;
+
+  const scenarioHealth = serverState.scenarioHealth || serverState.health || {};
+  const scenarioMatches = !expectedScenarioId || !scenarioHealth.scenarioId || scenarioHealth.scenarioId === expectedScenarioId || serverState.scenarioId === expectedScenarioId;
+  const scenarioActive = serverState.scenarioActive === true || scenarioHealth.active === true || (incident && incident.scenarioId === expectedScenarioId && incident.finalState !== 'recovered');
+
+  const nativeEvidence = serverState.nativeEvidence || {};
+  const nativeEvidenceAvailable = serverState.nativeEvidenceAvailable === true || nativeEvidence.available === true || (Array.isArray(nativeEvidence.categories) && nativeEvidence.categories.some((item) => item && item.available === true)) || (Array.isArray(serverState.evidenceCategories) && serverState.evidenceCategories.some((item) => item && item.available === true));
+
+  const actionProposed = milestones.some((m) => (m.type === 'action_proposed' || m.type === 'action_proposal') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
+  const actionApproved = milestones.some((m) => (m.type === 'action_approved' || m.type === 'approval_approved') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true) && (m.data && (m.data.approved === true || m.data.status === 'approved' || m.data.decision === 'approved')));
+  const actionDenied = milestones.some((m) => (m.type === 'action_denied' || m.type === 'approval_denied') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
+  const actionExpired = milestones.some((m) => (m.type === 'action_expired' || m.type === 'approval_expired') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
+
+  const remediationExecuted = milestones.some((m) => (m.type === 'action_executed' || m.type === 'remediation_executed') && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true) && (m.data && (m.data.success === true || m.data.status === 'success')));
+  const recoveryRecorded = incident ? incident.finalState === 'recovered' : false;
+  const postAssertionPassed = milestones.some((m) => (m.type === 'post_action_assertion' || m.type === 'recovery_assertion') && (m.data && (m.data.passed === true || m.data.status === 'passed')) && (currentActionKey ? (m.data && m.data.actionKey === currentActionKey) : true));
+  const finalRecovered = recoveryRecorded || milestones.some((m) => (m.type === 'recovery') && (m.data && m.data.recovered === true)) || postAssertionPassed;
+
+  const valueObserved = incident && (incident.finalState === 'recovered' || incident.scorecard || incident.valueSummary || (Array.isArray(incident.milestones) && incident.milestones.some((m) => m.type === 'recovery')));
+
+  switch (gate.kind) {
+    case 'readiness':
+      return { allowed: Boolean(baselineReady), reason: baselineReady ? 'baseline readiness confirmed' : 'baseline readiness has not passed' };
+    case 'baseline':
+      return { allowed: Boolean(baselineReady || serverState.baselineHealthPass === true || readiness.healthy === true), reason: baselineReady ? 'baseline health confirmed' : 'baseline health assertion did not pass' };
+    case 'scenario':
+      return {
+        allowed: Boolean(scenarioActive && scenarioMatches),
+        reason: scenarioActive && scenarioMatches ? 'scenario assertion matched the live incident' : 'scenario assertion mismatch or inactive scenario',
+      };
+    case 'native-evidence':
+      if (nativeEvidenceAvailable) return { allowed: true, reason: 'native evidence available' };
+      if (serverState.nativeEvidenceStatus === 'Unavailable / requires scheduled-task setup') return { allowed: false, reason: 'Unavailable / requires scheduled-task setup' };
+      return { allowed: false, reason: 'native evidence is not available for the current run' };
+    case 'approval':
+      return {
+        allowed: Boolean((serverState.approved === true || actionApproved) && actionProposed && !actionDenied && !actionExpired),
+        reason: (serverState.approved === true || actionApproved) && actionProposed && !actionDenied && !actionExpired ? 'approval is present and matches the current incident/action' : 'approval is required before the step can continue',
+      };
+    case 'remediation':
+      return { allowed: Boolean(remediationExecuted || serverState.remediationExecuted === true || serverState.actionExecuted === true), reason: remediationExecuted ? 'exact remediation completed' : 'exact remediation must be executed before continuing' };
+    case 'recovery':
+      return { allowed: Boolean(finalRecovered && postAssertionPassed), reason: finalRecovered && postAssertionPassed ? 'recovery verified with fresh evidence' : 'recovery must be verified with fresh assertions' };
+    case 'incident-value':
+      return { allowed: Boolean(valueObserved || serverState.valueSummaryRecorded === true || serverState.incidentValueRecorded === true), reason: valueObserved ? 'incident value summary is backed by the measured incident run' : 'incident value summary requires observed evidence' };
+    case 'scheduled-task':
+      return { allowed: Boolean(serverState.scheduledTaskAvailable === true), reason: 'Unavailable / requires scheduled-task setup' };
+    default:
+      return { allowed: true, reason: 'no additional gate logic required' };
+  }
+}
+
 function evaluateGate(step, context = {}, runState = {}) {
   const gate = step && step.gate ? step.gate : null;
   if (!gate) return { allowed: true, reason: 'no gate required' };
 
-  const correlationId = context.correlationId || runState.correlationId || null;
-  const runCorrelationId = runState.correlationId || null;
-  if (correlationId && runCorrelationId && correlationId !== runCorrelationId) {
-    return { allowed: false, reason: `stale gate callback for another presenter run (${correlationId} !== ${runCorrelationId})` };
+  const unsafe = rejectClientGeneratedGateTruth(context);
+  if (unsafe) {
+    return unsafe;
+  }
+
+  const trustedState = context.serverProof || context.serverState || context.trustedState || {};
+  const runCorrelationId = context.correlationId || runState.correlationId || null;
+  const runCorrelationIdState = runState.correlationId || null;
+  if (runCorrelationId && runCorrelationIdState && runCorrelationId !== runCorrelationIdState) {
+    return { allowed: false, reason: `stale gate callback for another presenter run (${runCorrelationId} !== ${runCorrelationIdState})` };
+  }
+
+  if (Object.keys(trustedState).length > 0) {
+    return resolveTrustedPresenterGate(step, runState || {}, trustedState);
   }
 
   const source = context || {};
@@ -252,7 +397,24 @@ function createPresenterStateMachine(options = {}) {
     return store.read();
   }
 
+  function rejectUnsafePresenterContext(context = {}) {
+    const rejected = Object.keys(context || {}).filter((key) => CLIENT_GATE_TRUTH_KEYS.has(key));
+    if (rejected.length > 0) {
+      return {
+        ok: false,
+        allowed: false,
+        reason: `client-supplied presenter gate truth is not accepted (${rejected.join(', ')})`,
+      };
+    }
+    return null;
+  }
+
   function applyTrack(trackId, context = {}) {
+    const unsafe = rejectUnsafePresenterContext(context);
+    if (unsafe) {
+      return { ...unsafe, state: readState() };
+    }
+
     const track = getTrackById(trackId);
     const firstStep = track.steps[0];
     const runCorrelationId = context.correlationId || generateCorrelationId();
@@ -272,7 +434,11 @@ function createPresenterStateMachine(options = {}) {
       lastEvent: 'started',
     };
 
-    const gateResult = evaluateGate(firstStep, { ...context.gateContext, correlationId: runCorrelationId }, nextState);
+    const gateResult = resolveTrustedPresenterGate(firstStep, nextState, context.serverProof || context.serverState || context.trustedState || {
+      correlationId: runCorrelationId,
+      scenarioId: context.scenarioId || null,
+      incidentCorrelationId: context.incidentCorrelationId || null,
+    });
     if (!gateResult.allowed) {
       return {
         ok: false,
@@ -288,6 +454,10 @@ function createPresenterStateMachine(options = {}) {
 
   function handleStart(trackId, context = {}) {
     const current = readState();
+    const unsafe = rejectUnsafePresenterContext(context);
+    if (unsafe) {
+      return { ...unsafe, state: current };
+    }
     if (current.trackId && current.status === 'running' && !context.force) {
       return { ok: true, allowed: true, state: current, reason: 'track already running' };
     }
@@ -295,6 +465,11 @@ function createPresenterStateMachine(options = {}) {
   }
 
   function handleContinue(context = {}) {
+    const unsafe = rejectUnsafePresenterContext(context);
+    if (unsafe) {
+      return { ...unsafe, state: readState() };
+    }
+
     const current = readState();
     if (!current.trackId) {
       return { ok: false, allowed: false, reason: 'no active presenter track' };
@@ -306,7 +481,11 @@ function createPresenterStateMachine(options = {}) {
 
     const track = getTrackById(current.trackId);
     const currentStep = track.steps.find((step) => step.id === current.currentStepId) || track.steps[0];
-    const gateResult = evaluateGate(currentStep, { ...context.gateContext, correlationId: current.correlationId }, current);
+    const gateResult = resolveTrustedPresenterGate(currentStep, current, context.serverProof || context.serverState || context.trustedState || {
+      correlationId: current.correlationId,
+      scenarioId: current.scenarioId,
+      incidentCorrelationId: current.incidentCorrelationId,
+    });
     if (!gateResult.allowed) {
       return {
         ok: false,
@@ -463,6 +642,8 @@ module.exports = {
   sanitizePresenterText,
   sanitizePresenterNotes,
   createPresenterStateMachine,
+  resolveTrustedPresenterGate,
+  rejectClientGeneratedGateTruth,
   getTrackById,
   getTrackStep,
   buildPresenterRehearsal(trackId, options = {}) {

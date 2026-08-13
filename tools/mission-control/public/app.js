@@ -499,49 +499,6 @@ function getPresenterStepForState() {
   return track.steps.find((step) => step.id === presenterState.currentStepId) || track.steps[0] || null;
 }
 
-function getPresenterGateContext(step) {
-  const context = { correlationId: presenterState && presenterState.correlationId ? presenterState.correlationId : null };
-  if (!step || !step.gate) return context;
-  switch (step.gate.kind) {
-    case 'readiness':
-      context.baselineReady = true;
-      context.ready = true;
-      break;
-    case 'baseline':
-      context.baselineReady = true;
-      context.baselineHealthPass = true;
-      break;
-    case 'scenario':
-      context.scenarioActive = true;
-      context.scenarioId = presenterState && presenterState.scenarioId ? presenterState.scenarioId : 'mongodb';
-      break;
-    case 'native-evidence':
-      context.nativeEvidenceAvailable = Boolean(currentIncidentCorrelationId || presenterState && presenterState.incidentCorrelationId);
-      context.nativeEvidenceStatus = context.nativeEvidenceAvailable ? 'ready' : 'Unavailable / requires scheduled-task setup';
-      break;
-    case 'approval':
-      context.approved = true;
-      context.actionKey = 'presenter-review';
-      break;
-    case 'remediation':
-      context.remediationExecuted = true;
-      break;
-    case 'recovery':
-      context.recoveryVerified = true;
-      break;
-    case 'incident-value':
-      context.valueSummaryRecorded = true;
-      break;
-    case 'scheduled-task':
-      context.scheduledTaskAvailable = false;
-      context.nativeEvidenceStatus = 'Unavailable / requires scheduled-task setup';
-      break;
-    default:
-      break;
-  }
-  return context;
-}
-
 function updatePresenterTrackButtons() {
   const buttons = document.querySelectorAll('.presenter-track-button');
   buttons.forEach((button) => {
@@ -669,12 +626,11 @@ async function startPresenterTrack() {
     toast('Select a presenter track before starting', 'error');
     return;
   }
-  const currentStep = getPresenterTrackDefinition(trackId)?.steps[0] || null;
   const payload = {
     trackId,
     notesVisible: true,
     focusMode: false,
-    gateContext: currentStep ? getPresenterGateContext(currentStep) : {},
+    correlationId: presenterState && presenterState.correlationId ? presenterState.correlationId : null,
   };
   const result = await runPresenterAction('start', payload);
   if (result) {
@@ -687,13 +643,12 @@ async function continuePresenterTrack() {
     toast('Continue is blocked until the current gate passes', 'error');
     return;
   }
-  const step = getPresenterStepForState();
-  if (!step) return;
   const result = await runPresenterAction('continue', {
     notesVisible: true,
     focusMode: Boolean(presenterState && presenterState.focusMode),
-    gateContext: getPresenterGateContext(step),
     correlationId: presenterState && presenterState.correlationId,
+    incidentCorrelationId: presenterState && presenterState.incidentCorrelationId,
+    scenarioId: presenterState && presenterState.scenarioId,
   });
   if (result) {
     toast('Presenter step advanced');

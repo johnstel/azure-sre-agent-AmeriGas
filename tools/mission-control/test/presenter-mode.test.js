@@ -10,6 +10,7 @@ const {
   sanitizePresenterNotes,
   buildPresenterRehearsal,
 } = require('../presenter-mode');
+const { app, presenterStateMachine, sanitizePresenterRequestBody } = require('../server');
 
 function createMemoryStore(initialState = null) {
   let currentState = initialState;
@@ -22,29 +23,51 @@ function createMemoryStore(initialState = null) {
   };
 }
 
+function trustedServerProof(overrides = {}) {
+  return {
+    correlationId: 'RUN-TEST',
+    baselineReady: true,
+    readiness: { status: 'ready', healthy: true, ready: true },
+    cleanBaseline: true,
+    scenarioId: 'mongodb',
+    scenarioHealth: { scenarioId: 'mongodb', active: true },
+    incidentCorrelationId: 'INC-TEST',
+    activeIncident: {
+      correlationId: 'INC-TEST',
+      scenarioId: 'mongodb',
+      finalState: 'active',
+      milestones: [],
+    },
+    ...overrides,
+  };
+}
+
 test('shared presenter catalog contains the required Fast Wow and Deep Dive tracks with valid schema metadata', () => {
   assert.equal(TRACK_CATALOG.schemaVersion, 1);
-  assert.deepEqual(TRACK_CATALOG.gateIds.includes('native-sre-agent-investigation'), true);
-  assert.deepEqual(TRACK_CATALOG.gateIds.includes('scheduled-task-evidence'), true);
+  assert.equal(TRACK_CATALOG.gateIds.includes('native-sre-agent-investigation'), true);
+  assert.equal(TRACK_CATALOG.gateIds.includes('scheduled-task-evidence'), true);
   const trackIds = TRACK_CATALOG.tracks.map((track) => track.id);
-  assert.deepEqual(trackIds.includes('fast-wow'), true);
-  assert.deepEqual(trackIds.includes('deep-dive'), true);
-  assert.deepEqual(TRACK_CATALOG.tracks[0].durationMinutes <= 7, true);
-  assert.deepEqual(TRACK_CATALOG.tracks[1].durationMinutes >= 20 && TRACK_CATALOG.tracks[1].durationMinutes <= 25, true);
-  assert.deepEqual(TRACK_CATALOG.panelIds.includes('presenter-panel'), true);
-  assert.deepEqual(TRACK_CATALOG.actionIds.includes('continue'), true);
+  assert.equal(trackIds.includes('fast-wow'), true);
+  assert.equal(trackIds.includes('deep-dive'), true);
+  assert.equal(TRACK_CATALOG.tracks[0].durationMinutes <= 7, true);
+  assert.equal(TRACK_CATALOG.tracks[1].durationMinutes >= 20 && TRACK_CATALOG.tracks[1].durationMinutes <= 25, true);
+  assert.equal(TRACK_CATALOG.panelIds.includes('presenter-panel'), true);
+  assert.equal(TRACK_CATALOG.actionIds.includes('continue'), true);
 });
 
-test('start and continue enforce real gate checks instead of accepting unsigned presenter progress', () => {
+test('malicious client gate truth is rejected and trusted server proof is required to unlock a step', () => {
   const machine = createPresenterStateMachine({ storage: createMemoryStore() });
 
-  const blockedStart = machine.startTrack('fast-wow', { gateContext: { ready: false } });
+  const blockedStart = machine.startTrack('fast-wow', {
+    correlationId: 'RUN-0001',
+    gateContext: { baselineReady: true, ready: true },
+  });
   assert.equal(blockedStart.ok, false);
-  assert.match(blockedStart.reason, /baseline readiness has not passed|readiness/);
+  assert.match(blockedStart.reason, /client-supplied presenter gate truth|gateContext/i);
 
   const started = machine.startTrack('fast-wow', {
     correlationId: 'RUN-0001',
-    gateContext: { baselineReady: true, ready: true },
+    serverProof: trustedServerProof({ correlationId: 'RUN-0001' }),
   });
   assert.equal(started.ok, true);
   assert.equal(started.state.status, 'running');
@@ -55,31 +78,50 @@ test('start and continue enforce real gate checks instead of accepting unsigned 
     gateContext: { baselineReady: false },
   });
   assert.equal(blockedContinue.ok, false);
-  assert.match(blockedContinue.reason, /has not passed|required/i);
+  assert.match(blockedContinue.reason, /client-supplied presenter gate truth|gateContext/i);
 
-  const continued = machine.continueStep({
+  const goodContinue = machine.continueStep({
     correlationId: 'RUN-0001',
-    gateContext: { baselineReady: true, ready: true },
+    serverProof: trustedServerProof({ correlationId: 'RUN-0001', baselineReady: true }),
   });
-  assert.equal(continued.ok, true);
-  assert.equal(continued.state.currentStepId, 'baseline-health');
+  assert.equal(goodContinue.ok, true);
+  assert.equal(goodContinue.state.currentStepId, 'baseline-health');
+
+  const rejectedFields = sanitizePresenterRequestBody({
+    gateContext: { ready: true },
+    baselineReady: true,
+    actionKey: 'remediate',
+    force: true,
+    focusedPanels: ['incident-panel'],
+    evidenceReady: true,
+    approvalStatus: 'approved',
+  });
+  assert.equal(rejectedFields.clean.trackId, undefined);
+  assert.ok(rejectedFields.rejected.includes('gateContext'));
+  assert.ok(rejectedFields.rejected.includes('baselineReady'));
+  assert.ok(rejectedFields.rejected.includes('actionKey'));
+  assert.ok(rejectedFields.rejected.includes('force'));
+  assert.ok(rejectedFields.rejected.includes('focusedPanels'));
 });
 
-test('stale callbacks and out-of-order assertions are rejected before a step can advance', () => {
+test('stale callbacks, mismatched incidents, and out-of-order assertions are rejected before a step can advance', () => {
   const machine = createPresenterStateMachine({ storage: createMemoryStore() });
-  machine.startTrack('fast-wow', { correlationId: 'RUN-0002', gateContext: { ready: true, baselineReady: true } });
+  machine.startTrack('fast-wow', {
+    correlationId: 'RUN-0002',
+    serverProof: trustedServerProof({ correlationId: 'RUN-0002', baselineReady: true }),
+  });
 
   const stale = machine.continueStep({
     correlationId: 'RUN-9999',
-    gateContext: { ready: true, baselineReady: true },
+    serverProof: trustedServerProof({ correlationId: 'RUN-9999', baselineReady: true }),
   });
   assert.equal(stale.ok, false);
   assert.match(stale.reason, /stale|different presenter run/i);
 
   const mismatch = evaluateGate(
     { gate: { kind: 'scenario', action: 'continue' } },
-    { scenarioActive: true, scenarioId: 'service' },
-    { scenarioId: 'mongodb' },
+    { serverProof: { scenarioHealth: { scenarioId: 'service', active: true } } },
+    { correlationId: 'RUN-0002', scenarioId: 'mongodb' },
   );
   assert.equal(mismatch.allowed, false);
   assert.match(mismatch.reason, /scenario assertion mismatch|inactive scenario/i);
@@ -87,7 +129,10 @@ test('stale callbacks and out-of-order assertions are rejected before a step can
 
 test('pause, resume, reconnect, abort, and reset remain idempotent and restore the clean baseline safely', () => {
   const machine = createPresenterStateMachine({ storage: createMemoryStore() });
-  machine.startTrack('deep-dive', { correlationId: 'RUN-0003', gateContext: { ready: true, baselineReady: true } });
+  machine.startTrack('deep-dive', {
+    correlationId: 'RUN-0003',
+    serverProof: trustedServerProof({ correlationId: 'RUN-0003', baselineReady: true }),
+  });
 
   const pauseA = machine.pause({ notesVisible: true });
   assert.equal(pauseA.ok, true);
@@ -120,7 +165,7 @@ test('pause, resume, reconnect, abort, and reset remain idempotent and restore t
 test('native evidence and unavailable scheduled-task proof stay honest and do not fabricate a live result', () => {
   const nativeCase = evaluateGate(
     { gate: { kind: 'native-evidence', action: 'continue' } },
-    { nativeEvidenceAvailable: false, nativeEvidenceStatus: 'Unavailable / requires scheduled-task setup' },
+    { serverProof: { nativeEvidenceStatus: 'Unavailable / requires scheduled-task setup' } },
     { correlationId: 'RUN-0004' },
   );
   assert.equal(nativeCase.allowed, false);
@@ -128,7 +173,7 @@ test('native evidence and unavailable scheduled-task proof stay honest and do no
 
   const scheduledCase = evaluateGate(
     { gate: { kind: 'scheduled-task', action: 'continue' } },
-    { scheduledTaskAvailable: false },
+    { serverProof: { scheduledTaskAvailable: false } },
     { correlationId: 'RUN-0004' },
   );
   assert.equal(scheduledCase.allowed, false);
@@ -155,13 +200,53 @@ test('rehearsal budgets stay within the target ranges without claiming live dura
 
 test('presenter UI wiring keeps the cloud product and local companion clearly labeled and exposes accessible live status', () => {
   const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
-  const app = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+  const appSource = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
 
   assert.match(html, /Azure SRE Agent — cloud product/);
   assert.match(html, /Mission Control Copilot — local companion/);
   assert.match(html, /aria-live="polite"/);
   assert.match(html, /data-action="presenter-select-track"/);
   assert.match(html, /data-action="presenter-continue"/);
-  assert.match(app, /selectedPresenterTrackId = 'fast-wow'/);
-  assert.match(app, /focusedPanels/);
+  assert.match(appSource, /selectedPresenterTrackId = 'fast-wow'/);
+  assert.equal(appSource.includes('getPresenterGateContext'), false);
+  assert.equal(appSource.includes('gateContext'), false);
+  assert.equal(appSource.includes('baselineReady'), false);
+  assert.equal(appSource.includes('actionKey'), false);
+});
+
+test('production presenter endpoints reject malicious all-true payloads and stale run mismatches without bypassing auth policy', async () => {
+  const server = app.listen(0);
+  try {
+    const { port } = server.address();
+    const base = `http://127.0.0.1:${port}`;
+
+    const maliciousStart = await fetch(`${base}/api/presenter/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trackId: 'fast-wow',
+        gateContext: { ready: true, baselineReady: true, approved: true, recovered: true, actionKey: 'remediate-1', scheduledTaskAvailable: true },
+        baselineReady: true,
+        approvalStatus: 'approved',
+        actionExecuted: true,
+        recoveryVerified: true,
+        force: true,
+        focusedPanels: ['incident-panel'],
+      }),
+    });
+    assert.equal(maliciousStart.status, 400);
+    const maliciousBody = await maliciousStart.json();
+    assert.match(maliciousBody.error, /blocked client-supplied gate truth|gate truth/i);
+
+    const staleContinue = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: 'RUN-9', notesVisible: true }),
+    });
+    assert.equal(staleContinue.status, 400);
+    const staleBody = await staleContinue.json();
+    assert.match(staleBody.error, /no active presenter track|stale|different presenter run/i);
+  } finally {
+    await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  }
 });
