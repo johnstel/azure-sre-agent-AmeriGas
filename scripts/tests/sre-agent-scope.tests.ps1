@@ -591,4 +591,3 @@ Describe "infra/bicep/main.bicep — demoLeastPrivilegeRbac wired from deployDem
         $sreAgentModule.properties.parameters.demoLeastPrivilegeRbac.value | Should -Be "[parameters('deployDemoResponsePlan')]"
     }
 }
-

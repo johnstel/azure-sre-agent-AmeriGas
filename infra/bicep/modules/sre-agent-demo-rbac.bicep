@@ -1,13 +1,6 @@
 // =============================================================================
 // SRE Agent Demo Response-Plan RBAC Module (issue #19)
 // =============================================================================
-// The SRE Agent's High access level (infra/bicep/modules/sre-agent.bicep)
-// grants Contributor at resource-group scope so the agent can remediate any
-// resource in the lab — appropriate for general-purpose diagnosis/remediation
-// across the whole demo, but broader than the ONE exact remediation this
-// response plan proposes: `az aks command invoke` scaling the propane/mongodb
-// Deployment back to 1 replica.
-//
 // This module grants a purpose-built custom role, scoped to the AKS cluster
 // resource only (never the resource group or subscription), containing
 // exactly the actions Microsoft documents as required for
@@ -15,11 +8,17 @@
 //   - Microsoft.ContainerService/managedClusters/read
 //   - Microsoft.ContainerService/managedClusters/runCommand/action
 //   - Microsoft.ContainerService/managedClusters/commandResults/read
-// It is additive to (not a replacement for) the existing resource-group-scope
-// RBAC — deploying it does not narrow anything the agent could already do at
-// High access level; it exists so the specific MongoDB-down response plan can
-// be demonstrated/validated against least-privilege scope, independent of
-// whatever broader access level the agent happens to be configured with.
+//
+// In the demo profile, infra/bicep/modules/sre-agent.bicep's
+// demoLeastPrivilegeRbac withholds resource-group Contributor from the SRE
+// identity (it is granted only Reader + Log Analytics Reader there instead
+// of the standard High bundle's Contributor + Log Analytics Contributor).
+// That makes this module's AKS-cluster-scoped role the SOLE direct write
+// permission behind the one remediation this response plan proposes — not
+// an additive convenience on top of a broader Contributor grant. The
+// standard profile (demoLeastPrivilegeRbac = false) still grants the wider
+// resource-group High bundle for general-purpose diagnosis/remediation
+// across the whole lab, independent of whether this module is deployed.
 //
 // Deliberately NOT included (out of scope for this exact remediation, and
 // consistent with the platform's own delete/remove and Key Vault guardrails
