@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('node:fs');
 const { execFile, spawn } = require('child_process');
 const path = require('path');
 const util = require('util');
@@ -22,6 +23,7 @@ const { createIncidentStore } = require('./incident-store');
 const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
+const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
 const operationLifecycle = require('./operation-lifecycle');
 
 const execFileAsync = util.promisify(execFile);
@@ -97,6 +99,103 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/csrf-token', (req, res) => {
   res.json({ token: csrfTokenStore.issue() });
+});
+
+const presenterStatePath = path.resolve(__dirname, '.data', 'presenter-state.json');
+const presenterStateStore = {
+  read() {
+    try {
+      const raw = fs.readFileSync(presenterStatePath, 'utf8');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  write(state) {
+    try {
+      fs.mkdirSync(path.dirname(presenterStatePath), { recursive: true });
+      fs.writeFileSync(presenterStatePath, JSON.stringify(state, null, 2));
+    } catch (error) {
+      console.error('Presenter state persist failed:', error.message);
+    }
+    return state;
+  },
+};
+const presenterStateMachine = createPresenterStateMachine({
+  storage: presenterStateStore,
+  catalog: TRACK_CATALOG,
+});
+
+app.get('/api/presenter/catalog', (req, res) => {
+  const validation = validatePresenterTracks(TRACK_CATALOG);
+  res.json({
+    valid: validation.valid,
+    errors: validation.errors,
+    catalog: TRACK_CATALOG,
+  });
+});
+
+app.get('/api/presenter/state', (req, res) => {
+  res.json({ state: presenterStateMachine.getState() });
+});
+
+function handlePresenterMutation(req, res, operation) {
+  const body = req.body || {};
+  const context = {
+    trackId: body.trackId,
+    scenarioId: body.scenarioId,
+    correlationId: body.correlationId,
+    incidentCorrelationId: body.incidentCorrelationId,
+    notesVisible: body.notesVisible,
+    focusMode: body.focusMode,
+    gateContext: body.gateContext || {},
+    focusedPanels: Array.isArray(body.focusedPanels) ? body.focusedPanels : undefined,
+    force: Boolean(body.force),
+    lastEvent: body.lastEvent,
+  };
+
+  const result = operation(context);
+  if (!result || !('ok' in result)) {
+    return res.status(500).json({ error: 'Presenter operation did not return a valid response' });
+  }
+  if (!result.ok) {
+    return res.status(400).json({ error: result.reason || 'Presenter action failed', state: result.state || presenterStateMachine.getState() });
+  }
+  return res.json({ ok: true, state: result.state, reason: result.reason });
+}
+
+app.post('/api/presenter/start', (req, res) => {
+  const { trackId, ...body } = req.body || {};
+  if (!trackId || typeof trackId !== 'string') {
+    return res.status(400).json({ error: 'trackId is required' });
+  }
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.startTrack(trackId, { ...context, ...body }));
+});
+
+app.post('/api/presenter/continue', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.continueStep(context));
+});
+
+app.post('/api/presenter/pause', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.pause(context));
+});
+
+app.post('/api/presenter/resume', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.resume(context));
+});
+
+app.post('/api/presenter/abort', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.abort(context));
+});
+
+app.post('/api/presenter/reset', (req, res) => {
+  const body = req.body || {};
+  const trackId = body.trackId;
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.reset({ ...context, trackId }));
+});
+
+app.post('/api/presenter/reconnect', (req, res) => {
+  handlePresenterMutation(req, res, (context) => presenterStateMachine.reconnect(context));
 });
 
 const IS_WIN = process.platform === 'win32';
