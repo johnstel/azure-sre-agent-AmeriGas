@@ -1,7 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { startDemoScenario, waitForActivation } = require('../scenario-lifecycle');
+const {
+  startDemoScenario,
+  waitForActivation,
+  acquireLifecycleLock,
+  releaseLifecycleLock,
+  resetDemoBaseline,
+} = require('../scenario-lifecycle');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -131,6 +137,55 @@ function createRunner({ snapshots = [healthyBaseline()], lifecycleState = null, 
   };
 }
 
+function createAtomicLockRunner({ snapshots = [healthyBaseline()], initialLock = null } = {}) {
+  let lock = initialLock;
+  const snapshotList = snapshots;
+  let snapshotIndex = 0;
+
+  return {
+    async readState() {
+      return { phase: 'baseline', scenarioId: null };
+    },
+    async writeState(_namespace, nextState) {
+      return nextState;
+    },
+    async readLock() {
+      return lock;
+    },
+    async writeLock(_namespace, nextLock) {
+      const expired = lock && lock.locked && lock.expiresAt && Date.parse(lock.expiresAt) <= Date.now();
+      if (lock && lock.locked && nextLock.locked && !expired && lock.ownerToken !== nextLock.ownerToken) {
+        throw new Error('lifecycle lock already held by another process');
+      }
+      lock = nextLock;
+      return nextLock;
+    },
+    async exec(command, args) {
+      if (command === 'kubectl' && Array.isArray(args) && args[0] === 'apply') {
+        return 'applied';
+      }
+      return '';
+    },
+    async readJson(args) {
+      const snapshot = snapshotList[Math.min(snapshotIndex, snapshotList.length - 1)] || healthyBaseline();
+      const resource = args[1];
+      const payload = (() => {
+        if (resource === 'pods') return { items: snapshot.pods || [] };
+        if (resource === 'deployments') return { items: snapshot.deployments || [] };
+        if (resource === 'svc') return { items: snapshot.services || [] };
+        if (resource === 'endpoints') return { items: snapshot.endpoints || [] };
+        if (resource === 'networkpolicy') return { items: snapshot.networkPolicies || [] };
+        if (resource === 'configmaps') return { items: snapshot.configMaps || [] };
+        return { items: [] };
+      })();
+      return payload;
+    },
+    currentLock() {
+      return lock;
+    },
+  };
+}
+
 test('waitForActivation refreshes the live snapshot on every poll and activates once the pod health flips true', async () => {
   const firstSnapshot = healthyBaseline({
     pods: [pod('tank-monitor-1', 'Running', true, 0, '')],
@@ -223,4 +278,126 @@ test('startDemoScenario honors an explicit -AllowStacking override only when req
 
   assert.equal(result.ok, true, 'explicit stacking override must allow a same-scenario retry for supported testing');
   assert.equal(result.scenarioId, 'oom');
+});
+
+test('acquireLifecycleLock guarantees exactly one Promise.all start/reset winner', async () => {
+  const runner = createAtomicLockRunner();
+  const results = await Promise.all([
+    acquireLifecycleLock(REPO_ROOT, runner, 'propane', 'oom'),
+    acquireLifecycleLock(REPO_ROOT, runner, 'propane', 'reset'),
+  ]);
+
+  const winners = results.filter((result) => result.ok);
+  assert.equal(winners.length, 1, 'exactly one concurrent lifecycle acquisition should win');
+  assert.ok(runner.currentLock().locked, 'the winner must hold the authoritative lifecycle lock');
+});
+
+test('acquireLifecycleLock reclaims a stale lock after the bounded TTL expires', async () => {
+  const staleLock = {
+    locked: true,
+    ownerToken: 'stale-owner',
+    runId: 'stale-run',
+    scenarioId: 'oom',
+    expiresAt: new Date(Date.now() - 1000).toISOString(),
+    resourceVersion: '17',
+  };
+
+  const runner = createAtomicLockRunner({ initialLock: staleLock });
+  const result = await acquireLifecycleLock(REPO_ROOT, runner, 'propane', 'oom');
+
+  assert.equal(result.ok, true, 'expired lock ownership should be recoverable');
+  assert.notEqual(result.ownerToken, 'stale-owner');
+  assert.equal(result.lockState.scenarioId, 'oom');
+});
+
+test('acquireLifecycleLock rejects a live lock while it remains valid and unexpired', async () => {
+  const liveLock = {
+    locked: true,
+    ownerToken: 'live-owner',
+    runId: 'live-run',
+    scenarioId: 'oom',
+    expiresAt: new Date(Date.now() + 30000).toISOString(),
+    resourceVersion: '88',
+  };
+
+  const runner = createAtomicLockRunner({ initialLock: liveLock });
+  const result = await acquireLifecycleLock(REPO_ROOT, runner, 'propane', 'oom');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'SCENARIO_REENTRY_BLOCKED');
+  assert.match(result.message, /cannot start|already active/i);
+});
+
+test('releaseLifecycleLock rejects mismatched owner token and resourceVersion', async () => {
+  const runner = createAtomicLockRunner({
+    initialLock: {
+      locked: true,
+      ownerToken: 'owner-a',
+      runId: 'run-a',
+      scenarioId: 'oom',
+      expiresAt: new Date(Date.now() + 30000).toISOString(),
+      resourceVersion: '99',
+    },
+  });
+
+  const result = await releaseLifecycleLock(REPO_ROOT, runner, 'propane', {
+    ownerToken: 'owner-b',
+    resourceVersion: '99',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'LOCK_RELEASE_MISMATCH');
+  assert.match(result.message, /owner mismatch|version mismatch/i);
+});
+
+test('acquireLifecycleLock fails closed on partial write and transport failures', async () => {
+  const runner = {
+    async readLock() {
+      return null;
+    },
+    async writeLock() {
+      throw new Error('transport failure while persisting lifecycle lock');
+    },
+    async readState() {
+      return { phase: 'baseline', scenarioId: null };
+    },
+    async writeState(_namespace, nextState) {
+      return nextState;
+    },
+  };
+
+  const result = await acquireLifecycleLock(REPO_ROOT, runner, 'propane', 'oom');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'SCENARIO_LOCK_WRITE_FAILED');
+  assert.match(result.message, /transport failure/i);
+});
+
+test('resetDemoBaseline fails closed and keeps lifecycle state reset-required if any scenario resource survives cleanup', async () => {
+  const runner = createAtomicLockRunner({
+    snapshots: [healthyBaseline()],
+  });
+
+  const originalExec = runner.exec.bind(runner);
+  runner.exec = async (command, args) => {
+    if (command === 'kubectl' && Array.isArray(args) && args[0] === 'delete') {
+      if (args[1] === 'deployment' && args[2] === 'tank-monitor') {
+        return { ok: false, stdout: '', stderr: 'timed out deleting deployment tank-monitor', status: 1 };
+      }
+      return { ok: true, stdout: 'deleted', stderr: '', status: 0 };
+    }
+    if (command === 'kubectl' && Array.isArray(args) && args[0] === 'get') {
+      return { ok: true, stdout: JSON.stringify({ items: [{ metadata: { name: 'tank-monitor' } }] }), stderr: '', status: 0 };
+    }
+    if (command === 'kubectl' && Array.isArray(args) && args[0] === 'apply') {
+      return { ok: true, stdout: 'applied', stderr: '', status: 0 };
+    }
+    return originalExec(command, args);
+  };
+
+  const result = await resetDemoBaseline({ repoRoot: REPO_ROOT, namespace: 'propane', runner });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'RESET_CLEANUP_FAILED');
+  assert.match(result.message, /tank-monitor|timed out|surviving/i);
 });
