@@ -21,6 +21,7 @@ const { SCENARIO_MAP, SCENARIO_METADATA } = require('./scenario-catalog');
 const { startDemoScenario, resetDemoBaseline } = require('./scenario-lifecycle');
 const { evaluateScenarioHealth } = require('./scenario-health');
 const { createIncidentStore } = require('./incident-store');
+const { createScheduledTaskEvidenceStore } = require('./scheduled-task-evidence');
 const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
@@ -41,6 +42,15 @@ const securityState = createSecurityState();
 const incidentStore = createIncidentStore({
   filePath: path.resolve(__dirname, '.data', 'incidents.json'),
   onPersistError: (err) => console.error('  ⚠️  Incident timeline persistence error:', err.message),
+});
+
+// Trusted, server-recorded evidence for the native scheduled-task
+// presenter gate (issue #24 integration with issue #20's presenter gate).
+// Recorded ONLY through the authenticated /api/scheduled-task/evidence
+// route below — never derived from unauthenticated presenter traffic.
+const scheduledTaskEvidenceStore = createScheduledTaskEvidenceStore({
+  filePath: path.resolve(__dirname, '.data', 'scheduled-task-evidence.json'),
+  onPersistError: (err) => console.error('  ⚠️  Scheduled-task evidence persistence error:', err.message),
 });
 
 
@@ -226,6 +236,17 @@ function handlePresenterMutation(req, res, operation) {
     notesVisible: clean.notesVisible,
     focusMode: clean.focusMode,
     lastEvent: clean.lastEvent,
+    // Server-computed trust context for gates that already have a real
+    // evidence source wired up. Only `scheduledTaskEvidence` is populated
+    // today (issue #24); other gate kinds intentionally fail closed until
+    // their own trusted evidence source is wired the same way — this is
+    // NEVER built from `clean`/request-body fields (those are rejected
+    // outright by sanitizePresenterRequestBody above for every
+    // CLIENT_GATE_TRUTH_KEYS field, including scheduledTaskAvailable).
+    serverProof: {
+      scheduledTaskAvailable: scheduledTaskEvidenceStore.evaluate().available === true,
+      scheduledTaskEvidence: scheduledTaskEvidenceStore.evaluate(),
+    },
   };
 
   const result = operation(context);
@@ -799,6 +820,29 @@ app.post('/api/approval/deny', (req, res) => {
     incidentStore.denyAction(result.incidentCorrelationId, { actionKey, approver: resolveApproverIdentity(req) });
   }
   res.json(result);
+});
+
+// Trusted evidence contract for the presenter `scheduled-task` gate (issue
+// #24). Gated by the same operator authentication as /api/approval —
+// recording evidence is a privileged write, not something an unauthenticated
+// presenter client can influence. The READ route is exposed the same way so
+// a presenter's own status panel can show *why* the gate is locked without
+// ever letting the browser assert the unlock itself (evaluation happens
+// server-side, in handlePresenterMutation below and in this route,
+// identically).
+app.use('/api/scheduled-task', createOperatorAuthMiddleware());
+
+app.post('/api/scheduled-task/evidence', (req, res) => {
+  const { taskId, promptVersionHash, threadId, timestamp, status } = req.body || {};
+  const result = scheduledTaskEvidenceStore.recordExecutionEvidence({ taskId, promptVersionHash, threadId, timestamp, status });
+  if (!result.ok) {
+    return res.status(400).json({ error: result.reason });
+  }
+  res.json({ ok: true, record: result.record });
+});
+
+app.get('/api/scheduled-task/evidence', (req, res) => {
+  res.json(scheduledTaskEvidenceStore.evaluate());
 });
 
 app.post('/api/chat', async (req, res) => {

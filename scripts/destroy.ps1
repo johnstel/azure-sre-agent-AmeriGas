@@ -100,6 +100,30 @@ if ($sreAgentResource) {
     }
 }
 
+# Best-effort teardown of the daily-propane-health-report scheduled task
+# (issue #24), same rationale as the response-plan teardown above — this
+# task is bootstrapped for both the standard and demo profiles, so its
+# teardown is unconditional on $sreAgentResource alone (not gated on the
+# demo response plan).
+if ($sreAgentResource) {
+    $scheduledTaskScript = Join-Path $PSScriptRoot "bootstrap-sre-agent-scheduled-task.ps1"
+    $aksResourceForScheduledTask = $resources | Where-Object { $_.type -eq 'Microsoft.ContainerService/managedClusters' } | Select-Object -First 1
+    if ((Test-Path $scheduledTaskScript) -and $aksResourceForScheduledTask) {
+        Write-Host "`n🗓️  Tearing down SRE Agent scheduled task (if configured)..." -ForegroundColor Yellow
+        & pwsh -NoLogo -NoProfile -File $scheduledTaskScript `
+            -ResourceGroupName $ResourceGroupName `
+            -AgentName $sreAgentResource.name `
+            -AksClusterName $aksResourceForScheduledTask.name `
+            -Action Teardown
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ⚠️  Scheduled task teardown reported an error — continuing with resource group deletion, which will remove it regardless." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "  ✅ Scheduled task torn down (or was already absent)" -ForegroundColor Green
+        }
+    }
+}
+
 # Delete resource group
 Write-Host "`n🗑️  Deleting resource group '$ResourceGroupName'..." -ForegroundColor Yellow
 Write-Host "   This may take several minutes..." -ForegroundColor Gray

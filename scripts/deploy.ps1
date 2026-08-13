@@ -877,6 +877,34 @@ if ($outputs.sreAgentId.value) {
     }
 }
 
+# Bootstrap the proactive daily-propane-health-report scheduled task (issue
+# #24) — read-only and Autonomous, so unlike the response plan this is safe
+# to bootstrap for BOTH the standard and demo profiles whenever the agent
+# was actually deployed.
+$sreAgentScheduledTaskReady = $true
+if ($outputs.sreAgentId.value) {
+    Write-Host "`n🗓️  Bootstrapping SRE Agent scheduled task (daily-propane-health-report)..." -ForegroundColor Yellow
+    $scheduledTaskScript = Join-Path $PSScriptRoot "bootstrap-sre-agent-scheduled-task.ps1"
+    if (Test-Path $scheduledTaskScript) {
+        & pwsh -NoLogo -NoProfile -File $scheduledTaskScript `
+            -ResourceGroupName $resourceGroupName `
+            -AgentName $outputs.sreAgentName.value `
+            -AksClusterName $outputs.aksClusterName.value `
+            -ApiVersion $outputs.sreAgentApiVersionUsed.value
+        if ($LASTEXITCODE -ne 0) {
+            $sreAgentScheduledTaskReady = $false
+            Write-Host "  ❌ SRE Agent scheduled task bootstrap failed. See output above for the explicit error." -ForegroundColor Red
+        }
+        else {
+            Write-Host "  ✅ SRE Agent scheduled task is configured (Daily, Autonomous)" -ForegroundColor Green
+        }
+    }
+    else {
+        $sreAgentScheduledTaskReady = $false
+        Write-Host "  ❌ Scheduled task bootstrap script not found: $scheduledTaskScript" -ForegroundColor Red
+    }
+}
+
 # Bootstrap the demo alert-to-approved-remediation response plan (issue #19)
 # — only when the demo profile is active and the agent was actually deployed.
 $sreAgentResponsePlanReady = $true
