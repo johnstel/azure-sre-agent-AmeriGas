@@ -122,7 +122,21 @@ endpoint again). An `Insufficient evidence` outcome **never** unlocks the
 gate, even if fresh — matching issue #24's "missing/stale telemetry must
 never be reported as ready" requirement.
 
-To record real evidence after a rehearsal `-Action RunNow`:
+The gate also reads `tools/mission-control/.data/telemetry-proof.json`, which is
+written atomically only after `scripts/validate-telemetry.ps1` proves fresh
+`telemetry-probe` records in `AppDependencies`, `AppExceptions`, `AppTraces`,
+and `AppMetrics`, plus a correlated `KubeEvents` record. The proof requires all
+three real service targets and rejects telemetry attributed to those external
+services as resource roles. A missing, stale (older than five
+minutes), incomplete, or mismatched telemetry proof keeps readiness blocked
+regardless of the scheduled task's reported status.
+
+First generate fresh telemetry proof, then record real evidence after a
+rehearsal `-Action RunNow`:
+
+```powershell
+.\scripts\validate-telemetry.ps1 -ResourceGroupName <resource-group>
+```
 
 ```bash
 curl -X POST http://127.0.0.1:3000/api/scheduled-task/evidence \

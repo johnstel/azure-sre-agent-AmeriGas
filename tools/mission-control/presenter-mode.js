@@ -351,7 +351,11 @@ function hasTrustedScheduledTaskEvidence(serverState = {}) {
       isNonEmptyString(evidence.threadId) &&
       isNonEmptyString(evidence.timestamp) &&
       isNonEmptyString(evidence.status) &&
-      evidence.status !== 'Insufficient evidence',
+      evidence.status !== 'Insufficient evidence' &&
+      evidence.telemetryProof &&
+      evidence.telemetryProof.valid === true &&
+      /^[a-f0-9]{32}$/.test(evidence.telemetryProof.transactionId || '') &&
+      isNonEmptyString(evidence.telemetryProof.verifiedAt),
   );
 }
 
@@ -587,7 +591,7 @@ function resolveTrustedPresenterGate(step, currentState = {}, serverState = {}) 
       const trusted = hasTrustedScheduledTaskEvidence(serverState);
       if (trusted) {
         const evidence = serverState.scheduledTaskEvidence;
-        return { allowed: true, reason: `fresh scheduled-task execution evidence (task ${evidence.taskId}, thread ${evidence.threadId}, status ${evidence.status}) unlocked this gate` };
+        return { allowed: true, reason: `fresh scheduled-task execution evidence (task ${evidence.taskId}, thread ${evidence.threadId}, status ${evidence.status}, telemetry transaction ${evidence.telemetryProof.transactionId}) unlocked this gate` };
       }
       return { allowed: false, reason: 'Unavailable / requires scheduled-task setup' };
     }

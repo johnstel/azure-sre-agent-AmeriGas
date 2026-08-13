@@ -46,7 +46,7 @@ metadata:
 
 ---
 # =============================================================================
-# Telemetry Configuration - App Insights + OpenTelemetry
+# Telemetry Configuration - non-secret OpenTelemetry settings
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -56,7 +56,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: amerigas-propane-demo
 data:
-  APPLICATIONINSIGHTS_CONNECTION_STRING: "PLACEHOLDER_INJECT_AT_DEPLOY"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.propane.svc.cluster.local:4318"
   OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
   OTEL_TRACES_SAMPLER_ARG: "0.5"
@@ -654,6 +653,74 @@ data:
       otlpExport('/v1/traces', payload);
     }
 
+    function exportControlledFailure(args) {
+      const resourceAttributes = [
+        { key: 'service.name', value: { stringValue: SERVICE_NAME } },
+        { key: 'service.namespace', value: { stringValue: SERVICE_NAMESPACE } },
+        { key: 'deployment.environment', value: { stringValue: ENVIRONMENT } },
+        { key: 'scenario.id', value: { stringValue: 'observability-validation' } },
+        { key: 'run.correlation_id', value: { stringValue: args.runId } },
+        { key: 'transaction.id', value: { stringValue: args.transactionId } },
+      ];
+      const commonAttributes = [
+        { key: 'http.request.method', value: { stringValue: 'GET' } },
+        { key: 'http.route', value: { stringValue: '/controlled-failure' } },
+        { key: 'http.response.status_code', value: { intValue: '503' } },
+        { key: 'failure.controlled', value: { boolValue: true } },
+        { key: 'transaction.id', value: { stringValue: args.transactionId } },
+        { key: 'run.correlation_id', value: { stringValue: args.runId } },
+      ];
+      otlpExport('/v1/traces', {
+        resourceSpans: [{
+          resource: { attributes: resourceAttributes },
+          scopeSpans: [{
+            scope: { name: 'order-pricing-dependency.controlled-failure' },
+            spans: [{
+              traceId: args.traceId,
+              spanId: args.spanId,
+              parentSpanId: args.parentSpanId,
+              name: 'GET /controlled-failure',
+              kind: 2,
+              startTimeUnixNano: args.startNs,
+              endTimeUnixNano: args.endNs,
+              attributes: commonAttributes,
+              status: { code: 2, message: 'Deterministic controlled telemetry failure' },
+              events: [{
+                timeUnixNano: args.endNs,
+                name: 'exception',
+                attributes: [
+                  { key: 'exception.type', value: { stringValue: 'ControlledTelemetryFailure' } },
+                  { key: 'exception.message', value: { stringValue: 'Deterministic repo-owned failure endpoint returned HTTP 503' } },
+                  { key: 'transaction.id', value: { stringValue: args.transactionId } },
+                ],
+              }],
+            }],
+          }],
+        }],
+      });
+      otlpExport('/v1/logs', {
+        resourceLogs: [{
+          resource: { attributes: resourceAttributes },
+          scopeLogs: [{
+            scope: { name: 'order-pricing-dependency.controlled-failure' },
+            logRecords: [{
+              timeUnixNano: args.endNs,
+              observedTimeUnixNano: args.endNs,
+              traceId: args.traceId,
+              spanId: args.spanId,
+              severityNumber: 17,
+              severityText: 'ERROR',
+              body: { stringValue: 'Deterministic controlled telemetry failure returned HTTP 503' },
+              attributes: commonAttributes.concat([
+                { key: 'exception.type', value: { stringValue: 'ControlledTelemetryFailure' } },
+                { key: 'exception.message', value: { stringValue: 'Deterministic repo-owned failure endpoint returned HTTP 503' } },
+              ]),
+            }],
+          }],
+        }],
+      });
+    }
+
     const server = http.createServer(function (req, res) {
       if (req.method === 'GET' && req.url === '/healthz') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -709,6 +776,55 @@ data:
           quantilesMs: { p50: computeQuantile(sorted, 50), p95: computeQuantile(sorted, 95), p99: computeQuantile(sorted, 99) },
           errorRatePct: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0,
         }, null, 2));
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/controlled-failure') {
+        const transactionId = String(req.headers['x-transaction-id'] || '');
+        const runId = String(req.headers['x-run-correlation-id'] || '');
+        if (!/^[a-f0-9]{32}$/.test(transactionId) || !/^[a-f0-9]{32}$/.test(runId)) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ status: 'invalid_correlation' }));
+          return;
+        }
+
+        const inbound = parseTraceParent(req.headers.traceparent);
+        const traceId = inbound ? inbound.traceId : newHexId(16);
+        const parentSpanId = inbound ? inbound.spanId : newHexId(8);
+        const spanId = newHexId(8);
+        const startNs = (BigInt(Date.now()) * 1000000n).toString();
+        const endNs = (BigInt(Date.now()) * 1000000n).toString();
+        exportControlledFailure({
+          traceId: traceId,
+          parentSpanId: parentSpanId,
+          spanId: spanId,
+          transactionId: transactionId,
+          runId: runId,
+          startNs: startNs,
+          endNs: endNs,
+        });
+        console.log(JSON.stringify({
+          event: 'controlled_failure',
+          service: SERVICE_NAME,
+          route: '/controlled-failure',
+          status_code: 503,
+          transaction_id: transactionId,
+          run_correlation_id: runId,
+          trace_id: traceId,
+          span_id: spanId,
+          parent_span_id: parentSpanId,
+        }));
+        res.writeHead(503, {
+          'content-type': 'application/json',
+          traceparent: '00-' + traceId + '-' + spanId + '-01',
+        });
+        res.end(JSON.stringify({
+          status: 'controlled_failure',
+          route: '/controlled-failure',
+          transactionId: transactionId,
+          runCorrelationId: runId,
+          traceId: traceId,
+        }));
         return;
       }
 
@@ -3027,7 +3143,7 @@ spec:
 
 ---
 # =============================================================================
-# OpenTelemetry Collector - Telemetry pipeline (App Insights + ADX via stdout)
+# OpenTelemetry Collector - telemetry pipeline to workspace-based App Insights
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -3075,26 +3191,29 @@ data:
             value: propane
             action: upsert
     exporters:
-      logging:
-        loglevel: info
-      otlp/appinsights:
-        endpoint: "${APPLICATIONINSIGHTS_CONNECTION_STRING}"
-        headers:
-          "Content-Type": "application/json"
+      azuremonitor:
+        connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+        spaneventsenabled: true
+        exception_events_enabled: true
+        sending_queue:
+          enabled: true
+          queue_size: 2048
+      debug:
+        verbosity: basic
     service:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch, resource]
-          exporters: [logging]
+          processors: [memory_limiter, resource, batch]
+          exporters: [azuremonitor]
         metrics:
           receivers: [otlp, prometheus]
-          processors: [memory_limiter, batch, resource]
-          exporters: [logging]
+          processors: [memory_limiter, resource, batch]
+          exporters: [azuremonitor]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, batch, resource]
-          exporters: [logging]
+          processors: [memory_limiter, resource, batch]
+          exporters: [azuremonitor]
 
 ---
 apiVersion: apps/v1
@@ -3118,7 +3237,7 @@ spec:
         nodepool-type: user
       containers:
         - name: otel-collector
-          image: otel/opentelemetry-collector-contrib:0.96.0
+          image: otel/opentelemetry-collector-contrib:0.158.0
           args: ["--config=/etc/otel/otel-config.yaml"]
           ports:
             - containerPort: 4317
@@ -3132,9 +3251,12 @@ spec:
             limits:
               memory: "256Mi"
               cpu: "200m"
-          envFrom:
-            - configMapRef:
-                name: propane-telemetry-config
+          env:
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: application-insights-connection
+                  key: connection-string
           volumeMounts:
             - name: config
               mountPath: /etc/otel
@@ -3159,6 +3281,64 @@ spec:
     - name: otlp-http
       port: 4318
       targetPort: 4318
+
+---
+# =============================================================================
+# Synthetic telemetry probe - observes real service responses and emits OTLP
+# Domain: Shared
+# The telemetry-probe-source ConfigMap is generated from the repo-owned
+# tools/telemetry-probe/probe.js by scripts/deploy.ps1.
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: telemetry-baseline
+  namespace: propane
+  labels:
+    app: telemetry-baseline
+    app.kubernetes.io/part-of: amerigas-propane-demo
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app: telemetry-baseline
+            sre-demo: breakable
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            nodepool-type: user
+          containers:
+            - name: telemetry-probe
+              image: node:22.14.0-alpine
+              command: ["node", "/opt/telemetry/probe.js"]
+              env:
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: propane-telemetry-config
+                      key: OTEL_EXPORTER_OTLP_ENDPOINT
+                - name: RUN_CORRELATION_ID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+                - name: SCENARIO_ID
+                  value: observability-baseline
+              volumeMounts:
+                - name: probe-source
+                  mountPath: /opt/telemetry
+                  readOnly: true
+          volumes:
+            - name: probe-source
+              configMap:
+                name: telemetry-probe-source
 
 ---
 # =============================================================================

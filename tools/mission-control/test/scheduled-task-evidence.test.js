@@ -3,10 +3,39 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createScheduledTaskEvidenceStore, MAX_EVIDENCE_AGE_MINUTES } = require('../scheduled-task-evidence');
+const {
+  createScheduledTaskEvidenceStore,
+  MAX_EVIDENCE_AGE_MINUTES,
+  MAX_TELEMETRY_PROOF_AGE_MINUTES,
+} = require('../scheduled-task-evidence');
 
-function tempEvidencePath() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sched-evidence-')), 'evidence.json');
+function validTelemetryProof(overrides = {}) {
+  return {
+    transactionId: '0123456789abcdef0123456789abcdef',
+    verifiedAt: new Date().toISOString(),
+    dependencyCount: 4,
+    correlatedTransactionCount: 4,
+    requiredTargetCount: 3,
+    controlledFailureCount: 1,
+    controlledRequestCount: 1,
+    endToEndCorrelationCount: 1,
+    externalServiceResourceCount: 0,
+    metricCount: 4,
+    exceptionCount: 1,
+    traceCount: 4,
+    kubernetesEventCount: 1,
+    ...overrides,
+  };
+}
+
+function tempEvidencePath(telemetryVerifiedAt = new Date()) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-evidence-'));
+  fs.writeFileSync(
+    path.join(directory, 'telemetry-proof.json'),
+    JSON.stringify(validTelemetryProof({ verifiedAt: telemetryVerifiedAt.toISOString() })),
+    'utf8',
+  );
+  return path.join(directory, 'evidence.json');
 }
 
 function validEvidence(overrides = {}) {
@@ -82,8 +111,8 @@ test('an "Insufficient evidence" execution NEVER unlocks availability, even thou
 });
 
 test('evidence recorded beyond MAX_EVIDENCE_AGE_MINUTES becomes unavailable — freshness is computed at evaluation time, not cached from record time', () => {
-  const filePath = tempEvidencePath();
   let now = new Date('2024-01-01T00:00:00Z');
+  const filePath = tempEvidencePath(now);
   const store = createScheduledTaskEvidenceStore({ filePath, clock: () => now });
 
   store.recordExecutionEvidence(validEvidence({ timestamp: now.toISOString() }));
@@ -99,8 +128,8 @@ test('evidence recorded beyond MAX_EVIDENCE_AGE_MINUTES becomes unavailable — 
 });
 
 test('a timestamp in the future is rejected as available (never trusts a backdated/forward-dated evidence record)', () => {
-  const filePath = tempEvidencePath();
   const now = new Date('2024-01-01T00:00:00Z');
+  const filePath = tempEvidencePath(now);
   const store = createScheduledTaskEvidenceStore({ filePath, clock: () => now });
   const future = new Date(now.getTime() + 60 * 60000);
   store.recordExecutionEvidence(validEvidence({ timestamp: future.toISOString() }));
@@ -111,8 +140,8 @@ test('a timestamp in the future is rejected as available (never trusts a backdat
 });
 
 test('recordedAt is always the server clock, never derived from the client-supplied timestamp', () => {
-  const filePath = tempEvidencePath();
   const serverNow = new Date('2024-06-01T12:00:00Z');
+  const filePath = tempEvidencePath(serverNow);
   const store = createScheduledTaskEvidenceStore({ filePath, clock: () => serverNow });
   const clientClaimedTimestamp = '2020-01-01T00:00:00Z';
   store.recordExecutionEvidence(validEvidence({ timestamp: clientClaimedTimestamp }));
@@ -131,4 +160,57 @@ test('a subsequent recording overwrites the previous evidence (only the latest e
   const evaluated = store.evaluate();
   assert.equal(evaluated.threadId, 'THREAD-NEW');
   assert.equal(evaluated.status, 'Degraded');
+});
+
+test('a scheduled-task result cannot unlock without a fresh correlated telemetry proof', () => {
+  const filePath = tempEvidencePath();
+  fs.unlinkSync(path.join(path.dirname(filePath), 'telemetry-proof.json'));
+  const store = createScheduledTaskEvidenceStore({ filePath });
+  store.recordExecutionEvidence(validEvidence());
+
+  const evaluated = store.evaluate();
+  assert.equal(evaluated.available, false);
+  assert.match(evaluated.reason, /telemetry proof has not been recorded/i);
+});
+
+test('a stale telemetry proof blocks readiness even when scheduled-task evidence is fresh', () => {
+  const now = new Date('2026-08-13T03:00:00Z');
+  const stale = new Date(now.getTime() - (MAX_TELEMETRY_PROOF_AGE_MINUTES + 1) * 60000);
+  const filePath = tempEvidencePath(stale);
+  const store = createScheduledTaskEvidenceStore({ filePath, clock: () => now });
+  store.recordExecutionEvidence(validEvidence({ timestamp: now.toISOString() }));
+
+  const evaluated = store.evaluate();
+  assert.equal(evaluated.available, false);
+  assert.match(evaluated.reason, /telemetry proof is stale/i);
+});
+
+test('an incomplete telemetry proof blocks readiness', () => {
+  const filePath = tempEvidencePath();
+  fs.writeFileSync(
+    path.join(path.dirname(filePath), 'telemetry-proof.json'),
+    JSON.stringify(validTelemetryProof({ correlatedTransactionCount: 0 })),
+    'utf8',
+  );
+  const store = createScheduledTaskEvidenceStore({ filePath });
+  store.recordExecutionEvidence(validEvidence());
+
+  const evaluated = store.evaluate();
+  assert.equal(evaluated.available, false);
+  assert.match(evaluated.reason, /correlatedTransactionCount/);
+});
+
+test('telemetry proof attributed to an external service resource blocks readiness', () => {
+  const filePath = tempEvidencePath();
+  fs.writeFileSync(
+    path.join(path.dirname(filePath), 'telemetry-proof.json'),
+    JSON.stringify(validTelemetryProof({ externalServiceResourceCount: 1 })),
+    'utf8',
+  );
+  const store = createScheduledTaskEvidenceStore({ filePath });
+  store.recordExecutionEvidence(validEvidence());
+
+  const evaluated = store.evaluate();
+  assert.equal(evaluated.available, false);
+  assert.match(evaluated.reason, /external service resource/);
 });

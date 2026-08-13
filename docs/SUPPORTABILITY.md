@@ -198,11 +198,13 @@ Usage Simulator ──► Tank Monitor (generates synthetic load)
 | Property | Value |
 |----------|-------|
 | **Deployment** | `otel-collector` |
-| **Image** | `otel/opentelemetry-collector-contrib:0.96.0` |
+| **Image** | `otel/opentelemetry-collector-contrib:0.158.0` |
 | **Replicas** | 1 |
 | **Ports** | 4317 (gRPC), 4318 (HTTP) |
 | **Resources** | 128Mi–256Mi memory, 100m–200m CPU |
-| **Role** | Collects and forwards telemetry to Azure Application Insights |
+| **Role** | Exports traces, metrics, and logs through the `azuremonitor` exporter to workspace-based Application Insights. The connection string is sourced from a Kubernetes Secret. |
+
+The service images are third-party demo images and do not emit OTLP merely because `OTEL_*` variables are present. The repo-owned `telemetry-baseline` CronJob identifies every emitted resource as `telemetry-probe`, makes real HTTP calls to the three APIs, and records truthful INTERNAL transaction plus CLIENT dependency spans, logs, exceptions, and latency metrics. Targets are attributes such as `peer.service` and `server.address`, never resource identities. Its controlled error calls the explicit repo-owned `order-pricing-dependency` `/controlled-failure` route and expects HTTP 503. Validate freshness and correlation with `scripts/validate-telemetry.ps1`; a healthy collector pod is insufficient proof.
 
 ### 3.9 Usage Simulator
 

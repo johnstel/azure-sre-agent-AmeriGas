@@ -969,32 +969,58 @@ if (Test-Path $k8sPath) {
         Write-Host "  ⚠️  Could not create RabbitMQ credentials secret" -ForegroundColor Yellow
     }
 
-    kubectl apply -f $k8sPath
-    Write-Host "  ✅ Demo application deployed" -ForegroundColor Green
+    $telemetryProbePath = Join-Path $PSScriptRoot "../tools/telemetry-probe/probe.js"
+    if (-not (Test-Path -LiteralPath $telemetryProbePath -PathType Leaf)) {
+        throw "Telemetry probe source not found at: $telemetryProbePath"
+    }
 
-    # Inject App Insights connection string into telemetry ConfigMap
+    kubectl create configmap telemetry-probe-source `
+        --namespace propane `
+        "--from-file=probe.js=$telemetryProbePath" `
+        --dry-run=client -o yaml | kubectl apply -f -
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create the telemetry probe ConfigMap."
+    }
+
+    # Store the connection string only in a Kubernetes Secret. The generated
+    # YAML is piped directly to kubectl and is never written to host output.
     Write-Host "`n🔗 Configuring Application Insights telemetry..." -ForegroundColor Yellow
     if ($appInsightsConnStr) {
-        kubectl create configmap propane-telemetry-config `
-            --namespace propane `
-            --from-literal="APPLICATIONINSIGHTS_CONNECTION_STRING=$appInsightsConnStr" `
-            --from-literal="OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.propane.svc.cluster.local:4318" `
-            --from-literal="OTEL_TRACES_SAMPLER=parentbased_traceidratio" `
-            --from-literal="OTEL_TRACES_SAMPLER_ARG=0.5" `
-            --from-literal="OTEL_RESOURCE_ATTRIBUTES=deployment.environment=demo,service.namespace=propane" `
-            --dry-run=client -o yaml | kubectl apply -f -
-        Write-Host "  ✅ App Insights connection string injected into telemetry ConfigMap" -ForegroundColor Green
-        
-        # Restart telemetry-dependent services to pick up the real connection string
-        Write-Host "  ♻️  Restarting services to pick up telemetry config..." -ForegroundColor Gray
-        $telemetryServices = @('tank-monitor', 'inventory-service', 'order-service', 'otel-collector')
-        foreach ($svc in $telemetryServices) {
-            kubectl rollout restart deployment/$svc -n propane 2>$null
+        $connectionStringBytes = [System.Text.Encoding]::UTF8.GetBytes($appInsightsConnStr)
+        $telemetrySecret = [ordered]@{
+            apiVersion = 'v1'
+            kind       = 'Secret'
+            metadata   = [ordered]@{
+                name      = 'application-insights-connection'
+                namespace = 'propane'
+            }
+            type       = 'Opaque'
+            data       = [ordered]@{
+                'connection-string' = [Convert]::ToBase64String($connectionStringBytes)
+            }
         }
-        Write-Host "  ✅ Telemetry-dependent services restarted" -ForegroundColor Green
+        $telemetrySecret | ConvertTo-Json -Depth 10 -Compress | kubectl apply -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not create the Application Insights connection Secret."
+        }
+        [Array]::Clear($connectionStringBytes, 0, $connectionStringBytes.Length)
+        $telemetrySecret = $null
+        $appInsightsConnStr = $null
+        Write-Host "  ✅ Application Insights telemetry Secret created/updated" -ForegroundColor Green
     }
     else {
-        Write-Host "  ⚠️  App Insights connection string not available — telemetry ConfigMap not updated" -ForegroundColor Yellow
+        throw "Application Insights connection string is unavailable; telemetry cannot be configured."
+    }
+
+    kubectl apply -f $k8sPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not deploy the demo application manifests."
+    }
+    Write-Host "  ✅ Demo application deployed" -ForegroundColor Green
+
+    kubectl rollout restart deployment/otel-collector -n propane 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not restart the OpenTelemetry Collector after Secret rotation."
     }
 
     Write-Host "`n⏳ Waiting for workloads to roll out..." -ForegroundColor Yellow
@@ -1044,7 +1070,7 @@ $validateScript = Join-Path $PSScriptRoot "validate-deployment.ps1"
 if (Test-Path $validateScript) {
     & pwsh -NoLogo -NoProfile -File $validateScript -ResourceGroupName $resourceGroupName
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⚠️  Validation found issues, but the infrastructure deployment completed. Review the validation output above." -ForegroundColor Yellow
+        throw "Deployment validation failed. Review the validation output above."
     }
 }
 else {

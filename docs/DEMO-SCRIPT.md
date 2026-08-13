@@ -18,8 +18,8 @@
 - [ ] Browser tabs ready: Mission Control, SRE Agent Portal, Azure Portal (resource group)
 - [ ] Knowledge is already loaded — `deploy.ps1` runs `scripts/bootstrap-sre-agent-knowledge.ps1` automatically; run `.\scripts\validate-deployment.ps1 -ResourceGroupName <rg>` to confirm the current `docs/sre-agent-knowledge.md` version is indexed before presenting
 - [ ] Confirm customer portal external IP is active (check Mission Control status card)
-- [ ] Verify Application Insights is receiving telemetry in Azure Portal → Application Insights → Live Metrics
-- [ ] Verify ADX PropaneLogs database has data: Azure Portal → Azure Data Explorer → PropaneLogs → query `ContainerLog | take 10`
+- [ ] Run `.\scripts\validate-telemetry.ps1 -ResourceGroupName <rg>` and retain the successful transaction ID; the command fails if fresh correlated telemetry is absent
+- [ ] If optional ADX is deployed, verify it separately; ADX is not required for the baseline telemetry proof
 - [ ] Confirm the OTel Collector pod is running: `kubectl get pod -n propane -l app=otel-collector`
 
 ---
@@ -28,9 +28,9 @@
 
 ### Talking Points
 
-> "We've built a full simulation of AmeriGas propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models **two distinct propane business domains**: residential/commercial **bulk tank** delivery accounts (gallons, tank percentage, refill scheduling) and retail **cylinder exchange** cage locations across PA and NJ (full/empty/reserved cylinder counts, cage replenishment). The customer-facing portal shows both; the dispatch console runs the Retail Cage Operations Center. A full telemetry pipeline feeds into Application Insights and Azure Data Explorer."
+> "We've built a full simulation of AmeriGas propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models **two distinct propane business domains**: residential/commercial **bulk tank** delivery accounts (gallons, tank percentage, refill scheduling) and retail **cylinder exchange** cage locations across PA and NJ (full/empty/reserved cylinder counts, cage replenishment). The customer-facing portal shows both; the dispatch console runs the Retail Cage Operations Center. A repo-owned probe observes real service responses and sends correlated OpenTelemetry to workspace-based Application Insights."
 
-> "The platform has **9 microservices** in production — including an OpenTelemetry Collector that feeds distributed traces and metrics into Azure — backed by MongoDB for bulk tank readings and order/delivery data, and RabbitMQ for tank alerts and dispatch events."
+> "The platform has **9 demo services** — including an OpenTelemetry Collector that exports traces, logs, and metrics into Azure Monitor — backed by MongoDB for bulk tank readings and order/delivery data, and RabbitMQ for tank alerts and dispatch events."
 
 ### Show: Customer Portal
 
@@ -74,8 +74,9 @@
 
 ### Show: Telemetry Pipeline
 
-1. Briefly explain: "Behind the scenes, every service is instrumented with OpenTelemetry. The OTel Collector receives traces and metrics, then exports to Application Insights for real-time monitoring and to Azure Data Explorer for deep analytics."
-2. Optionally show the `propane-telemetry-config` ConfigMap: `kubectl get configmap propane-telemetry-config -n propane -o yaml`
+1. Briefly explain: "The third-party service images are not instrumented by this lab. The repo-owned `telemetry-probe` makes real HTTP calls to tank-monitor, inventory-service, and order-service, propagates W3C `traceparent`, and emits only telemetry it owns: INTERNAL transaction spans and CLIENT dependency spans with `peer.service`, target address, route, status, and measured latency. It never impersonates a target service."
+2. Show the non-secret collector ConfigMap: `kubectl get configmap otel-collector-config -n propane -o yaml`. The Application Insights connection string is read from the `application-insights-connection` Secret and must not be displayed.
+3. Run `.\scripts\validate-telemetry.ps1 -ResourceGroupName <rg>` and use its transaction ID to query `AppDependencies`, `AppExceptions`, `AppTraces`, `AppMetrics`, and `KubeEvents`. `AppRequests` is used only for the truthful server span emitted by the repo-owned `order-pricing-dependency` `GET /controlled-failure` route, which returns HTTP 503 deterministically.
 
 ### Show: SRE Agent Portal
 
@@ -101,7 +102,7 @@ Then in SRE Agent, ask:
 
 > **"Give me a health report for the propane namespace. Are all services reporting telemetry to Application Insights?"**
 
-Let the agent show that everything is healthy and telemetry is flowing. This establishes the baseline.
+Advance only after `validate-telemetry.ps1` succeeds. A running collector pod alone does not establish a telemetry baseline.
 
 ---
 
@@ -308,7 +309,7 @@ kubectl apply -f k8s/base/application.yaml
 
 1. Open **Azure Portal → Application Insights** for the propane resource
 2. Navigate to **Application Map** or **Live Metrics**
-3. Explain: "Here's the distributed tracing from the OTel Collector — you can see the full request flow from the customer portal through the tank monitor to MongoDB and back. Every service is instrumented."
+3. Explain: "This trace is the repo-owned probe's INTERNAL transaction and child CLIENT dependency span for a real service response. `peer.service` identifies the target; the resource role remains `telemetry-probe`. It does not imply that the third-party image emits spans."
 4. Show a sample transaction end-to-end trace if available
 
 ### Show: Azure Data Explorer
@@ -361,7 +362,7 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 
 1. **A truthful, per-run record** — "Every scenario run gets a single correlation id and a server-timestamped timeline, from activation through recovery. We just showed you the real numbers for the run we did together — not an industry benchmark, not a guess."
 
-2. **Full Observability Pipeline** — "We have full distributed tracing via OpenTelemetry, Application Insights integration, and Azure Data Explorer for deep analytics — SRE Agent leverages ALL of this data. It doesn't just look at pod status; it queries traces, logs, and metrics across the entire stack. Mission Control's local evidence timeline is honest about what it *can't* see yet too — traces and knowledge-base evidence are marked as not natively wired in, with a link out to the native SRE Agent thread when one is configured."
+2. **Verified Observability Pipeline** — "The repo-owned probe sends truthful INTERNAL transaction and CLIENT dependency spans, logs, exceptions, and metrics through OpenTelemetry to workspace-based Application Insights. The bounded validation proves freshness, parent/child correlation, all three required dependency targets, and zero target-service impersonation. ADX remains optional."
 
 3. **24/7 Coverage** — "SRE Agent doesn't sleep, doesn't go on vacation, and doesn't need to be paged at 3am. It can run scheduled health checks and alert when something deviates."
 
@@ -387,7 +388,7 @@ Show how SRE Agent can set up a recurring scheduled task for the last prompt.
 | Copilot chat returns 503 | Copilot SDK failed to initialize — restart Mission Control and check terminal for errors |
 | Copilot takes a long time to respond | Multi-tool queries can take up to 180 seconds — the agent is chaining kubectl calls |
 | SRE Agent says "no data" | Run `.\scripts\validate-deployment.ps1 -ResourceGroupName <rg>` to confirm knowledge is indexed and Log Analytics has had time to ingest data (allow 5–10 min after deploy) |
-| App Insights shows no data | Wait 2–3 min after deploy; check that `deploy.ps1` injected the connection string: `kubectl get configmap propane-telemetry-config -n propane -o yaml` |
+| App Insights shows no data | Run `validate-telemetry.ps1`; inspect collector status and confirm its Deployment references Secret `application-insights-connection` without displaying the Secret value |
 | ADX PropaneLogs empty | Log Analytics data export may take 5–10 min to start flowing after initial deploy |
 | OTel Collector crashing | Check resource limits; verify the `otel-collector-config` ConfigMap is valid YAML: `kubectl describe configmap otel-collector-config -n propane` |
 
