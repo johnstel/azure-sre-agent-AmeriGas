@@ -18,6 +18,7 @@ const SCENARIO_MAP = {
   cpu: 'high-cpu.yaml',
   pending: 'pending-pods.yaml',
   probe: 'probe-failure.yaml',
+  backlog: 'refill-order-backlog.yaml',
   network: 'network-block.yaml',
   config: 'missing-config.yaml',
   mongodb: 'mongodb-down.yaml',
@@ -66,6 +67,13 @@ const SCENARIO_METADATA = {
     impactedService: 'safety-compliance-monitor',
     narrative: 'Simulated rapid tank-level drop with suppressed alarm processing',
     relatedIds: ['BT-SAFETY-ALM-00042', 'BT-1551'],
+  },
+  backlog: {
+    name: 'Refill Order Backlog',
+    domain: 'Shared',
+    impactedService: 'refill-order-backlog-simulator',
+    narrative: 'RabbitMQ refill backlog grows while producers remain healthy and a malformed refill event is retried before DLQ routing',
+    relatedIds: ['RO-1041', 'RO-1042', 'RO-1043', 'RO-1044', 'EV-REFILL-2047'],
   },
   network: {
     name: 'Network Block',

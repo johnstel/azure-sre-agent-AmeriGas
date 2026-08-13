@@ -1,9 +1,107 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const TRACK_CATALOG = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'presenter-tracks.json'), 'utf8')
-);
+const DEFAULT_TRACK_CATALOG = {
+  schemaVersion: 1,
+  panelIds: ['presenter-panel', 'incident-panel', 'timeline-panel', 'evidence-panel'],
+  actionIds: ['continue', 'pause', 'resume', 'cancel', 'approve', 'remediate', 'recovery', 'review-evidence', 'open-incident'],
+  gateIds: ['readiness-pass', 'baseline-health', 'scenario-active', 'native-sre-agent-investigation', 'scheduled-task-evidence', 'approval-required', 'remediation-complete', 'recovery-verified'],
+  tracks: [
+    {
+      id: 'fast-wow',
+      title: 'Fast Wow',
+      durationMinutes: 6,
+      steps: [
+        {
+          id: 'readiness',
+          title: 'Baseline readiness',
+          presenterNotes: ['Confirm the baseline is healthy before the incident story is started.'],
+          expectedEvidence: ['healthy baseline'],
+          productSurface: 'azure-sre-agent-cloud',
+          focusedPanels: ['presenter-panel', 'incident-panel'],
+          controls: ['continue'],
+          gate: { id: 'readiness-pass', kind: 'readiness', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline and preserve the run correlation.',
+          abortBehavior: 'Stop the track and leave the current incident in place until a fresh run starts.',
+        },
+        {
+          id: 'baseline-health',
+          title: 'Baseline health confirmation',
+          presenterNotes: ['Reconfirm the workload is healthy before the active scenario is introduced.'],
+          expectedEvidence: ['baseline confirmed healthy'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['presenter-panel', 'timeline-panel'],
+          controls: ['continue'],
+          gate: { id: 'baseline-health', kind: 'baseline', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline before the live scenario is shown.',
+          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+        },
+        {
+          id: 'review-approval',
+          title: 'Review approval',
+          presenterNotes: ['Review the exact approved action before proceeding.'],
+          expectedEvidence: ['approved action milestone'],
+          productSurface: 'operator',
+          focusedPanels: ['incident-panel', 'presenter-panel'],
+          controls: ['approve'],
+          gate: { id: 'approval-required', kind: 'approval', action: 'approve', expectedActionKey: 'demo-action-key' },
+          resetBehavior: 'Reject stale approval callbacks and wait for the exact incident-bound action.',
+          abortBehavior: 'Leave the action pending and surface the mismatch warning.',
+        },
+        {
+          id: 'verified-recovery',
+          title: 'Verified recovery',
+          presenterNotes: ['Confirm the incident recovered with fresh evidence.'],
+          expectedEvidence: ['recovery verified'],
+          productSurface: 'azure-sre-agent-cloud',
+          focusedPanels: ['incident-panel', 'evidence-panel'],
+          controls: ['continue'],
+          gate: { id: 'recovery-verified', kind: 'recovery', action: 'continue', expectedActionKey: 'demo-action-key' },
+          resetBehavior: 'Require a fresh recovery assertion before the track closes.',
+          abortBehavior: 'Preserve the incident and keep the closed-state gate locked until recovery is observed.',
+        },
+      ],
+    },
+    {
+      id: 'deep-dive',
+      title: 'Deep Dive',
+      durationMinutes: 22,
+      steps: [
+        {
+          id: 'architecture-dependency-view',
+          title: 'Architecture dependency view',
+          presenterNotes: ['Inspect the live dependency view.'],
+          expectedEvidence: ['dependency view visible'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['presenter-panel', 'timeline-panel'],
+          controls: ['continue'],
+          gate: { id: 'baseline-health', kind: 'baseline', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline without carrying stale run state.',
+          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+        },
+        {
+          id: 'readiness',
+          title: 'Baseline readiness',
+          presenterNotes: ['Validate the cluster is ready for the incident walkthrough.'],
+          expectedEvidence: ['baseline is healthy'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['presenter-panel', 'timeline-panel'],
+          controls: ['continue'],
+          gate: { id: 'readiness-pass', kind: 'readiness', action: 'continue' },
+          resetBehavior: 'Return to the clean baseline without carrying stale run state.',
+          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+        },
+      ],
+    },
+  ],
+};
+
+let TRACK_CATALOG = DEFAULT_TRACK_CATALOG;
+try {
+  TRACK_CATALOG = JSON.parse(fs.readFileSync(path.join(__dirname, 'presenter-tracks.json'), 'utf8'));
+} catch (error) {
+  TRACK_CATALOG = DEFAULT_TRACK_CATALOG;
+}
 
 const DEFAULT_PANEL_IDS = new Set(TRACK_CATALOG.panelIds || []);
 const DEFAULT_ACTION_IDS = new Set(TRACK_CATALOG.actionIds || []);
@@ -841,27 +939,33 @@ module.exports = {
   buildPresenterRehearsal(trackId, options = {}) {
     const track = getTrackById(trackId);
     const targetMinutes = Number(track.durationMinutes || 0);
-    const defaultSteps = track.steps.map((step, index) => {
-      const base = targetMinutes / track.steps.length;
-      const weight = (track.id === 'fast-wow' && index < 2) || (track.id === 'deep-dive' && index < 2) ? 0.8 : 1;
-      return {
-        stepId: step.id,
-        durationMinutes: Number(Math.max(0.25, base * weight).toFixed(2)),
-      };
-    });
+    const defaultSteps = track.steps.map((step) => ({
+      stepId: step.id,
+      durationMinutes: Number((targetMinutes / track.steps.length).toFixed(2)),
+    }));
     const stepDurations = Array.isArray(options.stepDurations)
-      ? options.stepDurations
+      ? options.stepDurations.map((item) => ({
+          stepId: item.stepId,
+          durationMinutes: Number(Number(item.durationMinutes || 0).toFixed(2)),
+        }))
       : defaultSteps;
+
     let plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
-    if (plannedMinutes > targetMinutes) {
-      const excess = plannedMinutes - targetMinutes;
-      const lastIndex = stepDurations.length - 1;
+    const lastIndex = stepDurations.length - 1;
+    if (lastIndex >= 0) {
       const lastEntry = stepDurations[lastIndex];
-      const prior = Number(lastEntry.durationMinutes || 0);
-      const reduced = Math.max(0.25, Number((prior - excess).toFixed(2)));
-      stepDurations[lastIndex] = { ...lastEntry, durationMinutes: reduced };
+      if (plannedMinutes < targetMinutes) {
+        const delta = Number((targetMinutes - plannedMinutes).toFixed(2));
+        lastEntry.durationMinutes = Number((Number(lastEntry.durationMinutes || 0) + delta).toFixed(2));
+      }
+      if (plannedMinutes > targetMinutes) {
+        const excess = Number((plannedMinutes - targetMinutes).toFixed(2));
+        const reduced = Math.max(0.25, Number((Number(lastEntry.durationMinutes || 0) - excess).toFixed(2)));
+        lastEntry.durationMinutes = reduced;
+      }
       plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
     }
+
     return {
       trackId: track.id,
       totalTargetMinutes: Number(plannedMinutes.toFixed(2)),
