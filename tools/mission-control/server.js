@@ -17,7 +17,7 @@ const {
 } = require('./security');
 const { createSecurityState, approvePendingApproval, denyPendingApproval } = require('./security-policy');
 const { createOperatorAuthMiddleware, withApprovalContext } = require('./auth');
-const { SCENARIO_MAP, SCENARIO_METADATA } = require('./scenario-catalog');
+const { SCENARIO_MAP, SCENARIO_METADATA, SCENARIO_CATALOG } = require('./scenario-catalog');
 const { startDemoScenario, resetDemoBaseline } = require('./scenario-lifecycle');
 const { evaluateScenarioHealth } = require('./scenario-health');
 const { createIncidentStore } = require('./incident-store');
@@ -199,6 +199,13 @@ app.get('/api/presenter/catalog', (req, res) => {
 
 app.get('/api/presenter/state', (req, res) => {
   res.json({ state: presenterStateMachine.getState() });
+});
+
+app.get('/api/scenarios', (req, res) => {
+  res.json({
+    count: SCENARIO_CATALOG.length,
+    scenarios: SCENARIO_CATALOG,
+  });
 });
 
 function sanitizePresenterRequestBody(body = {}) {
