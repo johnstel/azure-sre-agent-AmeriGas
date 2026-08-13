@@ -1,5 +1,5 @@
 (function (root) {
-  // Simulated operational defaults for the demo only — AmeriGas operations SMEs must validate before describing these thresholds as policy.
+  // Simulated operational defaults for the demo only — ZavaGas operations SMEs must validate before describing these thresholds as policy.
   const DEFAULT_POLICY = Object.freeze({
     profileId: 'bulk-tank-fixture-01',
     customerId: 'CUST-1842',

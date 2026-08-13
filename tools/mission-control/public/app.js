@@ -1370,7 +1370,7 @@ async function resetChat() {
       container.appendChild(welcome);
     } else {
       container.innerHTML = '<div class="chat-welcome" id="chat-welcome">' +
-        '<h4>🔥 AmeriGas AI Operations Assistant</h4>' +
+        '<h4>🔥 ZavaGas AI Operations Assistant</h4>' +
         '<p>Powered by GitHub Copilot SDK — ask me anything about your propane platform.</p>' +
         '<div class="quick-prompts">' +
         '<button class="quick-prompt" data-action="quick-prompt">What\'s the health of my cluster?</button>' +

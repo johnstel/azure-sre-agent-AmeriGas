@@ -28,6 +28,7 @@ const { createAssertionScheduler } = require('./assertion-scheduler');
 const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
 const { evaluateReadiness } = require('./readiness');
 const operationLifecycle = require('./operation-lifecycle');
+const { resolveDeployedScope } = require('./deployment-scope');
 
 const execFileAsync = util.promisify(execFile);
 const app = express();
@@ -499,46 +500,49 @@ app.get('/api/events', async (req, res) => {
 
 app.get('/api/cluster-info', async (req, res) => {
   try {
-    const [context, accountRaw, rgRaw] = await Promise.all([
+    const [context, scope] = await Promise.all([
       kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster'),
-      az('account', 'show', '-o', 'json').catch(() => '{}'),
-      az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
+      resolveDeployedScopeFromRequest(req),
     ]);
-    const account = JSON.parse(accountRaw);
-    const rgs = JSON.parse(rgRaw);
-    res.json({ context, subscription: account.name || 'Unknown', subscriptionId: account.id || '', resourceGroup: rgs.length > 0 ? rgs[0].name : 'Not found', location: rgs.length > 0 ? rgs[0].location : '' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json({
+      context,
+      subscription: scope.subscriptionName || 'Unknown',
+      subscriptionId: scope.subscriptionId,
+      resourceGroup: scope.resourceGroupName,
+      location: scope.location || '',
+    });
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
+/**
+ * Wraps the shared resolveDeployedScope() (tools/mission-control/deployment-scope.js)
+ * with this server's `az` helper and the current HTTP request's explicit
+ * subscriptionId/resourceGroupName query parameters, if any. See that
+ * module for the full deterministic resolution order and rationale.
+ */
+function resolveDeployedScopeFromRequest(req) {
+  const query = (req && req.query) || {};
+  return resolveDeployedScope({
+    az,
+    subscriptionId: query.subscriptionId || query.subscription,
+    resourceGroupName: query.resourceGroupName || query.resourceGroup,
+  });
+}
+
 async function resolveAuthorizedReadinessScope(req) {
-  const [context, accountRaw, rgRaw] = await Promise.all([
+  const [context, scope] = await Promise.all([
     kubectl('config', 'current-context').then((s) => s.trim()).catch(() => 'No cluster'),
-    az('account', 'show', '-o', 'json').catch(() => '{}'),
-    az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
+    resolveDeployedScopeFromRequest(req),
   ]);
 
-  const account = JSON.parse(accountRaw || '{}');
-  const rgs = JSON.parse(rgRaw || '[]');
-  const serverScope = {
+  return {
     context,
-    subscriptionId: account.id || '',
-    resourceGroupName: rgs.length > 0 ? rgs[0].name : '',
+    subscriptionId: scope.subscriptionId,
+    resourceGroupName: scope.resourceGroupName,
     profile: String(req.query.profile || process.env.MISSION_CONTROL_PROFILE || 'default').trim() || 'default',
     runId: String(req.query.runId || process.env.MISSION_CONTROL_RUN_ID || 'mission-control').trim() || 'mission-control',
     timeoutMs: Number(req.query.timeoutMs || 90000),
   };
-
-  const suppliedSubscription = (req.query.subscriptionId || req.query.subscription || '').trim();
-  const suppliedResourceGroup = (req.query.resourceGroupName || req.query.resourceGroup || '').trim();
-
-  if (suppliedSubscription && serverScope.subscriptionId && suppliedSubscription !== serverScope.subscriptionId) {
-    serverScope.subscriptionId = serverScope.subscriptionId;
-  }
-  if (suppliedResourceGroup && serverScope.resourceGroupName && suppliedResourceGroup !== serverScope.resourceGroupName) {
-    serverScope.resourceGroupName = serverScope.resourceGroupName;
-  }
-
-  return serverScope;
 }
 
 app.get('/api/readiness', async (req, res) => {
@@ -842,7 +846,7 @@ let chatHistory = [];
 async function createCopilotSession() {
   const tools = createTools(securityState, incidentStore, { scheduleAssertion: schedulePostActionAssertion });
   return copilotClient.createSession({
-    clientName: 'amerigas-mission-control',
+    clientName: 'zavagas-mission-control',
     systemMessage: { mode: 'append', content: SYSTEM_PROMPT },
     tools, availableTools: tools.map(t => t.name),
   });
@@ -971,7 +975,7 @@ async function preflight() {
 if (require.main === module) {
   (async () => {
     console.log('');
-    console.log('  🔥 AmeriGas Propane — Mission Control');
+    console.log('  🔥 ZavaGas Propane — Mission Control');
     console.log('  ─────────────────────────────────────');
     console.log('  Powered by GitHub Copilot SDK');
     console.log('');

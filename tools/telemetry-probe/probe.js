@@ -133,14 +133,14 @@ async function observeTarget(target) {
     postOtlp('traces', {
       resourceSpans: [{
         resource: resource(target.service),
-        scopeSpans: [{ scope: { name: 'amerigas.telemetry-probe', version: '1.0.0' }, spans }],
+        scopeSpans: [{ scope: { name: 'zavagas.telemetry-probe', version: '1.0.0' }, spans }],
       }],
     }),
     postOtlp('metrics', {
       resourceMetrics: [{
         resource: resource(target.service),
         scopeMetrics: [{
-          scope: { name: 'amerigas.telemetry-probe', version: '1.0.0' },
+          scope: { name: 'zavagas.telemetry-probe', version: '1.0.0' },
           metrics: [{
             name: 'propane.synthetic.http.duration',
             description: 'Observed duration of a real in-cluster HTTP request',
@@ -164,7 +164,7 @@ async function observeTarget(target) {
       resourceLogs: [{
         resource: resource(target.service),
         scopeLogs: [{
-          scope: { name: 'amerigas.telemetry-probe', version: '1.0.0' },
+          scope: { name: 'zavagas.telemetry-probe', version: '1.0.0' },
           logRecords: [{
             timeUnixNano: ended,
             observedTimeUnixNano: ended,

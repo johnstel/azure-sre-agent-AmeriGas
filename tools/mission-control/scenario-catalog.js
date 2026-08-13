@@ -1,5 +1,5 @@
 /**
- * Canonical AmeriGas breakable-scenario catalog.
+ * Canonical ZavaGas breakable-scenario catalog.
  *
  * This is the single source of truth for the scenario id -> manifest
  * filename mapping (previously duplicated in server.js and copilot-tools.js)
