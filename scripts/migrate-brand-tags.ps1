@@ -26,11 +26,16 @@
 
     Mission Control's resource-group discovery
     (tools/mission-control/deployment-scope.js) remains deterministic
-    across this migration: an explicitly configured subscription/resource
-    group (MISSION_CONTROL_SUBSCRIPTION_ID / MISSION_CONTROL_RESOURCE_GROUP,
-    or an explicit readiness request parameter) is always checked first and
-    does not depend on the tag value at all; the tag-based fallback simply
-    re-reads whichever tag value is live at request time.
+    across this migration: it resolves ONLY from explicit configuration —
+    the MISSION_CONTROL_SUBSCRIPTION_ID/MISSION_CONTROL_RESOURCE_GROUP
+    environment variables (or their AZURE_SUBSCRIPTION_ID/
+    AZURE_RESOURCE_GROUP/MISSION_CONTROL_RESOURCE_GROUP_NAME aliases), or an
+    explicit readiness request parameter that must match that configuration
+    exactly. It never reads or depends on any Azure resource tag value, and
+    has no tag-based fallback of any kind, so migrating the mutable
+    `workload` tag with this script can never change which
+    subscription/resource group Mission Control considers "the" deployed
+    lab.
 
     Requires an EXPLICIT -SubscriptionId and -ResourceGroupName — there is
     no default and no "find the resource group by searching for the old
