@@ -9,18 +9,25 @@
 
 ---
 
-## Pre-Demo Checklist
+## Readiness Gate (authoritative, read-only)
 
-- [ ] Infrastructure deployed and healthy (`kgp` shows 9 running services, ~12 pods)
-- [ ] Mission Control running at http://localhost:3000
-- [ ] Mission Control Copilot status shows "Ready" (green badge in header)
-- [ ] SRE Agent portal open at https://aka.ms/sreagent/portal
-- [ ] Browser tabs ready: Mission Control, SRE Agent Portal, Azure Portal (resource group)
-- [ ] Knowledge is already loaded — `deploy.ps1` runs `scripts/bootstrap-sre-agent-knowledge.ps1` automatically; run `.\scripts\validate-deployment.ps1 -ResourceGroupName <rg>` to confirm the current `docs/sre-agent-knowledge.md` version is indexed before presenting
-- [ ] Confirm customer portal external IP is active (check Mission Control status card)
-- [ ] Run `.\scripts\validate-telemetry.ps1 -ResourceGroupName <rg>` and retain the successful transaction ID; the command fails if fresh correlated telemetry is absent
-- [ ] If optional ADX is deployed, verify it separately; ADX is not required for the baseline telemetry proof
-- [ ] Confirm the OTel Collector pod is running: `kubectl get pod -n propane -l app=otel-collector`
+Do not use the old manual pre-demo checklist for a presentation. Run the single, server-authoritative readiness gate before you open the presenter flow:
+
+```powershell
+pwsh ./scripts/test-demo-readiness.ps1 -Subscription "<subscription-id-or-name>" -ResourceGroup "<resource-group-name>" -Format Human
+pwsh ./scripts/test-demo-readiness.ps1 -Subscription "<subscription-id-or-name>" -ResourceGroup "<resource-group-name>" -Format Json
+```
+
+This check is intentionally read-only and fail-closed:
+
+- It requires the exact Azure auth context and the target resource group; mismatches or stale context block readiness.
+- It validates AKS health, node/pool status, lifecycle baseline, DRY fingerprint, locks, rollout endpoints, and scenario artifacts.
+- It verifies customer and dispatch HTTP endpoints, the OTel collector, and fresh correlated telemetry from the current run.
+- It requires fresh SRE Agent scope evidence, App Insights/Review/knowledge/RBAC/state proof, and the scheduled-task evidence from the current run.
+- It never mutates or repairs the environment, and every check returns a stable `id/category/status/blocking/observedAt/duration/evidence/remediation` record.
+- Mission Control only renders the server-bound result; the client cannot inject or override readiness.
+
+If the gate returns `blocking: true`, do not present the live demo. Stop and fix the underlying issue or reschedule the briefing.
 
 ---
 

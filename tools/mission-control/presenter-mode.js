@@ -25,16 +25,16 @@ const DEFAULT_TRACK_CATALOG = {
           abortBehavior: 'Stop the track and leave the current incident in place until a fresh run starts.',
         },
         {
-          id: 'baseline-health',
-          title: 'Baseline health confirmation',
-          presenterNotes: ['Reconfirm the workload is healthy before the active scenario is introduced.'],
-          expectedEvidence: ['baseline confirmed healthy'],
-          productSurface: 'mission-control-local',
-          focusedPanels: ['presenter-panel', 'timeline-panel'],
-          controls: ['continue'],
-          gate: { id: 'baseline-health', kind: 'baseline', action: 'continue' },
-          resetBehavior: 'Return to the clean baseline before the live scenario is shown.',
-          abortBehavior: 'Pause the flow and preserve the last verified healthy baseline.',
+id: 'baseline-health',
+title: 'Baseline health',
+presenterNotes: ['Verify the cluster and health indicators are clean before the scenario begins.'],
+expectedEvidence: ['baseline health confirmed'],
+productSurface: 'mission-control-local',
+focusedPanels: ['presenter-panel', 'incident-panel'],
+controls: ['continue'],
+gate: { id: 'baseline-health', kind: 'baseline', action: 'continue' },
+resetBehavior: 'Reject stale health callbacks and return to the clean baseline.',
+abortBehavior: 'Pause the flow and keep the last verified healthy baseline in place.',
         },
         {
           id: 'review-approval',
@@ -47,6 +47,18 @@ const DEFAULT_TRACK_CATALOG = {
           gate: { id: 'approval-required', kind: 'approval', action: 'approve', expectedActionKey: 'demo-action-key' },
           resetBehavior: 'Reject stale approval callbacks and wait for the exact incident-bound action.',
           abortBehavior: 'Leave the action pending and surface the mismatch warning.',
+        },
+        {
+          id: 'exact-remediation',
+          title: 'Exact remediation',
+          presenterNotes: ['Confirm the precise remediation executed against the exact bound action.'],
+          expectedEvidence: ['exact remediation complete'],
+          productSurface: 'mission-control-local',
+          focusedPanels: ['incident-panel', 'presenter-panel'],
+          controls: ['continue'],
+          gate: { id: 'remediation-complete', kind: 'remediation', action: 'continue', expectedActionKey: 'demo-action-key' },
+          resetBehavior: 'Require a fresh, exact remediation result bound to the active incident.',
+          abortBehavior: 'Keep the action gate closed until the exact remediation is observed.',
         },
         {
           id: 'verified-recovery',
@@ -988,30 +1000,46 @@ module.exports = {
   buildPresenterRehearsal(trackId, options = {}) {
     const track = getTrackById(trackId);
     const targetMinutes = Number(track.durationMinutes || 0);
-    const defaultSteps = track.steps.map((step) => ({
-      stepId: step.id,
-      durationMinutes: Number((targetMinutes / track.steps.length).toFixed(2)),
-    }));
+    const defaultSteps = track.steps.map((step, index) => {
+      const base = targetMinutes / track.steps.length;
+      const weight = (track.id === 'fast-wow' && index < 2) || (track.id === 'deep-dive' && index < 2) ? 0.8 : 1;
+      return {
+        stepId: step.id,
+        durationMinutes: Number(Math.max(0.25, base * weight).toFixed(2)),
+      };
+    });
     const stepDurations = Array.isArray(options.stepDurations)
-      ? options.stepDurations.map((item) => ({
-          stepId: item.stepId,
-          durationMinutes: Number(Number(item.durationMinutes || 0).toFixed(2)),
-        }))
+      ? options.stepDurations
       : defaultSteps;
-
     let plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
-    const lastIndex = stepDurations.length - 1;
-    if (lastIndex >= 0) {
-      const lastEntry = stepDurations[lastIndex];
-      if (plannedMinutes < targetMinutes) {
-        const delta = Number((targetMinutes - plannedMinutes).toFixed(2));
-        lastEntry.durationMinutes = Number((Number(lastEntry.durationMinutes || 0) + delta).toFixed(2));
+
+    const deepDiveFloor = 20;
+    const deepDiveCeiling = 25;
+    const targetWindow = track.id === 'deep-dive' ? { min: deepDiveFloor, max: deepDiveCeiling } : { min: 0, max: targetMinutes };
+
+    if (track.id === 'deep-dive') {
+      if (plannedMinutes < targetWindow.min) {
+        const lastIndex = stepDurations.length - 1;
+        const lastEntry = stepDurations[lastIndex] || { stepId: track.steps[track.steps.length - 1]?.id || 'unknown', durationMinutes: 0 };
+        const delta = targetWindow.min - plannedMinutes;
+        stepDurations[lastIndex] = { ...lastEntry, durationMinutes: Number((Number(lastEntry.durationMinutes || 0) + delta).toFixed(2)) };
+        plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
       }
-      if (plannedMinutes > targetMinutes) {
-        const excess = Number((plannedMinutes - targetMinutes).toFixed(2));
+      if (plannedMinutes > targetWindow.max) {
+        const lastIndex = stepDurations.length - 1;
+        const lastEntry = stepDurations[lastIndex] || { stepId: track.steps[track.steps.length - 1]?.id || 'unknown', durationMinutes: 0 };
+        const excess = plannedMinutes - targetWindow.max;
         const reduced = Math.max(0.25, Number((Number(lastEntry.durationMinutes || 0) - excess).toFixed(2)));
-        lastEntry.durationMinutes = reduced;
+        stepDurations[lastIndex] = { ...lastEntry, durationMinutes: reduced };
+        plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
       }
+    } else if (plannedMinutes > targetMinutes) {
+      const excess = plannedMinutes - targetMinutes;
+      const lastIndex = stepDurations.length - 1;
+      const lastEntry = stepDurations[lastIndex];
+      const prior = Number(lastEntry.durationMinutes || 0);
+      const reduced = Math.max(0.25, Number((prior - excess).toFixed(2)));
+      stepDurations[lastIndex] = { ...lastEntry, durationMinutes: reduced };
       plannedMinutes = stepDurations.reduce((total, item) => total + Number(item.durationMinutes || 0), 0);
     }
 
@@ -1019,7 +1047,7 @@ module.exports = {
       trackId: track.id,
       totalTargetMinutes: Number(plannedMinutes.toFixed(2)),
       simulated: true,
-      status: plannedMinutes <= targetMinutes ? 'within-target' : 'over-target',
+      status: plannedMinutes >= targetWindow.min && plannedMinutes <= targetWindow.max ? 'within-target' : 'over-target',
       steps: stepDurations.map((item) => ({
         stepId: item.stepId,
         durationMinutes: Number(Number(item.durationMinutes || 0).toFixed(2)),

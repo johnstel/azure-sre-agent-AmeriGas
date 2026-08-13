@@ -436,18 +436,22 @@ function createTools(securityState = createSecurityState(), incidentStore = null
       description: 'Get Azure cluster context information: current kube context, subscription, resource group, and region.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => runTool('get_cluster_info', {}, async () => {
-        const [context, account, rgs] = await Promise.all([
+        const configuredSubscription = String(process.env.MISSION_CONTROL_SUBSCRIPTION_ID || process.env.AZURE_SUBSCRIPTION_ID || '').trim();
+        const configuredResourceGroup = String(process.env.MISSION_CONTROL_RESOURCE_GROUP || process.env.MISSION_CONTROL_RESOURCE_GROUP_NAME || process.env.AZURE_RESOURCE_GROUP || '').trim();
+        const [context, account, rg] = await Promise.all([
           kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster configured'),
           az('account', 'show', '-o', 'json').catch(() => '{}'),
-          az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
+          configuredSubscription && configuredResourceGroup
+            ? az('group', 'show', '--subscription', configuredSubscription, '--name', configuredResourceGroup, '-o', 'json').catch(() => '{}')
+            : '{}',
         ]);
-        const acct = JSON.parse(account);
-        const rgList = JSON.parse(rgs);
+        const acct = JSON.parse(account || '{}');
+        const group = JSON.parse(rg || '{}');
         return [
           `Kubernetes Context: ${context}`,
-          `Subscription: ${acct.name || 'Unknown'} (${acct.id || ''})`,
-          `Resource Group: ${rgList.length > 0 ? rgList[0].name : 'Not found'}`,
-          `Region: ${rgList.length > 0 ? rgList[0].location : 'Unknown'}`,
+          `Subscription: ${acct.name || 'Unknown'} (${acct.id || configuredSubscription || ''})`,
+          `Resource Group: ${group.name || configuredResourceGroup || 'Not found'}`,
+          `Region: ${group.location || 'Unknown'}`,
         ].join('\n');
       }, { telemetry: true }),
     }),

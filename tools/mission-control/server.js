@@ -27,6 +27,7 @@ const { getSreAgentLinks } = require('./sre-agent-links');
 const { createPoller } = require('./poll-scheduler');
 const { createAssertionScheduler } = require('./assertion-scheduler');
 const { TRACK_CATALOG, createPresenterStateMachine, validatePresenterTracks } = require('./presenter-mode');
+const { evaluateReadiness, resolveProfileRequirements, resolveRequirementFlag } = require('./readiness');
 const operationLifecycle = require('./operation-lifecycle');
 
 const execFileAsync = util.promisify(execFile);
@@ -569,16 +570,197 @@ app.get('/api/events', async (req, res) => {
 
 app.get('/api/cluster-info', async (req, res) => {
   try {
+    const configuredScope = resolveConfiguredReadinessScope();
     const [context, accountRaw, rgRaw] = await Promise.all([
       kubectl('config', 'current-context').then(s => s.trim()).catch(() => 'No cluster'),
       az('account', 'show', '-o', 'json').catch(() => '{}'),
-      az('group', 'list', '--tag', 'workload=amerigas-propane-demo', '-o', 'json').catch(() => '[]'),
+      az('group', 'show', '--subscription', configuredScope.subscriptionId, '--name', configuredScope.resourceGroupName, '-o', 'json').catch(() => '{}'),
     ]);
-    const account = JSON.parse(accountRaw);
-    const rgs = JSON.parse(rgRaw);
-    res.json({ context, subscription: account.name || 'Unknown', subscriptionId: account.id || '', resourceGroup: rgs.length > 0 ? rgs[0].name : 'Not found', location: rgs.length > 0 ? rgs[0].location : '' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const account = JSON.parse(accountRaw || '{}');
+    const group = JSON.parse(rgRaw || '{}');
+    res.json({
+      context,
+      subscription: account.name || 'Unknown',
+      subscriptionId: account.id || configuredScope.subscriptionId || '',
+      resourceGroup: group.name || configuredScope.resourceGroupName || 'Not found',
+      location: group.location || 'Unknown',
+    });
+  } catch (err) { res.status(err && err.statusCode === 400 ? 400 : 500).json({ error: err.message }); }
 });
+
+function isValidGuid(value) {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(String(value || ''));
+}
+
+function isValidResourceGroupName(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9._()\-]{0,88}$/.test(String(value || ''));
+}
+
+function resolveConfiguredReadinessScope() {
+  const subscriptionId = String(process.env.MISSION_CONTROL_SUBSCRIPTION_ID || process.env.AZURE_SUBSCRIPTION_ID || '').trim();
+  const resourceGroupName = String(process.env.MISSION_CONTROL_RESOURCE_GROUP || process.env.MISSION_CONTROL_RESOURCE_GROUP_NAME || process.env.AZURE_RESOURCE_GROUP || '').trim();
+
+  if (!subscriptionId || !resourceGroupName) {
+    throw Object.assign(new Error('Server readiness scope is not configured. Set MISSION_CONTROL_SUBSCRIPTION_ID and MISSION_CONTROL_RESOURCE_GROUP on the server.'), { statusCode: 400 });
+  }
+  if (!isValidGuid(subscriptionId)) {
+    throw Object.assign(new Error(`MISSION_CONTROL_SUBSCRIPTION_ID must be a valid GUID, received: ${subscriptionId}`), { statusCode: 400 });
+  }
+  if (!isValidResourceGroupName(resourceGroupName)) {
+    throw Object.assign(new Error(`MISSION_CONTROL_RESOURCE_GROUP must be a valid Azure resource group name, received: ${resourceGroupName}`), { statusCode: 400 });
+  }
+
+  return { subscriptionId, resourceGroupName };
+}
+
+async function resolveNativeSreAgentEvidence(scope) {
+  try {
+    const agents = await az('resource', 'list', '--subscription', scope.subscriptionId, '--resource-group', scope.resourceGroupName, '--resource-type', 'Microsoft.App/agents', '-o', 'json');
+    const items = JSON.parse(agents || '[]');
+    const list = Array.isArray(items) ? items : [];
+    const agent = list.find((item) => item && String(item.type || '').toLowerCase() === 'microsoft.app/agents');
+    if (!agent) {
+      return { available: false, fresh: false, status: 'missing', details: { message: 'No native Azure SRE Agent resource was found in the configured resource group.' } };
+    }
+    const provisioningState = String(agent.properties?.provisioningState || agent.provisioningState || 'Unknown');
+    const ready = ['succeeded', 'running', 'ready', 'healthy', 'successful'].includes(provisioningState.trim().toLowerCase());
+    return {
+      available: ready,
+      fresh: ready,
+      status: ready ? 'ready' : provisioningState || 'missing',
+      details: { name: agent.name || null, resourceId: agent.id || null, provisioningState },
+    };
+  } catch (error) {
+    return { available: false, fresh: false, status: 'unavailable', details: { message: error && error.message ? error.message : 'Native Azure SRE Agent check failed.' } };
+  }
+}
+
+async function resolveAuthorizedReadinessScope(req) {
+  const query = req && req.query ? req.query : {};
+  const configured = resolveConfiguredReadinessScope();
+  const suppliedSubscription = String(query.subscriptionId || query.subscription || '').trim();
+  const suppliedResourceGroup = String(query.resourceGroupName || query.resourceGroup || '').trim();
+
+  if (suppliedSubscription && suppliedSubscription !== configured.subscriptionId) {
+    throw Object.assign(new Error(`Request subscriptionId "${suppliedSubscription}" does not match the server-configured subscription "${configured.subscriptionId}".`), { statusCode: 400 });
+  }
+  if (suppliedResourceGroup && suppliedResourceGroup !== configured.resourceGroupName) {
+    throw Object.assign(new Error(`Request resourceGroupName "${suppliedResourceGroup}" does not match the server-configured resource group "${configured.resourceGroupName}".`), { statusCode: 400 });
+  }
+
+  const account = JSON.parse(await az('account', 'show', '-o', 'json').catch(() => '{}'));
+  const actualSubscriptionId = String(account.id || account.subscriptionId || '').trim();
+  if (!actualSubscriptionId) {
+    throw Object.assign(new Error('No active Azure account subscription is available for the readiness gate.'), { statusCode: 400 });
+  }
+  if (actualSubscriptionId !== configured.subscriptionId) {
+    throw Object.assign(new Error(`Azure account context subscription "${actualSubscriptionId}" does not match the configured readiness subscription "${configured.subscriptionId}".`), { statusCode: 400 });
+  }
+
+  const group = JSON.parse(await az('group', 'show', '--subscription', configured.subscriptionId, '--name', configured.resourceGroupName, '-o', 'json').catch(() => '{}'));
+  if (!group || !group.name || String(group.name).toLowerCase() !== configured.resourceGroupName.toLowerCase()) {
+    throw Object.assign(new Error(`Configured resource group "${configured.resourceGroupName}" was not found in subscription "${configured.subscriptionId}".`), { statusCode: 400 });
+  }
+
+  return {
+    context: 'server-configured',
+    subscriptionId: configured.subscriptionId,
+    resourceGroupName: configured.resourceGroupName,
+    profile: String(query.profile || process.env.MISSION_CONTROL_PROFILE || 'default').trim() || 'default',
+    runId: String(query.runId || process.env.MISSION_CONTROL_RUN_ID || 'mission-control').trim() || 'mission-control',
+    timeoutMs: Number(query.timeoutMs ?? query.timeout ?? 90000),
+  };
+}
+
+function buildReadinessFailurePayload(error) {
+  const message = error && error.message ? error.message : 'readiness evaluation failed';
+  const statusCode = (() => {
+    if (error && Number.isInteger(error.statusCode)) return error.statusCode;
+    if (error && error.code === 'ETIMEDOUT') return 503;
+    if (/timed out|timeout/i.test(message)) return 503;
+    if (/scope|subscription|resource group|profile|mismatch|invalid|required/i.test(message)) return 400;
+    return 500;
+  })();
+
+  const blocked = {
+    schemaVersion: 1,
+    category: 'demo-readiness',
+    status: 'blocked',
+    blocking: true,
+    observedAt: new Date().toISOString(),
+    duration: 0,
+    summary: statusCode === 400
+      ? 'Readiness blocked by invalid request scope.'
+      : statusCode === 503
+        ? 'Readiness blocked by server-side timeout.'
+        : 'Mission Control failed to evaluate demo readiness.',
+    checks: [{
+      id: 'api-readiness-failure',
+      category: 'api',
+      status: 'fail',
+      blocking: true,
+      observedAt: new Date().toISOString(),
+      duration: 0,
+      evidence: { message },
+      remediation: statusCode === 400
+        ? 'Verify the exact configured Azure subscription and resource group, then retry the readiness gate with a matching request scope.'
+        : statusCode === 503
+          ? 'Retry the readiness check after the server-side dependency recovers or the timeout window resets.'
+          : 'Verify the Azure context and rerun the readiness check.',
+    }],
+    blockers: ['api-readiness-failure'],
+    advisories: [],
+  };
+
+  return { statusCode, blocked };
+}
+
+async function handleReadinessRequest(req, res) {
+  try {
+    const scope = await resolveAuthorizedReadinessScope(req);
+    const query = req && req.query ? req.query : {};
+    const profileRequirements = resolveProfileRequirements(scope.profile, {
+      requireMissionControl: query.requireMissionControl,
+      requireNativeSreAgent: query.requireNativeSreAgent,
+    });
+    const requireMissionControl = resolveRequirementFlag(profileRequirements.requireMissionControl, query.requireMissionControl);
+    const requireNativeSreAgent = resolveRequirementFlag(profileRequirements.requireNativeSreAgent, query.requireNativeSreAgent);
+    const runtime = {
+      missionControl: {
+        available: true,
+        fresh: true,
+        status: 'ready',
+        details: {
+          source: 'mission-control-server',
+          observedAt: new Date().toISOString(),
+          subscriptionId: scope.subscriptionId,
+          resourceGroupName: scope.resourceGroupName,
+          runId: scope.runId,
+          profile: scope.profile,
+        },
+      },
+      nativeSreAgent: await resolveNativeSreAgentEvidence(scope),
+    };
+
+    const result = await evaluateReadiness({
+      subscriptionId: scope.subscriptionId,
+      resourceGroupName: scope.resourceGroupName,
+      profile: scope.profile,
+      runId: scope.runId,
+      timeoutMs: Number.isFinite(scope.timeoutMs) ? Math.min(scope.timeoutMs, 90000) : 90000,
+      mockScenario: query.mockScenario || query.mock || req.body?.mockScenario,
+      requireMissionControl,
+      requireNativeSreAgent,
+    }, runtime);
+    return res.json(result);
+  } catch (error) {
+    const { statusCode, blocked } = buildReadinessFailurePayload(error);
+    return res.status(statusCode).json(blocked);
+  }
+}
+
+app.get('/api/readiness', handleReadinessRequest);
+app.get('/api/demo-readiness', handleReadinessRequest);
 
 // --- Break / Fix Endpoints ---
 
@@ -1016,6 +1198,8 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  resolveAuthorizedReadinessScope,
+  handleReadinessRequest,
   presenterStateMachine,
   presenterStateStore,
   sanitizePresenterRequestBody,

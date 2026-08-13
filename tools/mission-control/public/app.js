@@ -752,6 +752,55 @@ function togglePresenterFocusMode() {
   renderPresenterState();
 }
 
+function renderReadinessCard(result) {
+  const statusEl = document.getElementById('demo-readiness-status');
+  const summaryEl = document.getElementById('demo-readiness-summary');
+  const listEl = document.getElementById('demo-readiness-checks');
+  if (!statusEl || !summaryEl || !listEl) return;
+
+  const safeResult = result && typeof result === 'object' ? result : { status: 'blocked', summary: 'No fresh readiness result exists.', checks: [] };
+  const isReady = safeResult.status === 'ready';
+  const isBlocked = safeResult.status === 'blocked';
+  statusEl.className = 'presenter-status ' + (isReady ? 'complete' : isBlocked ? 'aborted' : 'running');
+  statusEl.textContent = isReady ? 'Ready for Demo' : isBlocked ? 'Blocked' : 'Advisory';
+  summaryEl.textContent = safeResult.summary || 'No readiness summary available.';
+  listEl.innerHTML = '';
+
+  const checks = Array.isArray(safeResult.checks) ? safeResult.checks : [];
+  for (const check of checks.slice(0, 6)) {
+    const item = document.createElement('li');
+    const label = document.createElement('strong');
+    label.textContent = check.id || 'check';
+    item.appendChild(label);
+    item.appendChild(document.createTextNode(` — ${check.status || 'unknown'} (${check.blocking ? 'blocking' : 'advisory'})`));
+    const note = document.createElement('div');
+    const evidence = typeof check.evidence === 'string' ? check.evidence : JSON.stringify(check.evidence || {});
+    note.textContent = evidence;
+    item.appendChild(note);
+    listEl.appendChild(item);
+  }
+}
+
+async function refreshDemoReadiness() {
+  try {
+    const cluster = await apiClient.request('cluster-info');
+    const clusterData = await cluster.json();
+    const subscriptionId = clusterData.subscriptionId || clusterData.subscription || '';
+    const resourceGroup = clusterData.resourceGroup || clusterData.resourceGroupName || '';
+    const params = new URLSearchParams({
+      subscriptionId,
+      resourceGroupName: resourceGroup,
+      profile: 'default',
+      timeoutMs: '90000',
+    });
+    const response = await apiClient.request('readiness?' + params.toString());
+    const result = await response.json();
+    renderReadinessCard(result);
+  } catch (error) {
+    renderReadinessCard({ status: 'blocked', summary: 'Mission Control readiness check is unavailable.', checks: [{ id: 'readiness-api', status: 'fail', blocking: true, evidence: { message: error.message } }] });
+  }
+}
+
 async function refreshPresenterStateOnLoad() {
   try {
     const response = await apiClient.request('presenter/catalog');
@@ -779,6 +828,7 @@ refreshDeployments();
 refreshClusterInfo();
 refreshNetworkPolicies();
 refreshEndpoints();
+refreshDemoReadiness();
 refreshActiveIncident();
 refreshRecentIncidents();
 refreshPresenterStateOnLoad();
@@ -814,6 +864,7 @@ const origRefreshClusterInfo = refreshClusterInfo;
 refreshClusterInfo = async function() {
   await origRefreshClusterInfo();
   autoDetectRG();
+  await refreshDemoReadiness();
 };
 
 function showTerminal() {
