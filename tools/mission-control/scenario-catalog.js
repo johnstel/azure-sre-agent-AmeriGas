@@ -19,6 +19,7 @@ const SCENARIO_MAP = {
   pending: 'pending-pods.yaml',
   probe: 'probe-failure.yaml',
   backlog: 'refill-order-backlog.yaml',
+  latency: 'dependency-latency.yaml',
   network: 'network-block.yaml',
   config: 'missing-config.yaml',
   mongodb: 'mongodb-down.yaml',
@@ -75,6 +76,13 @@ const SCENARIO_METADATA = {
     impactedService: 'refill-order-backlog-simulator',
     narrative: 'RabbitMQ refill backlog grows while producers remain healthy and a malformed refill event is retried before DLQ routing',
     relatedIds: ['RO-1041', 'RO-1042', 'RO-1043', 'RO-1044', 'EV-REFILL-2047'],
+  },
+  latency: {
+    name: 'Dependency Latency',
+    domain: 'Shared',
+    impactedService: 'order-pricing-dependency',
+    narrative: 'The pricing-lookup dependency gradually slows from 45ms up toward 950ms while the service remains Running/Ready and the SLO is breached without a crash.',
+    relatedIds: ['OPD-INC-22', 'ORD-PRICING-LOOKUP-LATENCY'],
   },
   network: {
     name: 'Network Block',

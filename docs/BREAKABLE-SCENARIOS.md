@@ -12,6 +12,7 @@ This guide explains each failure scenario available in the AmeriGas Propane SRE 
 | High CPU | `high-cpu.yaml` | Cylinder Exchange | Demand forecast overload during peak heating season | Performance analysis |
 | Pending Pods | `pending-pods.yaml` | Shared | Fleet telemetry monitor pods can't schedule | Scheduling analysis |
 | Probe Failure | `probe-failure.yaml` | Bulk Tank | Simulated rapid tank-level drop with suppressed alarm processing | Healthy workload + delayed safety alarm |
+| Dependency Latency | `dependency-latency.yaml` | Shared | Pricing lookup dependency slows gradually from 45ms toward 950ms while pods remain Running/Ready and p95 breaches the SLO | Genuine latency-led incident, ConfigMap drift, HTTP/SLO evidence |
 | Refill Order Backlog | `refill-order-backlog.yaml` | Shared | RabbitMQ refill backlog grows while producers stay healthy and a poisoned refill event is retried before landing in the DLQ | Queue age, DLQ evidence, paused consumer correlation |
 | Network Block | `network-block.yaml` | Bulk Tank | Tank monitor isolated by bad security policy | Network policy analysis |
 | Missing Config | `missing-config.yaml` | Shared | Delivery zone configuration missing | Configuration troubleshooting |

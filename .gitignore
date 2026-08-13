@@ -41,6 +41,7 @@ crash.*.log
 !tasks.json
 !settings.json
 !extensions.json
+!tools/mission-control/scenario-catalog.json
 !**/bicepconfig.json
 
 # Bicep lock files
