@@ -407,7 +407,7 @@ kubectl apply -f k8s/base/application.yaml
 
 **Native alert-to-approved-remediation response plan (demo profile, issue #19):**
 
-This is the only scenario wired to a native Azure SRE Agent response plan — a genuine Azure Monitor alert routed to a custom agent, not Mission Control Copilot and not a generic webhook. Deploy with the demo profile (`.\scripts\deploy.ps1 -Location eastus2 -Demo`, or `infra/bicep/main.demo.bicepparam` directly) to enable it. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for the full flow, bounded alert timing, and the three rehearsal variants (approve / deny / expiry). With the demo profile active:
+This is the only scenario wired to a native Azure SRE Agent response plan — a genuine Azure Monitor alert routed to a custom agent, not Mission Control Copilot and not a generic webhook. Deploy with the demo profile (`.\scripts\deploy.ps1 -Location eastus2 -Demo -AcceptSubscriptionScopeMonitoringRbac`, or `infra/bicep/main.demo.bicepparam` directly) to enable it. See [docs/sre-agent-response-plans/README.md](sre-agent-response-plans/README.md) for the full flow, bounded alert timing, the required subscription-scope Monitoring Contributor acknowledgement, and the three rehearsal variants (approve / deny / expiry — required before calling this demo proven). With the demo profile active:
 
 1. Applying `k8s/scenarios/mongodb-down.yaml` is the only step required — no chat prompt needed.
 2. A dedicated Azure Monitor alert (`AmeriGas Propane Demo - MongoDB Down`, severity 1) fires within a documented bounded time (~10 minutes: PT1M evaluation + Log Analytics ingestion latency).

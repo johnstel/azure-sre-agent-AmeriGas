@@ -384,71 +384,106 @@ if ($sreAgentResourceSummary) {
                     $passedChecks++
                 }
 
-                try {
-                    $apiSupported = Test-ResponsePlanApiSupported -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion
-
+                # --- Semantic data-plane verification (issue #19 round 2) --------------
+                # A response plan is only ever reported "configured" below
+                # after the platform's own interpreted list/get responses
+                # match what was intended — never from an opaque ARM/byte
+                # write acknowledgement alone.
+                $semanticallyVerified = $false
+                if ([string]::IsNullOrWhiteSpace($sreAgentArm.properties.agentEndpoint)) {
                     $totalChecks++
-                    if (Write-Check "Response plan sub-resource API (subagents/incidentFilters) is available" $apiSupported) {
-                        $passedChecks++
+                    Write-Check "Response plan data-plane endpoint is available" $false "SRE Agent has no agentEndpoint yet" | Out-Null
+                }
+                else {
+                    try {
+                        $dataPlaneToken = Get-ResponsePlanDataPlaneAccessToken
+                        $apiSupported = Test-ResponsePlanApiSupported -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken
+
+                        $totalChecks++
+                        if (Write-Check "Response plan semantic list endpoints (incidentFilters/incidentHandlers) are available" $apiSupported) {
+                            $passedChecks++
+                        }
+
+                        if ($apiSupported) {
+                            $customAgentResult = Invoke-DataPlaneRequest -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken -Method GET -Path "/api/v2/extendedAgent/agents/$($script:CustomAgentName)"
+                            $expectedAgentSpec = New-CustomAgentDataPlaneSpec -Name $script:CustomAgentName -RenderedInstructions ($customAgentResult.Content.system_prompt)
+                            $agentSemanticMatch = $customAgentResult.Success -and (Test-CustomAgentSemanticMatch -Expected $expectedAgentSpec -Actual $customAgentResult.Content)
+
+                            $totalChecks++
+                            if (Write-Check "Custom agent '$($script:CustomAgentName)' exists (data-plane GET)" $customAgentResult.Success) {
+                                $passedChecks++
+                            }
+
+                            $filtersList = Get-IncidentFiltersList -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken
+                            $handlersList = Get-IncidentHandlersList -Endpoint $sreAgentArm.properties.agentEndpoint -Token $dataPlaneToken
+                            $currentFilter = if ($filtersList.Success) { Find-ItemById -Items (Get-ListItems -Content $filtersList.Content) -Id $script:ResponsePlanName } else { $null }
+                            $currentHandler = if ($handlersList.Success) { Find-ItemById -Items (Get-ListItems -Content $handlersList.Content) -Id $script:ResponsePlanName } else { $null }
+
+                            $totalChecks++
+                            if (Write-Check "Response plan '$($script:ResponsePlanName)' exists (semantic list)" ($null -ne $currentFilter)) {
+                                $passedChecks++
+                            }
+
+                            $expectedFilterSpec = New-IncidentFilterDataPlaneSpec -Id $script:ResponsePlanName -CustomAgentName $script:CustomAgentName -AlertTitle $alertTitle -AlertSeverity ([Math]::Max(0, $alertSeverity))
+                            $filterSemanticMatch = Test-FilterSemanticMatch -Expected $expectedFilterSpec -Actual $currentFilter
+
+                            $totalChecks++
+                            if (Write-Check "Response plan autonomy is Review (never Autonomous) — interpreted field" ($currentFilter -and $currentFilter.agentMode -eq 'Review') "agentMode: $($currentFilter.agentMode)") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $severityMatches = $currentFilter -and (@($currentFilter.priorities) -contains "Sev$alertSeverity")
+                            if (Write-Check "Response plan severity filter matches the demo alert's severity ($alertSeverity)" $severityMatches "Filter priorities: $(@($currentFilter.priorities) -join ', ')") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $titleMatches = $currentFilter -and $currentFilter.titleContains -eq $alertTitle
+                            if (Write-Check "Response plan title filter matches the demo alert's exact title" $titleMatches "Filter title: '$($currentFilter.titleContains)' / Alert title: '$alertTitle'") {
+                                $passedChecks++
+                            }
+
+                            $totalChecks++
+                            $customAgentBound = $currentFilter -and $currentFilter.handlingAgent -eq $script:CustomAgentName
+                            if (Write-Check "Response plan routes to the '$($script:CustomAgentName)' custom agent (interpreted binding)" $customAgentBound) {
+                                $passedChecks++
+                            }
+
+                            $handlerBound = $currentHandler -and (Test-HandlerSemanticMatch -Expected (New-IncidentHandlerDataPlaneSpec -Id $script:ResponsePlanName -IncidentFilterId $script:ResponsePlanName -CustomAgentName $script:CustomAgentName) -Actual $currentHandler)
+                            $totalChecks++
+                            if (Write-Check "Incident handler binds the filter to the custom agent (interpreted binding)" $handlerBound) {
+                                $passedChecks++
+                            }
+
+                            $semanticallyVerified = $customAgentResult.Success -and $filterSemanticMatch -and $handlerBound
+
+                            # --- No conflicting quickstart plan, verified via the same semantic list ---
+                            try {
+                                $conflicts = @(Find-ConflictingQuickstartFilters -Filters (Get-ListItems -Content $filtersList.Content) -OwnFilterId $script:ResponsePlanName)
+                                $totalChecks++
+                                if (Write-Check "No conflicting quickstart response plan is active" ($conflicts.Count -eq 0) "$($conflicts -join ', ')") {
+                                    $passedChecks++
+                                }
+                            }
+                            catch {
+                                $totalChecks++
+                                Write-Check "No conflicting quickstart response plan is active" $false "Error checking for quickstart plans: $_" | Out-Null
+                            }
+                        }
                     }
-
-                    if ($apiSupported) {
-                        $customAgentResult = Invoke-SubResourceRequest -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion -Method GET -SubResourceType 'subagents' -Name $script:CustomAgentName
+                    catch {
                         $totalChecks++
-                        if (Write-Check "Custom agent '$($script:CustomAgentName)' exists" $customAgentResult.Success) {
-                            $passedChecks++
-                        }
-
-                        $filterResult = Invoke-SubResourceRequest -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion -Method GET -SubResourceType 'incidentFilters' -Name $script:ResponsePlanName
-                        $totalChecks++
-                        if (Write-Check "Response plan '$($script:ResponsePlanName)' exists" $filterResult.Success) {
-                            $passedChecks++
-                        }
-
-                        if ($filterResult.Success) {
-                            $decodedFilter = ConvertFrom-SubResourceEnvelope -Resource $filterResult.Content
-
-                            $totalChecks++
-                            if (Write-Check "Response plan autonomy is Review (never Autonomous)" ($decodedFilter -and $decodedFilter.autonomyLevel -eq 'Review') "Autonomy: $($decodedFilter.autonomyLevel)") {
-                                $passedChecks++
-                            }
-
-                            $totalChecks++
-                            $severityMatches = $decodedFilter -and (@($decodedFilter.severity) -contains $alertSeverity)
-                            if (Write-Check "Response plan severity filter matches the demo alert's severity ($alertSeverity)" $severityMatches "Filter severity: $(@($decodedFilter.severity) -join ', ')") {
-                                $passedChecks++
-                            }
-
-                            $totalChecks++
-                            $titleMatches = $decodedFilter -and $decodedFilter.titleContains -eq $alertTitle
-                            if (Write-Check "Response plan title filter matches the demo alert's exact title" $titleMatches "Filter title: '$($decodedFilter.titleContains)' / Alert title: '$alertTitle'") {
-                                $passedChecks++
-                            }
-
-                            $totalChecks++
-                            $customAgentBound = $decodedFilter -and $decodedFilter.customAgent -eq $script:CustomAgentName
-                            if (Write-Check "Response plan routes to the '$($script:CustomAgentName)' custom agent" $customAgentBound) {
-                                $passedChecks++
-                            }
-                        }
-
-                        # --- No conflicting quickstart plan ------------------------------
-                        try {
-                            $conflicts = @(Find-ConflictingQuickstartResponsePlans -SubscriptionId $currentSubscriptionId -ResourceGroupName $ResourceGroupName -AgentName $sreAgentArm.name -ApiVersion $sreAgentArmApiVersion -OwnResponsePlanName $script:ResponsePlanName)
-                            $totalChecks++
-                            if (Write-Check "No conflicting quickstart response plan is active" ($conflicts.Count -eq 0) "$($conflicts -join ', ')") {
-                                $passedChecks++
-                            }
-                        }
-                        catch {
-                            $totalChecks++
-                            Write-Check "No conflicting quickstart response plan is active" $false "Error checking for quickstart plans: $_" | Out-Null
-                        }
+                        Write-Check "Response plan semantic list endpoints (incidentFilters/incidentHandlers) are available" $false "Error probing data plane: $_" | Out-Null
                     }
                 }
-                catch {
-                    $totalChecks++
-                    Write-Check "Response plan sub-resource API (subagents/incidentFilters) is available" $false "Error probing control plane: $_" | Out-Null
+
+                $totalChecks++
+                if (Write-Check "Response plan is configured AND semantically verified (not from opaque write acknowledgement alone)" $semanticallyVerified) {
+                    $passedChecks++
+                }
+                if (-not $semanticallyVerified) {
+                    Write-Host "  ℹ️  Demo deployment is NOT demo-ready until the response plan is semantically verified. A live end-to-end alert rehearsal (approve/deny/expiry) is ALSO still required before treating this demo as proven — see docs/sre-agent-response-plans/README.md." -ForegroundColor Yellow
                 }
 
                 # --- Least-scope RBAC for the exact remediation (AKS-resource-scoped only) --
@@ -488,6 +523,37 @@ if ($sreAgentResourceSummary) {
                 }
                 else {
                     Write-Host "  ⚠️  AKS cluster or SRE Agent principal ID not resolved — skipping demo RBAC scope checks" -ForegroundColor Yellow
+                }
+
+                # --- Effective least-privilege RG-scope RBAC (issue #19 round 2) -------
+                # In the demo profile the SRE identity must NOT hold RG-scope
+                # Contributor / Log Analytics Contributor — otherwise the
+                # AKS-scoped custom role above is not an actual restriction.
+                if ($agentPrincipalId) {
+                    $rgScopeAssignmentsForDemo = @(az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId/resourceGroups/$ResourceGroupName" --output json 2>$null | ConvertFrom-Json)
+                    $rgContributorGuids = @('b24988ac-6180-42a0-ab88-20f7382dd24c', '92aaf0da-9dab-42b6-94a3-d43ce8d16293') # Contributor, Log Analytics Contributor
+                    $rgContributorAssignments = @($rgScopeAssignmentsForDemo | Where-Object { $roleGuid = ($_.roleDefinitionId -split '/')[-1]; $rgContributorGuids -contains $roleGuid })
+
+                    $totalChecks++
+                    if (Write-Check "SRE Agent identity does NOT hold resource-group-scope Contributor/Log Analytics Contributor in the demo profile" ($rgContributorAssignments.Count -eq 0) "Found: $($rgContributorAssignments.roleDefinitionName -join ', ')") {
+                        $passedChecks++
+                    }
+
+                    # --- Monitoring Contributor at subscription scope (issue #19 round 2, scanner requirement) ---
+                    $subScopeAssignmentsForDemo = @(az role assignment list --assignee $agentPrincipalId --scope "/subscriptions/$currentSubscriptionId" --output json 2>$null | ConvertFrom-Json)
+                    $exactSubScopeAssignmentsForDemo = @($subScopeAssignmentsForDemo | Where-Object { $_.scope -ieq "/subscriptions/$currentSubscriptionId" })
+                    $monitoringContributorAssignments = @($exactSubScopeAssignmentsForDemo | Where-Object { ($_.roleDefinitionId -split '/')[-1] -eq '749f88d5-cbae-40b8-bcfc-e573ddc772fa' })
+                    $nonMonitoringSubScopeAssignments = @($exactSubScopeAssignmentsForDemo | Where-Object { ($_.roleDefinitionId -split '/')[-1] -ne '749f88d5-cbae-40b8-bcfc-e573ddc772fa' })
+
+                    $totalChecks++
+                    if (Write-Check "SRE Agent identity has EXACTLY the Monitoring Contributor role at subscription scope (Azure Monitor scanner requirement)" ($monitoringContributorAssignments.Count -eq 1) "$($monitoringContributorAssignments.roleDefinitionName -join ', ')") {
+                        $passedChecks++
+                    }
+
+                    $totalChecks++
+                    if (Write-Check "SRE Agent identity has NO OTHER subscription-scope role assignment (Monitoring Contributor is the sole, documented, unavoidable exception)" ($nonMonitoringSubScopeAssignments.Count -eq 0) "$($nonMonitoringSubScopeAssignments.roleDefinitionName -join ', ')") {
+                        $passedChecks++
+                    }
                 }
             }
         }

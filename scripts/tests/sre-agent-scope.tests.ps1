@@ -52,12 +52,15 @@ BeforeAll {
     $script:MainBicepPath = Join-Path $script:RepoRoot "infra/bicep/main.bicep"
     $script:AlertsModulePath = Join-Path $script:RepoRoot "infra/bicep/modules/alerts.bicep"
     $script:DemoRbacModulePath = Join-Path $script:RepoRoot "infra/bicep/modules/sre-agent-demo-rbac.bicep"
+    $script:MonitoringRbacModulePath = Join-Path $script:RepoRoot "infra/bicep/modules/sre-agent-monitoring-rbac.bicep"
     $script:DemoParamsPath = Join-Path $script:RepoRoot "infra/bicep/main.demo.bicepparam"
     $script:StandardParamsPath = Join-Path $script:RepoRoot "infra/bicep/main.bicepparam"
     $script:RbacScriptPath = Join-Path $script:RepoRoot "scripts/configure-rbac.ps1"
+    $script:DeployScriptPath = Join-Path $script:RepoRoot "scripts/deploy.ps1"
     $script:TerraformModulePath = Join-Path $script:RepoRoot "infra/terraform/modules/sre-agent/main.tf"
     $script:BicepContent = Get-Content -Path $script:BicepModulePath -Raw
     $script:RbacContent = Get-Content -Path $script:RbacScriptPath -Raw
+    $script:DeployScriptContent = Get-Content -Path $script:DeployScriptPath -Raw
     $script:TerraformContent = Get-Content -Path $script:TerraformModulePath -Raw
     $script:DemoParamsContent = Get-Content -Path $script:DemoParamsPath -Raw
     $script:StandardParamsContent = Get-Content -Path $script:StandardParamsPath -Raw
@@ -72,6 +75,10 @@ BeforeAll {
         Reader                  = 'acdd72a7-3385-48ef-bd42-f606fba81ae7' # Reader
         Contributor             = 'b24988ac-6180-42a0-ab88-20f7382dd24c' # Contributor
     }
+
+    # Verified via `az role definition list --name "Monitoring Contributor"`
+    # on 2026-08-12.
+    $script:MonitoringContributorRoleId = '749f88d5-cbae-40b8-bcfc-e573ddc772fa'
 
     # Ground truth for the exact AKS actions `az aks command invoke` requires
     # (see https://learn.microsoft.com/troubleshoot/azure/azure-kubernetes/monitoring/aks-diagnostics-command-invoke-run-fail),
@@ -88,6 +95,7 @@ BeforeAll {
     $script:CompiledMain = $null
     $script:CompiledAlerts = $null
     $script:CompiledDemoRbac = $null
+    $script:CompiledMonitoringRbac = $null
 
     if ($script:AzAvailable) {
         # Compile the REAL module with `az bicep build` (the same tool the
@@ -112,6 +120,11 @@ BeforeAll {
         $demoRbacJson = & az bicep build --file $script:DemoRbacModulePath --stdout 2>$null
         if ($LASTEXITCODE -eq 0 -and $demoRbacJson) {
             try { $script:CompiledDemoRbac = $demoRbacJson | ConvertFrom-Json -Depth 100 } catch { $script:CompiledDemoRbac = $null }
+        }
+
+        $monitoringRbacJson = & az bicep build --file $script:MonitoringRbacModulePath --stdout 2>$null
+        if ($LASTEXITCODE -eq 0 -and $monitoringRbacJson) {
+            try { $script:CompiledMonitoringRbac = $monitoringRbacJson | ConvertFrom-Json -Depth 100 } catch { $script:CompiledMonitoringRbac = $null }
         }
     }
 }
@@ -458,3 +471,124 @@ Describe "Version-controlled deployment profiles (issue #19)" {
         $script:DemoParamsContent | Should -Match "using\s+'main\.bicep'"
     }
 }
+
+Describe "infra/bicep/modules/sre-agent-monitoring-rbac.bicep — compiled template (issue #19 round 2: Azure Monitor scanner RBAC)" -Skip:(-not $script:AzAvailableForSkip) {
+    BeforeAll {
+        if (-not $script:CompiledMonitoringRbac) {
+            throw "az bicep build did not produce a valid compiled template for $script:MonitoringRbacModulePath."
+        }
+    }
+
+    It "compiles cleanly with az bicep build" {
+        $script:CompiledMonitoringRbac | Should -Not -BeNullOrEmpty
+    }
+
+    It "targets subscription scope (not resourceGroup)" {
+        $script:CompiledMonitoringRbac.'$schema' | Should -Match 'subscriptionDeploymentTemplate'
+    }
+
+    It "grants EXACTLY the Monitoring Contributor role (749f88d5-cbae-40b8-bcfc-e573ddc772fa) — not Contributor/Owner" {
+        $assignment = $script:CompiledMonitoringRbac.resources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' } | Select-Object -First 1
+        $assignment | Should -Not -BeNullOrEmpty
+        $script:CompiledMonitoringRbac.variables.monitoringContributorRoleId | Should -Be $script:MonitoringContributorRoleId
+        $assignment.properties.roleDefinitionId | Should -Match "variables\('monitoringContributorRoleId'\)"
+    }
+
+    It "the role assignment resource has no explicit 'scope' property (deploys at the module's own subscription targetScope, not resourceGroup-scoped)" {
+        $assignment = $script:CompiledMonitoringRbac.resources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' } | Select-Object -First 1
+        $assignment.PSObject.Properties.Name | Should -Not -Contain 'scope'
+    }
+}
+
+Describe "infra/bicep/main.bicep — Monitoring Contributor wiring requires explicit acknowledgement (issue #19 round 2)" -Skip:(-not $script:AzAvailableForSkip) {
+    BeforeAll {
+        if (-not $script:CompiledMain) {
+            throw "az bicep build did not produce a valid compiled template for $script:MainBicepPath."
+        }
+    }
+
+    It "acknowledgeSubscriptionScopeMonitoringRbac defaults to false" {
+        $script:CompiledMain.parameters.acknowledgeSubscriptionScopeMonitoringRbac.defaultValue | Should -Be $false
+    }
+
+    It "the monitoring-rbac module is conditioned on deploySreAgent AND deployDemoResponsePlan AND the explicit acknowledgement flag — never on deployDemoResponsePlan alone" {
+        $monitoringRbacModule = $script:CompiledMain.resources.sreAgentMonitoringRbac
+        $monitoringRbacModule | Should -Not -BeNullOrEmpty
+        $condition = $monitoringRbacModule.condition
+        $condition | Should -Match "parameters\('deploySreAgent'\)"
+        $condition | Should -Match "parameters\('deployDemoResponsePlan'\)"
+        $condition | Should -Match "parameters\('acknowledgeSubscriptionScopeMonitoringRbac'\)"
+    }
+
+    It "the monitoring-rbac module has no explicit resourceGroup scope (deploys at subscription scope, matching main.bicep's own targetScope)" {
+        $monitoringRbacModule = $script:CompiledMain.resources.sreAgentMonitoringRbac
+        $monitoringRbacModule.properties.PSObject.Properties.Name | Should -Not -Contain 'scope'
+    }
+}
+
+Describe "main.demo.bicepparam — explicit Monitoring Contributor acknowledgement (issue #19 round 2)" {
+    It "explicitly sets acknowledgeSubscriptionScopeMonitoringRbac = true, visibly in source control" {
+        $script:DemoParamsContent | Should -Match 'acknowledgeSubscriptionScopeMonitoringRbac\s*=\s*true'
+    }
+}
+
+Describe "main.bicepparam (standard profile) — never acknowledges subscription-scope Monitoring RBAC" {
+    It "never sets acknowledgeSubscriptionScopeMonitoringRbac = true" {
+        $script:StandardParamsContent | Should -Not -Match 'acknowledgeSubscriptionScopeMonitoringRbac\s*=\s*true'
+    }
+}
+
+Describe "scripts/deploy.ps1 — explicit operator acknowledgement gate for subscription-scope Monitoring RBAC (issue #19 round 2)" {
+    It "requires -AcceptSubscriptionScopeMonitoringRbac before passing acknowledgeSubscriptionScopeMonitoringRbac=true, and this is never implied by -Yes alone" {
+        $script:DeployScriptContent | Should -Match 'AcceptSubscriptionScopeMonitoringRbac'
+        $script:DeployScriptContent | Should -Match 'DeployDemoResponsePlan\s+-and\s+-not\s+\$AcceptSubscriptionScopeMonitoringRbac'
+    }
+
+    It "exits with an error when the demo response plan is requested without explicit subscription-scope acknowledgement" {
+        $script:DeployScriptContent | Should -Match 'Refusing to deploy the demo response plan without explicit subscription-scope RBAC acknowledgement'
+    }
+}
+
+Describe "infra/bicep/modules/sre-agent.bicep — demoLeastPrivilegeRbac (issue #19 round 2: least-scope remediation)" -Skip:(-not $script:AzAvailableForSkip) {
+    BeforeAll {
+        if (-not $script:CompiledModule) {
+            throw "az bicep build did not produce a valid compiled template for $script:BicepModulePath."
+        }
+    }
+
+    It "demoLeastPrivilegeRbac defaults to false (standard-profile behavior unchanged)" {
+        $script:CompiledModule.parameters.demoLeastPrivilegeRbac.defaultValue | Should -Be $false
+    }
+
+    It "effectiveRoleDefinitions is conditional: demoLeastPrivilegeRbac selects [Reader, Log Analytics Reader] ONLY (no Contributor), else falls back to roleDefinitions[accessLevel] exactly as before" {
+        $expr = $script:CompiledModule.variables.effectiveRoleDefinitions
+        $expr | Should -Match "if\(parameters\('demoLeastPrivilegeRbac'\)"
+        $expr | Should -Match "variables\('roleDefinitionIds'\)\.reader"
+        $expr | Should -Match "variables\('roleDefinitionIds'\)\.logAnalyticsReader"
+        $expr | Should -Match "variables\('roleDefinitions'\)\[parameters\('accessLevel'\)\]"
+    }
+
+    It "the roleAssignments for-loop iterates over effectiveRoleDefinitions, not the raw roleDefinitions[accessLevel] (regression: must stay wired to the demo-aware selection)" {
+        $roleAssignmentsResource = $script:CompiledModule.resources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.copy } | Select-Object -First 1
+        $roleAssignmentsResource | Should -Not -BeNullOrEmpty
+        $roleAssignmentsResource.copy.count | Should -Be "[length(variables('effectiveRoleDefinitions'))]"
+    }
+
+    It "outputs demoLeastPrivilegeRbacApplied reflecting the parameter" {
+        $script:CompiledModule.outputs.demoLeastPrivilegeRbacApplied.value | Should -Be "[parameters('demoLeastPrivilegeRbac')]"
+    }
+}
+
+Describe "infra/bicep/main.bicep — demoLeastPrivilegeRbac wired from deployDemoResponsePlan (issue #19 round 2)" -Skip:(-not $script:AzAvailableForSkip) {
+    BeforeAll {
+        if (-not $script:CompiledMain) {
+            throw "az bicep build did not produce a valid compiled template for $script:MainBicepPath."
+        }
+    }
+
+    It "passes demoLeastPrivilegeRbac=deployDemoResponsePlan to the sreAgent module (so demo profile forces least-privilege RG RBAC, standard profile is unaffected)" {
+        $sreAgentModule = $script:CompiledMain.resources.sreAgent
+        $sreAgentModule.properties.parameters.demoLeastPrivilegeRbac.value | Should -Be "[parameters('deployDemoResponsePlan')]"
+    }
+}
+

@@ -37,6 +37,24 @@ param deploySreAgent = true
 // cluster resource for the response plan's `az aks command invoke` action.
 param deployDemoResponsePlan = true
 
+// EXPLICIT OPERATOR ACKNOWLEDGEMENT: the SRE Agent's Azure Monitor alert
+// scanner requires the built-in Monitoring Contributor role
+// (749f88d5-cbae-40b8-bcfc-e573ddc772fa) on the SRE identity at
+// SUBSCRIPTION scope — this is documented by Microsoft as the minimum scope
+// for the scanner to discover and manage alert lifecycle (see
+// https://learn.microsoft.com/azure/sre-agent/azure-monitor-alerts and
+// https://learn.microsoft.com/azure/sre-agent/agent-permissions). Setting
+// this to true in this version-controlled file IS the explicit,
+// reviewable acknowledgement of that unavoidable subscription-scope grant.
+// scripts/deploy.ps1 additionally requires -AcceptSubscriptionScopeMonitoringRbac
+// before it will deploy this profile via the script. See
+// docs/sre-agent-response-plans/README.md for the full explanation of why
+// this is unavoidable and how it's scoped (Monitoring Contributor only —
+// never Contributor/Owner — at subscription scope; the SRE identity's
+// resource-group-scope RBAC in this profile is Reader + Log Analytics
+// Reader only, see demoLeastPrivilegeRbac in sre-agent.bicep).
+param acknowledgeSubscriptionScopeMonitoringRbac = true
+
 // Default action group for incident routing — left off. Azure Monitor
 // connects to the SRE Agent directly via incidentManagementConfiguration;
 // this demo does not require an action group webhook pointed at the agent.

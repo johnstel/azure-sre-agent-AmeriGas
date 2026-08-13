@@ -59,7 +59,10 @@ param(
 
     [Parameter()]
     [Alias('Demo')]
-    [switch]$DeployDemoResponsePlan
+    [switch]$DeployDemoResponsePlan,
+
+    [Parameter()]
+    [switch]$AcceptSubscriptionScopeMonitoringRbac
 )
 
 $ErrorActionPreference = 'Stop'
@@ -588,12 +591,38 @@ if ($DeployDemoResponsePlan -and $SkipSreAgent) {
     exit 1
 }
 
+# EXPLICIT OPERATOR ACKNOWLEDGEMENT (issue #19 round 2): the SRE Agent's
+# Azure Monitor alert scanner requires the built-in Monitoring Contributor
+# role (749f88d5-cbae-40b8-bcfc-e573ddc772fa) on the SRE identity at
+# SUBSCRIPTION scope — documented by Microsoft as the minimum scope for the
+# scanner to discover and manage alert lifecycle (see
+# https://learn.microsoft.com/azure/sre-agent/azure-monitor-alerts and
+# https://learn.microsoft.com/azure/sre-agent/agent-permissions). This is
+# NEVER implied by -DeployDemoResponsePlan alone — -AcceptSubscriptionScopeMonitoringRbac
+# must be passed explicitly, deliberately independent of -Yes, so this
+# specific subscription-scope grant always requires its own conscious
+# decision rather than being swept up in a general "skip prompts" flag.
+if ($DeployDemoResponsePlan -and -not $AcceptSubscriptionScopeMonitoringRbac) {
+    Write-Host "`n⚠️  The demo response plan requires granting 'Monitoring Contributor' to the SRE Agent's managed identity at SUBSCRIPTION scope (not resource-group scope)." -ForegroundColor Red
+    Write-Host "   This is not a design choice made by this script — Microsoft documents it as the minimum scope required for the Azure Monitor alert scanner:" -ForegroundColor Yellow
+    Write-Host "     https://learn.microsoft.com/azure/sre-agent/azure-monitor-alerts" -ForegroundColor Gray
+    Write-Host "     https://learn.microsoft.com/azure/sre-agent/agent-permissions" -ForegroundColor Gray
+    Write-Host "   Monitoring Contributor cannot modify non-monitoring resources; it is scoped to acknowledging/closing Azure Monitor alerts and managing monitoring settings." -ForegroundColor Gray
+    Write-Host "   Re-run with -AcceptSubscriptionScopeMonitoringRbac to explicitly accept this subscription-scope grant, or omit -DeployDemoResponsePlan to deploy the standard profile (no subscription-scope RBAC at all)." -ForegroundColor Yellow
+    Write-Error "Refusing to deploy the demo response plan without explicit subscription-scope RBAC acknowledgement."
+    exit 1
+}
+
 Write-Host "`n📦 Deployment Configuration:" -ForegroundColor Cyan
 Write-Host "  • Location:        $Location" -ForegroundColor White
 Write-Host "  • Workload Name:   $WorkloadName" -ForegroundColor White
 Write-Host "  • Resource Group:  $resourceGroupName" -ForegroundColor White
 Write-Host "  • Deployment Name: $deploymentName" -ForegroundColor White
 Write-Host "  • Profile:         $(if ($DeployDemoResponsePlan) { 'Demo (main.demo.bicepparam) — response plan enabled' } else { 'Standard (main.bicepparam)' })" -ForegroundColor White
+if ($DeployDemoResponsePlan) {
+    Write-Host "  • Subscription RBAC: Monitoring Contributor for SRE identity (ACKNOWLEDGED via -AcceptSubscriptionScopeMonitoringRbac)" -ForegroundColor Yellow
+    Write-Host "  • RG-scope RBAC:   Least-privilege (Reader + Log Analytics Reader only — no Contributor)" -ForegroundColor White
+}
 Write-Host "  • SRE Agent:       $(if ($deploySreAgent) { 'Enabled' } else { 'Disabled' })" -ForegroundColor White
 if ($sreAgentSkipReason) {
     Write-Host "  • SRE Agent Note:  $sreAgentSkipReason" -ForegroundColor Gray
@@ -615,6 +644,10 @@ if ($DeployDemoResponsePlan) {
     # which parameters file happens to be selected above.
     $sreAgentBicepParams += "deployDemoResponsePlan=true"
     $sreAgentBicepParams += "deployAlerts=true"
+    # Only ever passed true here because the acknowledgement gate above
+    # already required -AcceptSubscriptionScopeMonitoringRbac to reach this
+    # point — this is not a second independent path to grant it silently.
+    $sreAgentBicepParams += "acknowledgeSubscriptionScopeMonitoringRbac=true"
 }
 
 if ($WhatIf) {
