@@ -551,13 +551,33 @@ test('a valid Fast Wow run succeeds end-to-end through the real HTTP endpoints u
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ correlationId: runCorrelationId }),
     });
-    assert.equal(continue3.status, 200, `expected the approval gate to unlock once the exact matching milestones exist: ${JSON.stringify(await continue3.clone().json())}`);
+    assert.equal(continue3.status, 200, `expected the approval gate to unlock and advance to the exact remediation step: ${JSON.stringify(await continue3.clone().json())}`);
     const continue3Body = await continue3.json();
-    assert.equal(continue3Body.state.currentStepId, 'verified-recovery');
+    assert.equal(continue3Body.state.currentStepId, 'exact-remediation');
+
+    // Leaving the exact-remediation step requires the exact action result to
+    // succeed before the flow can reach verified-recovery.
+    const prematureRemediation = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(prematureRemediation.status, 400, 'remediation gate must not unlock before a successful exact action_result exists');
+
+    incidentStore.recordActionResult(correlationId, { actionKey, toolName: 'kubectl_scale', success: true, summary: 'scaled mongodb back to 1 replica' });
+
+    const continue4 = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(continue4.status, 200, `expected the remediation gate to unlock and advance to verified-recovery: ${JSON.stringify(await continue4.clone().json())}`);
+    const continue4Body = await continue4.json();
+    assert.equal(continue4Body.state.currentStepId, 'verified-recovery');
 
     // Leaving 'verified-recovery' requires ITS OWN gate ('recovery') to
     // pass -- must not unlock before a passing post-action assertion
-    // exists, even though the approval gate already passed.
+    // exists, even though the remediation gate already passed.
     const prematureRecovery = await fetch(`${base}/api/presenter/continue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -565,17 +585,16 @@ test('a valid Fast Wow run succeeds end-to-end through the real HTTP endpoints u
     });
     assert.equal(prematureRecovery.status, 400, 'recovery gate must not unlock before a passing post-action assertion is recorded');
 
-    incidentStore.recordActionResult(correlationId, { actionKey, toolName: 'kubectl_scale', success: true, summary: 'scaled mongodb back to 1 replica' });
     incidentStore.recordPostActionAssertion(correlationId, { actionKey, passed: true, details: 'mongodb pod is Running and Ready again' });
 
-    const continue4 = await fetch(`${base}/api/presenter/continue`, {
+    const continue5 = await fetch(`${base}/api/presenter/continue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ correlationId: runCorrelationId }),
     });
-    assert.equal(continue4.status, 200, `expected the recovery gate to unlock once the exact matching post-action assertion exists: ${JSON.stringify(await continue4.clone().json())}`);
-    const continue4Body = await continue4.json();
-    assert.equal(continue4Body.state.status, 'complete');
+    assert.equal(continue5.status, 200, `expected the recovery gate to unlock once the exact matching post-action assertion exists: ${JSON.stringify(await continue5.clone().json())}`);
+    const continue5Body = await continue5.json();
+    assert.equal(continue5Body.state.status, 'complete');
   } finally {
     incidentStore.finalize(correlationId, 'recovered', { reason: 'test cleanup' });
     __setClusterSnapshotProviderForTests(null);
