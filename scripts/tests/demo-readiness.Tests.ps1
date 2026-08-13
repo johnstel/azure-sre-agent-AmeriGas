@@ -62,22 +62,22 @@ Describe "demo readiness script" {
         $readinessModule = (Resolve-Path (Join-Path $script:RepoRoot '..' 'tools' 'mission-control' 'readiness.js')).Path
         $readinessModuleJs = $readinessModule -replace '\\', '\\\\'
         $scriptText = @"
-        const { evaluateReadiness } = require('$readinessModuleJs');
-        (async () => {
-          const result = await evaluateReadiness({
-            subscriptionId: 'sub-required',
-            resourceGroupName: 'rg-required',
-            profile: 'demo',
-            timeoutMs: 90000,
-            requireMissionControl: true,
-            requireNativeSreAgent: true,
-          }, {
-            missionControl: { available: false, fresh: false, status: 'unavailable', details: { message: 'Mission Control is missing' } },
-            nativeSreAgent: { available: false, fresh: false, status: 'unavailable', details: { message: 'Native SRE Agent is missing' } },
-          });
-          console.log(JSON.stringify(result));
-        })();
-        "@
+const { evaluateReadiness } = require('$readinessModuleJs');
+(async () => {
+  const result = await evaluateReadiness({
+    subscriptionId: 'sub-required',
+    resourceGroupName: 'rg-required',
+    profile: 'demo',
+    timeoutMs: 90000,
+    requireMissionControl: true,
+    requireNativeSreAgent: true,
+  }, {
+    missionControl: { available: false, fresh: false, status: 'unavailable', details: { message: 'Mission Control is missing' } },
+    nativeSreAgent: { available: false, fresh: false, status: 'unavailable', details: { message: 'Native SRE Agent is missing' } },
+  });
+  console.log(JSON.stringify(result));
+})();
+"@
 
         $result = & node -e $scriptText 2>&1
         $resultText = ($result | ForEach-Object { $_.ToString() }) -join "`n"
