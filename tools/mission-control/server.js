@@ -601,7 +601,50 @@ async function resolveAuthorizedReadinessScope(req) {
   };
 }
 
-async function handleReadinessRequest(req, res, next) {
+function buildReadinessFailurePayload(error) {
+  const message = error && error.message ? error.message : 'readiness evaluation failed';
+  const statusCode = (() => {
+    if (error && Number.isInteger(error.statusCode)) return error.statusCode;
+    if (error && error.code === 'ETIMEDOUT') return 503;
+    if (/timed out|timeout/i.test(message)) return 503;
+    if (/scope|subscription|resource group|profile|mismatch|invalid|required/i.test(message)) return 400;
+    return 500;
+  })();
+
+  const blocked = {
+    schemaVersion: 1,
+    category: 'demo-readiness',
+    status: 'blocked',
+    blocking: true,
+    observedAt: new Date().toISOString(),
+    duration: 0,
+    summary: statusCode === 400
+      ? 'Readiness blocked by invalid request scope.'
+      : statusCode === 503
+        ? 'Readiness blocked by server-side timeout.'
+        : 'Mission Control failed to evaluate demo readiness.',
+    checks: [{
+      id: 'api-readiness-failure',
+      category: 'api',
+      status: 'fail',
+      blocking: true,
+      observedAt: new Date().toISOString(),
+      duration: 0,
+      evidence: { message },
+      remediation: statusCode === 400
+        ? 'Verify the exact configured Azure subscription and resource group, then retry the readiness gate with a matching request scope.'
+        : statusCode === 503
+          ? 'Retry the readiness check after the server-side dependency recovers or the timeout window resets.'
+          : 'Verify the Azure context and rerun the readiness check.',
+    }],
+    blockers: ['api-readiness-failure'],
+    advisories: [],
+  };
+
+  return { statusCode, blocked };
+}
+
+async function handleReadinessRequest(req, res) {
   try {
     const scope = await resolveAuthorizedReadinessScope(req);
     const query = req && req.query ? req.query : {};
@@ -640,30 +683,8 @@ async function handleReadinessRequest(req, res, next) {
     }, runtime);
     return res.json(result);
   } catch (error) {
-    const message = error && error.message ? error.message : 'readiness evaluation failed';
-    const blocked = {
-      schemaVersion: 1,
-      category: 'demo-readiness',
-      status: 'blocked',
-      blocking: true,
-      observedAt: new Date().toISOString(),
-      duration: 0,
-      summary: 'Mission Control failed to evaluate demo readiness.',
-      checks: [{
-        id: 'api-readiness-failure',
-        category: 'api',
-        status: 'fail',
-        blocking: true,
-        observedAt: new Date().toISOString(),
-        duration: 0,
-        evidence: { message },
-        remediation: 'Verify the Azure context and rerun the readiness check.',
-      }],
-      blockers: ['api-readiness-failure'],
-      advisories: [],
-    };
-    if (next) return next(error);
-    return res.status(error && error.statusCode === 400 ? 400 : 500).json(blocked);
+    const { statusCode, blocked } = buildReadinessFailurePayload(error);
+    return res.status(statusCode).json(blocked);
   }
 }
 

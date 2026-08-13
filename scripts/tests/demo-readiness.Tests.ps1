@@ -41,26 +41,43 @@ Describe "demo readiness script" {
         $payload.checks | Should -Not -BeNullOrEmpty
     }
 
+    It "accepts explicit requirement switches without weakening the healthy demo profile" {
+        $result = Invoke-DemoReadinessScript @(
+            '-SubscriptionId', 'sub-demo',
+            '-ResourceGroupName', 'rg-demo',
+            '-Profile', 'demo',
+            '-Json',
+            '-RequireMissionControl',
+            '-RequireNativeSreAgent',
+            '-Mock', 'healthy'
+        )
+
+        $result.ExitCode | Should -Be 0
+        $payload = $result.StdOut | ConvertFrom-Json
+        $payload.status | Should -Be 'ready'
+        $payload.blocking | Should -BeFalse
+    }
+
     It "blocks when required Mission Control and native SRE Agent evidence are missing" {
         $readinessModule = (Resolve-Path (Join-Path $script:RepoRoot '..' 'tools' 'mission-control' 'readiness.js')).Path
         $readinessModuleJs = $readinessModule -replace '\\', '\\\\'
         $scriptText = @"
-const { evaluateReadiness } = require('$readinessModuleJs');
-(async () => {
-  const result = await evaluateReadiness({
-    subscriptionId: 'sub-required',
-    resourceGroupName: 'rg-required',
-    profile: 'demo',
-    timeoutMs: 90000,
-    requireMissionControl: true,
-    requireNativeSreAgent: true,
-  }, {
-    missionControl: { available: false, fresh: false, status: 'unavailable', details: { message: 'Mission Control is missing' } },
-    nativeSreAgent: { available: false, fresh: false, status: 'unavailable', details: { message: 'Native SRE Agent is missing' } },
-  });
-  console.log(JSON.stringify(result));
-})();
-"@
+        const { evaluateReadiness } = require('$readinessModuleJs');
+        (async () => {
+          const result = await evaluateReadiness({
+            subscriptionId: 'sub-required',
+            resourceGroupName: 'rg-required',
+            profile: 'demo',
+            timeoutMs: 90000,
+            requireMissionControl: true,
+            requireNativeSreAgent: true,
+          }, {
+            missionControl: { available: false, fresh: false, status: 'unavailable', details: { message: 'Mission Control is missing' } },
+            nativeSreAgent: { available: false, fresh: false, status: 'unavailable', details: { message: 'Native SRE Agent is missing' } },
+          });
+          console.log(JSON.stringify(result));
+        })();
+        "@
 
         $result = & node -e $scriptText 2>&1
         $resultText = ($result | ForEach-Object { $_.ToString() }) -join "`n"
