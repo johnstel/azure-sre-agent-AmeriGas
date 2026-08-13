@@ -24,6 +24,11 @@
 # - demand-service: Python propane demand forecasting (optional, Shared)
 # - usage-simulator: Customer propane usage pattern generator (Bulk Tank)
 # - order-worker: Order processing worker (Shared)
+# - order-pricing-dependency: Node.js synthetic order-checkout dependency
+#   hop simulator for the dependency-latency scenario, issue #22 (Shared)
+# - order-checkout-probe: Node.js synthetic order-checkout traffic
+#   generator with deterministic transaction/run correlation ids,
+#   issue #22 (Shared)
 #
 # Data Services (in-cluster):
 # - rabbitmq: Event bus (tank alerts, order events, fulfillment updates) (Shared)
@@ -472,6 +477,687 @@ spec:
       targetPort: 3001
 
 ---
+# =============================================================================
+# Order Pricing Dependency - synthetic order-checkout dependency hop
+# Domain: Shared — issue #22 (gradual dependency-latency incident). This is
+# a repo-owned, non-privileged simulator standing in for a downstream
+# pricing/tax lookup that order-service would call during checkout. It does
+# NOT proxy to any external or caller-supplied target (no SSRF surface): the
+# delay is computed in-process from `order-pricing-dependency-config` only.
+# The healthy baseline config here (fixed, low delay) is what k8s/scenarios/
+# dependency-latency.yaml overrides to raise p95 above the documented SLO.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-pricing-dependency-config
+  namespace: propane
+  labels:
+    app: order-pricing-dependency
+data:
+  delay_mode: "fixed"
+  fixed_delay_ms: "45"
+  jitter_spread_ms: "15"
+  error_rate_bp: "20"
+  slo_p95_threshold_ms: "500"
+  error_rate_ceiling_bp: "200"
+  ramp_from_ms: "45"
+  ramp_to_ms: "45"
+  ramp_duration_seconds: "60"
+  config_version: "baseline-v1"
+  config_change_reason: "Baseline pricing-lookup timeout configuration. No incident is active."
+  config_changed_by: "platform-baseline"
+  config_changed_at: "2025-01-01T00:00:00Z"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-pricing-dependency-script
+  namespace: propane
+  labels:
+    app: order-pricing-dependency
+data:
+  server.js: |
+    'use strict';
+    // Domain: Shared — self-contained dependency-hop simulator for issue #22.
+    // Mirrors the pure math in tools/mission-control/order-dependency-latency.js
+    // (see order-dependency-latency-scenario.test.js for the cross-check).
+    const http = require('http');
+    const fs = require('fs');
+    const path = require('path');
+    const crypto = require('crypto');
+
+    const CONFIG_DIR = process.env.CONFIG_DIR || '/config';
+    const PORT = Number(process.env.PORT || 4000);
+    const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || 'order-pricing-dependency';
+    const SERVICE_NAMESPACE = process.env.SERVICE_NAMESPACE || 'propane';
+    const ENVIRONMENT = process.env.DEPLOYMENT_ENVIRONMENT || 'demo';
+    const OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '';
+
+    function readConfig() {
+      const out = {};
+      try {
+        for (const file of fs.readdirSync(CONFIG_DIR)) {
+          if (file.startsWith('..')) continue;
+          try { out[file] = fs.readFileSync(path.join(CONFIG_DIR, file), 'utf8').trim(); } catch (e) { /* atomic symlink swap in progress */ }
+        }
+      } catch (e) { /* config volume not mounted yet */ }
+      return out;
+    }
+
+    function computeDelayMs(config, elapsedMs) {
+      const mode = config.delay_mode === 'ramp' ? 'ramp' : 'fixed';
+      if (mode === 'fixed') return Math.max(0, Number(config.fixed_delay_ms || 0));
+      const from = Number(config.ramp_from_ms || 0);
+      const to = config.ramp_to_ms != null ? Number(config.ramp_to_ms) : from;
+      const durationMs = Math.max(1, Number(config.ramp_duration_seconds || 1) * 1000);
+      const clamped = Math.max(0, Math.min(elapsedMs, durationMs));
+      const ratio = clamped / durationMs;
+      return Math.max(0, Math.round(from + (to - from) * ratio));
+    }
+
+    function deterministicJitterMs(sequence, spreadMs) {
+      const spread = Math.max(0, Number(spreadMs) || 0);
+      if (spread === 0) return 0;
+      const x = Math.sin(sequence * 12.9898) * 43758.5453;
+      return Math.floor((x - Math.floor(x)) * spread);
+    }
+
+    function isSyntheticError(sequence, errorRateBp) {
+      const bp = Number(errorRateBp) || 0;
+      if (bp <= 0) return false;
+      return ((Math.abs(sequence) * 9973) % 10000) < bp;
+    }
+
+    function computeQuantile(sortedSamples, percentile) {
+      if (!sortedSamples.length) return 0;
+      const rank = Math.min(sortedSamples.length - 1, Math.max(0, Math.ceil((percentile / 100) * sortedSamples.length) - 1));
+      return sortedSamples[rank];
+    }
+
+    function parseTraceParent(header) {
+      if (typeof header !== 'string') return null;
+      const parts = header.split('-');
+      if (parts.length !== 4 || parts[0] !== '00') return null;
+      const traceId = parts[1];
+      const spanId = parts[2];
+      if (!/^[0-9a-f]{32}$/.test(traceId) || !/^[0-9a-f]{16}$/.test(spanId)) return null;
+      if (/^0+$/.test(traceId) || /^0+$/.test(spanId)) return null;
+      return { traceId: traceId, spanId: spanId };
+    }
+
+    function newHexId(bytes) { return crypto.randomBytes(bytes).toString('hex'); }
+
+    let lastConfigVersion = null;
+    let configAppliedAtMs = Date.now();
+    let requestSequence = 0;
+    const HISTOGRAM_WINDOW = 500;
+    const samples = [];
+    let totalRequests = 0;
+    let totalErrors = 0;
+
+    function recordSample(ms) {
+      samples.push(ms);
+      if (samples.length > HISTOGRAM_WINDOW) samples.shift();
+    }
+
+    // Fixed, env-configured OTLP endpoint only — never derived from request
+    // input, so this can never become an arbitrary open proxy/SSRF target.
+    function otlpExport(pathSuffix, payload) {
+      if (!OTLP_ENDPOINT) return;
+      try {
+        const url = OTLP_ENDPOINT.replace(/\/$/, '') + pathSuffix;
+        fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(2000),
+        }).catch(function (err) {
+          console.log(JSON.stringify({ event: 'otlp_export_failed', endpoint: url, error: String(err && err.message || err) }));
+        });
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'otlp_export_failed', error: String(err && err.message || err) }));
+      }
+    }
+
+    function exportDependencySpan(args) {
+      const payload = {
+        resourceSpans: [{
+          resource: { attributes: [
+            { key: 'service.name', value: { stringValue: SERVICE_NAME } },
+            { key: 'service.namespace', value: { stringValue: SERVICE_NAMESPACE } },
+            { key: 'deployment.environment', value: { stringValue: ENVIRONMENT } },
+          ] },
+          scopeSpans: [{
+            scope: { name: 'order-dependency-latency' },
+            spans: [{
+              traceId: args.traceId,
+              spanId: args.depSpanId,
+              parentSpanId: args.rootSpanId,
+              name: 'dependency.pricing-lookup',
+              kind: 3,
+              startTimeUnixNano: args.startNs,
+              endTimeUnixNano: args.endNs,
+              attributes: [
+                { key: 'scenario.id', value: { stringValue: 'latency' } },
+                { key: 'scenario.run_id', value: { stringValue: args.runId } },
+                { key: 'transaction.id', value: { stringValue: args.transactionId } },
+                { key: 'dependency.delay_ms', value: { intValue: String(args.delayMs) } },
+                { key: 'net.peer.name', value: { stringValue: SERVICE_NAME } },
+              ],
+              status: { code: args.statusOk ? 1 : 2 },
+            }],
+          }],
+        }],
+      };
+      otlpExport('/v1/traces', payload);
+    }
+
+    const server = http.createServer(function (req, res) {
+      if (req.method === 'GET' && req.url === '/healthz') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/metrics') {
+        const sorted = samples.slice().sort(function (a, b) { return a - b; });
+        const cfg = readConfig();
+        const p50 = computeQuantile(sorted, 50);
+        const p95 = computeQuantile(sorted, 95);
+        const p99 = computeQuantile(sorted, 99);
+        const lines = [
+          '# HELP order_dependency_request_duration_ms_p50 Rolling p50 dependency request duration in milliseconds.',
+          '# TYPE order_dependency_request_duration_ms_p50 gauge',
+          'order_dependency_request_duration_ms_p50{service="' + SERVICE_NAME + '"} ' + p50,
+          '# HELP order_dependency_request_duration_ms_p95 Rolling p95 dependency request duration in milliseconds.',
+          '# TYPE order_dependency_request_duration_ms_p95 gauge',
+          'order_dependency_request_duration_ms_p95{service="' + SERVICE_NAME + '"} ' + p95,
+          '# HELP order_dependency_request_duration_ms_p99 Rolling p99 dependency request duration in milliseconds.',
+          '# TYPE order_dependency_request_duration_ms_p99 gauge',
+          'order_dependency_request_duration_ms_p99{service="' + SERVICE_NAME + '"} ' + p99,
+          '# HELP order_dependency_requests_total Total pricing-lookup requests served.',
+          '# TYPE order_dependency_requests_total counter',
+          'order_dependency_requests_total{service="' + SERVICE_NAME + '"} ' + totalRequests,
+          '# HELP order_dependency_errors_total Total pricing-lookup requests that returned a synthetic error.',
+          '# TYPE order_dependency_errors_total counter',
+          'order_dependency_errors_total{service="' + SERVICE_NAME + '"} ' + totalErrors,
+          '# HELP order_dependency_config_change_timestamp_seconds Unix time the active delay config was last detected as changed.',
+          '# TYPE order_dependency_config_change_timestamp_seconds gauge',
+          'order_dependency_config_change_timestamp_seconds{service="' + SERVICE_NAME + '"} ' + Math.floor(configAppliedAtMs / 1000),
+          '# HELP order_dependency_delay_mode_ramp Whether the dependency delay config is currently in ramp (1) or fixed (0) mode.',
+          '# TYPE order_dependency_delay_mode_ramp gauge',
+          'order_dependency_delay_mode_ramp{service="' + SERVICE_NAME + '"} ' + (cfg.delay_mode === 'ramp' ? 1 : 0),
+          '',
+        ];
+        res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
+        res.end(lines.join('\n'));
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/status') {
+        const cfg = readConfig();
+        const sorted = samples.slice().sort(function (a, b) { return a - b; });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          service: SERVICE_NAME,
+          config: cfg,
+          configAppliedAt: new Date(configAppliedAtMs).toISOString(),
+          totalRequests: totalRequests,
+          totalErrors: totalErrors,
+          quantilesMs: { p50: computeQuantile(sorted, 50), p95: computeQuantile(sorted, 95), p99: computeQuantile(sorted, 99) },
+          errorRatePct: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0,
+        }, null, 2));
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/v1/pricing-lookup') {
+        let body = '';
+        req.on('data', function (chunk) { body += chunk; if (body.length > 8192) req.destroy(); });
+        req.on('end', function () {
+          let payload = {};
+          try { payload = JSON.parse(body || '{}'); } catch (e) { payload = {}; }
+
+          const cfg = readConfig();
+          if (cfg.config_version && cfg.config_version !== lastConfigVersion) {
+            const previous = lastConfigVersion;
+            lastConfigVersion = cfg.config_version;
+            configAppliedAtMs = Date.now();
+            console.log(JSON.stringify({
+              event: 'config_change_detected', service: SERVICE_NAME,
+              previous_config_version: previous, config_version: cfg.config_version,
+              delay_mode: cfg.delay_mode, config_change_reason: cfg.config_change_reason,
+              config_changed_by: cfg.config_changed_by, config_changed_at: cfg.config_changed_at,
+              detected_at: new Date(configAppliedAtMs).toISOString(),
+            }));
+          }
+
+          const sequence = requestSequence++;
+          const elapsedMs = Date.now() - configAppliedAtMs;
+          const baseDelay = computeDelayMs(cfg, elapsedMs);
+          const jitter = deterministicJitterMs(sequence, Number(cfg.jitter_spread_ms || 0));
+          const delayMs = baseDelay + jitter;
+          const failed = isSyntheticError(sequence, Number(cfg.error_rate_bp || 0));
+
+          const inbound = parseTraceParent(req.headers.traceparent);
+          const traceId = inbound ? inbound.traceId : newHexId(16);
+          const rootSpanId = inbound ? inbound.spanId : newHexId(8);
+          const depSpanId = newHexId(8);
+          const startNs = (BigInt(Date.now()) * 1000000n).toString();
+
+          totalRequests += 1;
+          if (failed) totalErrors += 1;
+
+          setTimeout(function () {
+            recordSample(delayMs);
+            const endNs = (BigInt(Date.now()) * 1000000n).toString();
+            const statusCode = failed ? 503 : 200;
+            const transactionId = payload.transactionId || ('TX-unknown-' + sequence);
+            const runId = payload.runId || 'unknown';
+
+            exportDependencySpan({
+              traceId: traceId, rootSpanId: rootSpanId, depSpanId: depSpanId,
+              transactionId: transactionId, runId: runId, delayMs: delayMs,
+              statusOk: !failed, startNs: startNs, endNs: endNs,
+            });
+
+            console.log(JSON.stringify({
+              event: 'dependency_request', service: SERVICE_NAME, dependency: 'pricing-lookup',
+              transaction_id: transactionId, run_id: runId, trace_id: traceId, span_id: depSpanId,
+              parent_span_id: rootSpanId, delay_ms: delayMs, status: failed ? 'error' : 'ok',
+              delay_mode: cfg.delay_mode || 'fixed', config_version: cfg.config_version || 'unknown',
+            }));
+
+            res.writeHead(statusCode, { 'content-type': 'application/json', traceparent: '00-' + traceId + '-' + depSpanId + '-01' });
+            res.end(JSON.stringify({
+              status: failed ? 'error' : 'ok', dependency: 'pricing-lookup',
+              transactionId: transactionId, delayMs: delayMs, traceId: traceId, spanId: depSpanId,
+            }));
+          }, delayMs);
+        });
+        return;
+      }
+
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'not_found' }));
+    });
+
+    server.listen(PORT, '0.0.0.0', function () {
+      console.log(JSON.stringify({ event: 'startup', service: SERVICE_NAME, port: PORT }));
+    });
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-pricing-dependency
+  namespace: propane
+  labels:
+    app: order-pricing-dependency
+    domain: shared
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-pricing-dependency
+  template:
+    metadata:
+      labels:
+        app: order-pricing-dependency
+        domain: shared
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: order-pricing-dependency
+          image: mcr.microsoft.com/mirror/docker/library/node:20-alpine
+          command: ["node", "/app/server.js"]
+          ports:
+            - containerPort: 4000
+              name: http
+          env:
+            - name: PORT
+              value: "4000"
+            - name: CONFIG_DIR
+              value: "/config"
+            - name: OTEL_SERVICE_NAME
+              value: "order-pricing-dependency"
+            - name: SERVICE_NAMESPACE
+              value: "propane"
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: "demo"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
+          resources:
+            requests:
+              memory: "48Mi"
+              cpu: "25m"
+            limits:
+              memory: "96Mi"
+              cpu: "100m"
+          # Readiness/liveness intentionally hit /healthz (never delayed) so
+          # this pod stays Running/Ready even while the /v1/pricing-lookup
+          # dependency hop is deliberately slow during the scenario.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 4000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 4000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: script
+              mountPath: /app
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: script
+          configMap:
+            name: order-pricing-dependency-script
+        - name: config
+          configMap:
+            name: order-pricing-dependency-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-pricing-dependency
+  namespace: propane
+spec:
+  selector:
+    app: order-pricing-dependency
+  ports:
+    - name: http
+      port: 4000
+      targetPort: 4000
+---
+# =============================================================================
+# Order Checkout Probe - synthetic order-checkout traffic generator
+# Domain: Shared — issue #22. Generates stable synthetic checkout traffic
+# against order-pricing-dependency with deterministic transaction/run
+# correlation ids and W3C trace-context propagation, at both baseline and
+# during the dependency-latency scenario.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-checkout-probe-script
+  namespace: propane
+  labels:
+    app: order-checkout-probe
+data:
+  server.js: |
+    'use strict';
+    // Domain: Shared — self-contained synthetic order-checkout traffic
+    // generator for issue #22. Mirrors the pure math in
+    // tools/mission-control/order-dependency-latency.js (see
+    // order-dependency-latency-scenario.test.js for the cross-check).
+    const http = require('http');
+    const crypto = require('crypto');
+
+    const PORT = Number(process.env.PORT || 4100);
+    const DEPENDENCY_URL = process.env.DEPENDENCY_URL || 'http://order-pricing-dependency.propane.svc.cluster.local:4000/v1/pricing-lookup';
+    const REQUEST_INTERVAL_MS = Number(process.env.REQUEST_INTERVAL_MS || 1000);
+    const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || 'order-checkout-probe';
+    const SERVICE_NAMESPACE = process.env.SERVICE_NAMESPACE || 'propane';
+    const ENVIRONMENT = process.env.DEPLOYMENT_ENVIRONMENT || 'demo';
+    const OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '';
+    const SCENARIO_ID = process.env.SCENARIO_ID || 'latency';
+
+    // The run id is derived once at process start so every request this pod
+    // issues shares one deterministic, reproducible correlation id rather
+    // than a fresh random id per request (see docs/BREAKABLE-SCENARIOS.md).
+    const RUN_ID = process.env.RUN_ID || ('run-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'));
+
+    function newHexId(bytes) { return crypto.randomBytes(bytes).toString('hex'); }
+    function deriveTraceId(runId, sequence) {
+      return crypto.createHash('sha256').update('trace:' + runId + ':' + sequence).digest('hex').slice(0, 32);
+    }
+    function deriveSpanId(runId, sequence, label) {
+      return crypto.createHash('sha256').update('span:' + runId + ':' + sequence + ':' + label).digest('hex').slice(0, 16);
+    }
+    function computeQuantile(sortedSamples, percentile) {
+      if (!sortedSamples.length) return 0;
+      const rank = Math.min(sortedSamples.length - 1, Math.max(0, Math.ceil((percentile / 100) * sortedSamples.length) - 1));
+      return sortedSamples[rank];
+    }
+
+    let sequence = 0;
+    const HISTOGRAM_WINDOW = 500;
+    const samples = [];
+    let totalRequests = 0;
+    let totalErrors = 0;
+
+    // Fixed, env-configured OTLP endpoint and dependency URL only — never
+    // derived from request input, so this can never become an arbitrary
+    // open proxy/SSRF target.
+    function otlpExport(pathSuffix, payload) {
+      if (!OTLP_ENDPOINT) return;
+      try {
+        const url = OTLP_ENDPOINT.replace(/\/$/, '') + pathSuffix;
+        fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(2000),
+        }).catch(function (err) {
+          console.log(JSON.stringify({ event: 'otlp_export_failed', endpoint: url, error: String(err && err.message || err) }));
+        });
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'otlp_export_failed', error: String(err && err.message || err) }));
+      }
+    }
+
+    function issueCheckoutRequest() {
+      const seq = sequence++;
+      const transactionId = 'TX-' + RUN_ID + '-' + String(seq).padStart(6, '0');
+      const traceId = deriveTraceId(RUN_ID, seq);
+      const rootSpanId = deriveSpanId(RUN_ID, seq, 'order.checkout');
+      const traceparent = '00-' + traceId + '-' + rootSpanId + '-01';
+      const startedAt = Date.now();
+      const startNs = (BigInt(startedAt) * 1000000n).toString();
+
+      fetch(DEPENDENCY_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', traceparent: traceparent },
+        body: JSON.stringify({ transactionId: transactionId, runId: RUN_ID, scenarioId: SCENARIO_ID }),
+        signal: AbortSignal.timeout(5000),
+      }).then(function (response) {
+        const durationMs = Date.now() - startedAt;
+        const ok = response.ok;
+        totalRequests += 1;
+        if (!ok) totalErrors += 1;
+        samples.push(durationMs);
+        if (samples.length > HISTOGRAM_WINDOW) samples.shift();
+
+        const endNs = (BigInt(Date.now()) * 1000000n).toString();
+        otlpExport('/v1/traces', {
+          resourceSpans: [{
+            resource: { attributes: [
+              { key: 'service.name', value: { stringValue: SERVICE_NAME } },
+              { key: 'service.namespace', value: { stringValue: SERVICE_NAMESPACE } },
+              { key: 'deployment.environment', value: { stringValue: ENVIRONMENT } },
+            ] },
+            scopeSpans: [{
+              scope: { name: 'order-dependency-latency' },
+              spans: [{
+                traceId: traceId, spanId: rootSpanId, name: 'order.checkout', kind: 2,
+                startTimeUnixNano: startNs, endTimeUnixNano: endNs,
+                attributes: [
+                  { key: 'scenario.id', value: { stringValue: SCENARIO_ID } },
+                  { key: 'scenario.run_id', value: { stringValue: RUN_ID } },
+                  { key: 'transaction.id', value: { stringValue: transactionId } },
+                  { key: 'http.method', value: { stringValue: 'POST' } },
+                  { key: 'http.route', value: { stringValue: '/v1/pricing-lookup' } },
+                ],
+                status: { code: ok ? 1 : 2 },
+              }],
+            }],
+          }],
+        });
+
+        console.log(JSON.stringify({
+          event: 'order_checkout', service: SERVICE_NAME, transaction_id: transactionId,
+          run_id: RUN_ID, trace_id: traceId, span_id: rootSpanId, duration_ms: durationMs,
+          status: ok ? 'ok' : 'error', http_status: response.status,
+        }));
+      }).catch(function (err) {
+        totalRequests += 1;
+        totalErrors += 1;
+        console.log(JSON.stringify({
+          event: 'order_checkout_failed', service: SERVICE_NAME, transaction_id: transactionId,
+          run_id: RUN_ID, trace_id: traceId, error: String(err && err.message || err),
+        }));
+      });
+    }
+
+    setInterval(issueCheckoutRequest, REQUEST_INTERVAL_MS);
+
+    const server = http.createServer(function (req, res) {
+      if (req.method === 'GET' && req.url === '/healthz') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/metrics') {
+        const sorted = samples.slice().sort(function (a, b) { return a - b; });
+        const lines = [
+          '# HELP order_checkout_duration_ms_p50 Rolling client-observed p50 order checkout latency in milliseconds.',
+          '# TYPE order_checkout_duration_ms_p50 gauge',
+          'order_checkout_duration_ms_p50{service="' + SERVICE_NAME + '",run_id="' + RUN_ID + '"} ' + computeQuantile(sorted, 50),
+          '# HELP order_checkout_duration_ms_p95 Rolling client-observed p95 order checkout latency in milliseconds.',
+          '# TYPE order_checkout_duration_ms_p95 gauge',
+          'order_checkout_duration_ms_p95{service="' + SERVICE_NAME + '",run_id="' + RUN_ID + '"} ' + computeQuantile(sorted, 95),
+          '# HELP order_checkout_duration_ms_p99 Rolling client-observed p99 order checkout latency in milliseconds.',
+          '# TYPE order_checkout_duration_ms_p99 gauge',
+          'order_checkout_duration_ms_p99{service="' + SERVICE_NAME + '",run_id="' + RUN_ID + '"} ' + computeQuantile(sorted, 99),
+          '# HELP order_checkout_requests_total Total synthetic order checkout requests issued.',
+          '# TYPE order_checkout_requests_total counter',
+          'order_checkout_requests_total{service="' + SERVICE_NAME + '",run_id="' + RUN_ID + '"} ' + totalRequests,
+          '# HELP order_checkout_errors_total Total synthetic order checkout requests that failed or errored.',
+          '# TYPE order_checkout_errors_total counter',
+          'order_checkout_errors_total{service="' + SERVICE_NAME + '",run_id="' + RUN_ID + '"} ' + totalErrors,
+          '',
+        ];
+        res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' });
+        res.end(lines.join('\n'));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/status') {
+        const sorted = samples.slice().sort(function (a, b) { return a - b; });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          service: SERVICE_NAME, runId: RUN_ID,
+          quantilesMs: { p50: computeQuantile(sorted, 50), p95: computeQuantile(sorted, 95), p99: computeQuantile(sorted, 99) },
+          totalRequests: totalRequests, totalErrors: totalErrors,
+          errorRatePct: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0,
+        }, null, 2));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'not_found' }));
+    });
+
+    server.listen(PORT, '0.0.0.0', function () {
+      console.log(JSON.stringify({ event: 'startup', service: SERVICE_NAME, port: PORT, dependencyUrl: DEPENDENCY_URL, runId: RUN_ID }));
+    });
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-checkout-probe
+  namespace: propane
+  labels:
+    app: order-checkout-probe
+    domain: shared
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-checkout-probe
+  template:
+    metadata:
+      labels:
+        app: order-checkout-probe
+        domain: shared
+    spec:
+      nodeSelector:
+        nodepool-type: user
+      containers:
+        - name: order-checkout-probe
+          image: mcr.microsoft.com/mirror/docker/library/node:20-alpine
+          command: ["node", "/app/server.js"]
+          ports:
+            - containerPort: 4100
+              name: http
+          env:
+            - name: PORT
+              value: "4100"
+            - name: DEPENDENCY_URL
+              value: "http://order-pricing-dependency.propane.svc.cluster.local:4000/v1/pricing-lookup"
+            - name: REQUEST_INTERVAL_MS
+              value: "1000"
+            - name: SCENARIO_ID
+              value: "latency"
+            - name: OTEL_SERVICE_NAME
+              value: "order-checkout-probe"
+            - name: SERVICE_NAMESPACE
+              value: "propane"
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: "demo"
+          envFrom:
+            - configMapRef:
+                name: propane-telemetry-config
+          resources:
+            requests:
+              memory: "48Mi"
+              cpu: "25m"
+            limits:
+              memory: "96Mi"
+              cpu: "100m"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 4100
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 4100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: script
+              mountPath: /app
+      volumes:
+        - name: script
+          configMap:
+            name: order-checkout-probe-script
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-checkout-probe
+  namespace: propane
+spec:
+  selector:
+    app: order-checkout-probe
+  ports:
+    - name: http
+      port: 4100
+      targetPort: 4100
+
 # =============================================================================
 # Customer Portal - Customer self-service portal (nginx serving custom HTML)
 # Domain: Shared UI — hosts two distinct domain sections in one portal:
@@ -1298,6 +1984,10 @@ data:
       <h2 class="section-title">&#128269; Bulk Tank Refill Order Backlog</h2>
       <div class="card" id="refill-order-backlog" style="overflow-x:auto"></div>
 
+      <!-- Domain: Shared -->
+      <h2 class="section-title">&#128200; Order Fulfillment Latency</h2>
+      <div class="card" id="order-dependency-latency" style="overflow-x:auto"></div>
+
       <h2 class="section-title">&#127978; Retail Cage Inventory Monitor</h2>
       <div class="legend">
         <span><span class="legend-dot" style="background:var(--blue)"></span> Full</span>
@@ -1690,6 +2380,299 @@ data:
       return recovered;
     }
 
+    // Domain: Shared
+    // Business-impact illustration for the dependency-latency scenario
+    // (issue #22). Mirrors the same static-illustrative-state-plus-testable-
+    // functions pattern used by REFILL_ORDER_BACKLOG above: values here
+    // match the order-pricing-dependency-config ConfigMap defaults/overrides
+    // in k8s/base/application.yaml and k8s/scenarios/dependency-latency.yaml
+    // so docs/tests can cross-reference exact numbers. The authoritative,
+    // live-measured evidence for this scenario is the in-cluster
+    // order-pricing-dependency / order-checkout-probe pods' logs, /metrics,
+    // and OTLP export — this panel narrates the same incident for the demo
+    // walkthrough, the same way REFILL_ORDER_BACKLOG does above.
+    const ORDER_DEPENDENCY_LATENCY = {
+      dependencyName: 'pricing-lookup',
+      impactedTransaction: 'order.checkout',
+      sloP95ThresholdMs: 500,
+      errorRateCeilingPct: 2,
+      delayMode: 'fixed',
+      baselineP95Ms: 58,
+      currentP50Ms: 45,
+      currentP95Ms: 58,
+      currentP99Ms: 72,
+      errorRatePct: 0.2,
+      rampFromMs: 45,
+      rampToMs: 950,
+      rampDurationSeconds: 75,
+      configVersion: 'baseline-v1',
+      configChangeReason: 'Baseline pricing-lookup timeout configuration. No incident is active.',
+      configChangedBy: 'platform-baseline',
+      configChangedAt: '2025-01-01T00:00:00Z',
+      runId: null,
+      status: 'healthy',
+      mode: 'baseline',
+      lastUpdatedAt: '2025-01-01T00:00:00Z'
+    };
+
+    const ORDER_DEPENDENCY_LATENCY_POLL_INTERVAL_MS = 15000;
+    const ORDER_DEPENDENCY_LATENCY_STALE_AFTER_MS = 30000;
+
+    function coerceFiniteNumber(rawValue, fallbackValue, minValue, maxValue) {
+      const candidate = Number(rawValue);
+      if (!Number.isFinite(candidate)) return fallbackValue;
+      if (typeof minValue === 'number' && candidate < minValue) return fallbackValue;
+      if (typeof maxValue === 'number' && candidate > maxValue) return fallbackValue;
+      return candidate;
+    }
+
+    function sanitizeOrderDependencyLatencyStatus(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+
+      const config = payload.config && typeof payload.config === 'object' ? payload.config : {};
+      const modeValue = String(payload.mode || config.mode || payload.delayMode || config.delayMode || '').trim().toLowerCase();
+      const mode = ['baseline', 'ramp', 'recovery'].includes(modeValue) ? modeValue : null;
+      const metrics = payload.quantilesMs && typeof payload.quantilesMs === 'object' ? payload.quantilesMs : {};
+      const p50 = coerceFiniteNumber(payload.p50Ms ?? payload.p50 ?? metrics.p50 ?? config.p50Ms ?? config.p50, 0, 0, 10000);
+      const p95 = coerceFiniteNumber(payload.p95Ms ?? payload.p95 ?? metrics.p95 ?? config.p95Ms ?? config.p95, 0, 0, 10000);
+      const p99 = coerceFiniteNumber(payload.p99Ms ?? payload.p99 ?? metrics.p99 ?? config.p99Ms ?? config.p99, 0, 0, 10000);
+      const errorRate = coerceFiniteNumber(payload.errorRatePct ?? payload.errorRate ?? config.errorRatePct ?? config.errorRate, 0, 0, 100);
+      const readinessValue = payload.readiness ?? payload.readyPct ?? config.readiness ?? config.readyPct ?? 1;
+      const readinessRaw = Number(readinessValue);
+      const readiness = Number.isFinite(readinessRaw) ? (readinessRaw > 1 ? readinessRaw / 100 : readinessRaw) : 1;
+      if (!Number.isFinite(readiness) || readiness < 0 || readiness > 1) return null;
+      if (!Number.isFinite(p50) || !Number.isFinite(p95) || !Number.isFinite(p99) || p50 < 0 || p95 < 0 || p99 < 0) return null;
+      if (p95 < p50 || p99 < p95) return null;
+      if (errorRate < 0 || errorRate > 100) return null;
+
+      const runId = String(payload.runId || payload.run_id || config.runId || config.run_id || payload.correlationId || payload.correlation_id || '').trim();
+      const configVersion = String(payload.configVersion || payload.config_version || config.configVersion || config.config_version || '').trim();
+      const configChangeReason = String(payload.configChangeReason || payload.config_change_reason || config.configChangeReason || config.config_change_reason || 'Live scenario status from order-checkout-probe').trim();
+      const configChangedBy = String(payload.configChangedBy || payload.config_changed_by || config.configChangedBy || config.config_changed_by || 'platform-live').trim();
+      const lastUpdatedAt = String(payload.lastUpdatedAt || payload.updatedAt || payload.timestamp || config.lastUpdatedAt || config.updatedAt || config.timestamp || new Date().toISOString()).trim();
+      const timestamp = new Date(lastUpdatedAt).getTime();
+      if (!lastUpdatedAt || Number.isNaN(timestamp)) return null;
+      if (!runId || !configVersion) return null;
+
+      const inferredMode = mode || (p95 > ORDER_DEPENDENCY_LATENCY.sloP95ThresholdMs ? 'ramp' : (ORDER_DEPENDENCY_LATENCY.status === 'active' && p95 <= ORDER_DEPENDENCY_LATENCY.sloP95ThresholdMs ? 'recovery' : 'baseline'));
+      return {
+        mode: inferredMode,
+        p50Ms: p50,
+        p95Ms: p95,
+        p99Ms: p99,
+        errorRatePct: errorRate,
+        readiness: readiness,
+        runId: runId,
+        configVersion: configVersion,
+        configChangeReason: configChangeReason,
+        configChangedBy: configChangedBy,
+        configChangedAt: payload.configChangedAt || payload.config_changed_at || config.configChangedAt || config.config_changed_at || lastUpdatedAt,
+        lastUpdatedAt: lastUpdatedAt,
+        service: payload.service || config.service || 'order-checkout-probe'
+      };
+    }
+
+    function applyOrderDependencyLatencyStatus(payload) {
+      const sanitized = sanitizeOrderDependencyLatencyStatus(payload);
+      if (!sanitized) {
+        ORDER_DEPENDENCY_LATENCY.status = 'unavailable';
+        ORDER_DEPENDENCY_LATENCY.mode = 'baseline';
+        ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+        ORDER_DEPENDENCY_LATENCY.configChangeReason = 'Order dependency latency status is unavailable or malformed.';
+        renderOrderDependencyLatency();
+        return false;
+      }
+
+      const stale = Date.now() - new Date(sanitized.lastUpdatedAt).getTime() > ORDER_DEPENDENCY_LATENCY_STALE_AFTER_MS;
+      const derivedStatus = stale ? 'stale' : sanitized.mode === 'ramp' ? 'active' : sanitized.mode === 'recovery' ? 'recovered' : 'healthy';
+
+      ORDER_DEPENDENCY_LATENCY.status = derivedStatus;
+      ORDER_DEPENDENCY_LATENCY.mode = sanitized.mode;
+      ORDER_DEPENDENCY_LATENCY.currentP50Ms = sanitized.p50Ms;
+      ORDER_DEPENDENCY_LATENCY.currentP95Ms = sanitized.p95Ms;
+      ORDER_DEPENDENCY_LATENCY.currentP99Ms = sanitized.p99Ms;
+      ORDER_DEPENDENCY_LATENCY.errorRatePct = sanitized.errorRatePct;
+      ORDER_DEPENDENCY_LATENCY.runId = sanitized.runId;
+      ORDER_DEPENDENCY_LATENCY.configVersion = sanitized.configVersion;
+      ORDER_DEPENDENCY_LATENCY.configChangeReason = sanitized.configChangeReason;
+      ORDER_DEPENDENCY_LATENCY.configChangedBy = sanitized.configChangedBy;
+      ORDER_DEPENDENCY_LATENCY.configChangedAt = sanitized.configChangedAt;
+      ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = sanitized.lastUpdatedAt;
+      renderOrderDependencyLatency();
+      return true;
+    }
+
+    function fetchOrderDependencyLatencyStatus() {
+      if (typeof fetch !== 'function') {
+        ORDER_DEPENDENCY_LATENCY.status = 'unavailable';
+        ORDER_DEPENDENCY_LATENCY.mode = 'baseline';
+        ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+        renderOrderDependencyLatency();
+        return Promise.resolve(false);
+      }
+
+      return fetch('/api/orders/latency-status', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined,
+      })
+        .then(function (response) {
+          if (!response || !response.ok) {
+            throw new Error('HTTP ' + (response && response.status ? response.status : 'unavailable'));
+          }
+          return response.json();
+        })
+        .then(function (payload) {
+          const sanitized = sanitizeOrderDependencyLatencyStatus(payload);
+          if (!sanitized) {
+            throw new Error('Malformed latency status payload');
+          }
+          return applyOrderDependencyLatencyStatus(sanitized);
+        })
+        .catch(function (error) {
+          ORDER_DEPENDENCY_LATENCY.status = 'unavailable';
+          ORDER_DEPENDENCY_LATENCY.mode = 'baseline';
+          ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+          ORDER_DEPENDENCY_LATENCY.configChangeReason = 'Order dependency latency status unavailable: ' + (error && error.message ? error.message : 'unknown error');
+          renderOrderDependencyLatency();
+          return false;
+        });
+    }
+
+    function renderOrderDependencyLatency() {
+      const panel = document.getElementById('order-dependency-latency');
+      if (!panel) return;
+
+      const latency = ORDER_DEPENDENCY_LATENCY;
+      const breached = Number(latency.currentP95Ms) > Number(latency.sloP95ThresholdMs);
+      const withinErrorCeiling = Number(latency.errorRatePct) <= Number(latency.errorRateCeilingPct);
+      const isUnavailable = latency.status === 'unavailable' || latency.status === 'stale';
+      const statusLabel = latency.status === 'active'
+        ? 'SLO breached — latency-led incident'
+        : latency.status === 'recovered'
+          ? 'Recovered — below SLO threshold'
+          : latency.status === 'stale'
+            ? 'Stale — last live status exceeded the freshness window'
+            : latency.status === 'unavailable'
+              ? 'Unavailable — status endpoint is not returning trusted data'
+              : 'Healthy — below SLO threshold';
+
+      panel.textContent = '';
+
+      const metrics = document.createElement('div');
+      metrics.className = 'metric-grid';
+      [
+        ['p50 latency', latency.currentP50Ms + ' ms'],
+        ['p95 latency', latency.currentP95Ms + ' ms'],
+        ['p99 latency', latency.currentP99Ms + ' ms'],
+        ['Error rate', Number(latency.errorRatePct).toFixed(1) + '%'],
+      ].forEach(function (entry) {
+        const card = document.createElement('div');
+        card.className = 'metric-card';
+        const label = document.createElement('div');
+        label.className = 'metric-label';
+        label.textContent = entry[0];
+        const value = document.createElement('div');
+        value.className = 'metric-value';
+        value.textContent = entry[1];
+        card.appendChild(label);
+        card.appendChild(value);
+        metrics.appendChild(card);
+      });
+      panel.appendChild(metrics);
+
+      [
+        ['Transaction:', latency.impactedTransaction],
+        ['Delayed dependency:', latency.dependencyName],
+        ['Status:', statusLabel],
+      ].forEach(function (entry) {
+        const row = document.createElement('div');
+        row.className = 'queue-detail-row';
+        const label = document.createElement('strong');
+        label.textContent = entry[0];
+        const value = document.createElement('span');
+        value.textContent = ' ' + entry[1];
+        row.appendChild(label);
+        row.appendChild(value);
+        panel.appendChild(row);
+      });
+
+      const sloRow = document.createElement('div');
+      sloRow.className = 'queue-detail-row';
+      sloRow.textContent = 'SLO: p95 <= ' + latency.sloP95ThresholdMs + ' ms, error rate <= ' + latency.errorRateCeilingPct + '%; SLO breached: ' + (breached ? 'yes' : 'no') + '; Errors within ceiling: ' + (withinErrorCeiling ? 'yes' : 'no');
+      panel.appendChild(sloRow);
+
+      const configRow = document.createElement('div');
+      configRow.className = 'queue-detail-row';
+      configRow.textContent = 'Config change: ' + (latency.configChangeReason || 'No config change reported') + ' (v' + (latency.configVersion || 'unknown') + ' by ' + (latency.configChangedBy || 'unknown') + ' at ' + (latency.configChangedAt || 'unknown') + ')';
+      panel.appendChild(configRow);
+
+      if (latency.runId) {
+        const runRow = document.createElement('div');
+        runRow.className = 'queue-detail-row';
+        runRow.textContent = 'Run correlation id: ' + latency.runId;
+        panel.appendChild(runRow);
+      }
+
+      const freshness = document.createElement('div');
+      freshness.className = 'queue-detail-row';
+      freshness.textContent = 'Last updated: ' + (latency.lastUpdatedAt ? new Date(latency.lastUpdatedAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : 'unknown');
+      if (isUnavailable) {
+        freshness.textContent += ' · unavailable';
+      } else if (latency.status === 'stale') {
+        freshness.textContent += ' · stale';
+      }
+      panel.appendChild(freshness);
+    }
+
+    function startOrderDependencyLatencyIncident(runId) {
+      ORDER_DEPENDENCY_LATENCY.runId = runId || ('run-' + Date.now());
+      ORDER_DEPENDENCY_LATENCY.delayMode = 'ramp';
+      ORDER_DEPENDENCY_LATENCY.mode = 'ramp';
+      ORDER_DEPENDENCY_LATENCY.currentP50Ms = ORDER_DEPENDENCY_LATENCY.rampFromMs;
+      ORDER_DEPENDENCY_LATENCY.currentP95Ms = ORDER_DEPENDENCY_LATENCY.rampFromMs;
+      ORDER_DEPENDENCY_LATENCY.currentP99Ms = ORDER_DEPENDENCY_LATENCY.rampFromMs;
+      ORDER_DEPENDENCY_LATENCY.errorRatePct = 0.4;
+      ORDER_DEPENDENCY_LATENCY.configVersion = 'incident-v2';
+      ORDER_DEPENDENCY_LATENCY.configChangeReason = 'Emergency change: pricing-lookup dependency timeout raised from ' + ORDER_DEPENDENCY_LATENCY.rampFromMs + 'ms to ' + ORDER_DEPENDENCY_LATENCY.rampToMs + 'ms in order-pricing-dependency-config to accommodate a vendor rate-limit workaround.';
+      ORDER_DEPENDENCY_LATENCY.configChangedBy = 'platform-ops-oncall';
+      ORDER_DEPENDENCY_LATENCY.configChangedAt = new Date().toISOString();
+      ORDER_DEPENDENCY_LATENCY.status = 'active';
+      ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+      appendRefillOrderLog('warn', 'order-pricing-dependency delay ramping toward ' + ORDER_DEPENDENCY_LATENCY.rampToMs + 'ms after config change ' + ORDER_DEPENDENCY_LATENCY.configVersion + '. Pods remain Ready; error rate remains low.');
+      renderOrderDependencyLatency();
+      return ORDER_DEPENDENCY_LATENCY;
+    }
+
+    function advanceOrderDependencyLatencyRamp() {
+      if (ORDER_DEPENDENCY_LATENCY.status !== 'active') return ORDER_DEPENDENCY_LATENCY;
+      const next = Math.min(ORDER_DEPENDENCY_LATENCY.rampToMs, ORDER_DEPENDENCY_LATENCY.currentP95Ms + 200);
+      ORDER_DEPENDENCY_LATENCY.currentP50Ms = Math.round(next * 0.55);
+      ORDER_DEPENDENCY_LATENCY.currentP95Ms = next;
+      ORDER_DEPENDENCY_LATENCY.currentP99Ms = Math.round(next * 1.15);
+      ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+      renderOrderDependencyLatency();
+      return ORDER_DEPENDENCY_LATENCY;
+    }
+
+    function recoverOrderDependencyLatency() {
+      ORDER_DEPENDENCY_LATENCY.delayMode = 'fixed';
+      ORDER_DEPENDENCY_LATENCY.mode = 'recovery';
+      ORDER_DEPENDENCY_LATENCY.currentP50Ms = 45;
+      ORDER_DEPENDENCY_LATENCY.currentP95Ms = ORDER_DEPENDENCY_LATENCY.baselineP95Ms;
+      ORDER_DEPENDENCY_LATENCY.currentP99Ms = 72;
+      ORDER_DEPENDENCY_LATENCY.errorRatePct = 0.2;
+      ORDER_DEPENDENCY_LATENCY.configVersion = 'baseline-v1';
+      ORDER_DEPENDENCY_LATENCY.configChangeReason = 'Baseline pricing-lookup timeout configuration restored. No incident is active.';
+      ORDER_DEPENDENCY_LATENCY.configChangedBy = 'platform-baseline';
+      ORDER_DEPENDENCY_LATENCY.configChangedAt = new Date().toISOString();
+      ORDER_DEPENDENCY_LATENCY.status = 'recovered';
+      ORDER_DEPENDENCY_LATENCY.lastUpdatedAt = new Date().toISOString();
+      appendRefillOrderLog('info', 'order-pricing-dependency latency recovered below the ' + ORDER_DEPENDENCY_LATENCY.sloP95ThresholdMs + 'ms SLO threshold.');
+      renderOrderDependencyLatency();
+      return ORDER_DEPENDENCY_LATENCY;
+    }
+
     // Domain: Bulk Tank
     const BULK_TANK_SAFETY_ALARM = {
       alarmId: 'BT-SAFETY-ALM-00042',
@@ -1883,7 +2866,8 @@ data:
     // Domain: Shared
     generateLocationData();
     setDispatchBanner('healthy', 'Live dispatch telemetry is current.', new Date().toISOString());
-    updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); renderRefillOrderBacklog(); renderBulkTankSafetyAlarm(); appendSafetyLog('warn', 'SIMULATED bulk tank alarm ' + BULK_TANK_SAFETY_ALARM.alarmId + ' remains pending in safety-compliance-monitor while workload pods stay healthy.');
+    updateClock(); updateMetrics(); renderCageGrid(); renderDeliveryQueue(); renderForecast(); renderRefillOrderBacklog(); renderOrderDependencyLatency(); renderBulkTankSafetyAlarm(); appendSafetyLog('warn', 'SIMULATED bulk tank alarm ' + BULK_TANK_SAFETY_ALARM.alarmId + ' remains pending in safety-compliance-monitor while workload pods stay healthy.');
+    fetchOrderDependencyLatencyStatus();
     loadHealth();
     for (let i = 0; i < 10; i++) addLogEntry();
     setInterval(updateClock, 1000);
@@ -1891,6 +2875,7 @@ data:
     setInterval(refreshCages, 10000);
     setInterval(addLogEntry, 4000);
     setInterval(loadHealth, 30000);
+    setInterval(fetchOrderDependencyLatencyStatus, ORDER_DEPENDENCY_LATENCY_POLL_INTERVAL_MS);
     setInterval(renderForecast, 60000);
     </script>
     </body>
@@ -1949,6 +2934,17 @@ data:
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_pass http://order-service.propane.svc.cluster.local:3001/health;
+        }
+        location = /api/orders/latency-status {
+            limit_except GET {
+                deny all;
+            }
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://order-checkout-probe.propane.svc.cluster.local:4100/status;
         }
         location /api/ {
             return 404;
@@ -2057,6 +3053,8 @@ data:
                     - tank-monitor.propane.svc.cluster.local:3000
                     - inventory-service.propane.svc.cluster.local:3002
                     - order-service.propane.svc.cluster.local:3001
+                    - order-pricing-dependency.propane.svc.cluster.local:4000
+                    - order-checkout-probe.propane.svc.cluster.local:4100
     processors:
       batch:
         timeout: 10s

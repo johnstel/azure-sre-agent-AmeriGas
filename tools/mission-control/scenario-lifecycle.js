@@ -74,6 +74,11 @@ function normalizeScenarioId(raw) {
     'network-policy': 'network',
     'service-selector-mismatch': 'service',
     'service-mismatch': 'service',
+    'dependency-latency': 'latency',
+    'order-latency': 'latency',
+    'order-dependency-latency': 'latency',
+    'slow-dependency': 'latency',
+    'gradual-latency': 'latency',
   };
 
   const normalized = aliases[input] || input;
@@ -99,6 +104,7 @@ function manifestIdForFile(fileName) {
     'mongodb-down': 'mongodb',
     'service-mismatch': 'service',
     'refill-order-backlog': 'backlog',
+    'dependency-latency': 'latency',
   };
   return aliasMap[name] || name;
 }
@@ -707,6 +713,8 @@ function getBaselineDeployments() {
     'rabbitmq',
     'mongodb',
     'otel-collector',
+    'order-pricing-dependency',
+    'order-checkout-probe',
     'demand-forecast-overload',
     'fleet-telemetry-monitor',
     'delivery-zone-config',
@@ -733,6 +741,8 @@ function verifyBaselineState(clusterSnapshot) {
     'rabbitmq',
     'mongodb',
     'otel-collector',
+    'order-pricing-dependency',
+    'order-checkout-probe',
   ];
 
   for (const name of baselineDeployments) {

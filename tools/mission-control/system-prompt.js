@@ -27,9 +27,11 @@ The platform runs in AKS namespace "propane" with these services:
 | Tank Monitor | tank-monitor | 3000 | IoT tank level monitoring & alerts | RabbitMQ (publishes to queue "tank-events") |
 | Order Service | order-service | 3001 | Order fulfillment & processing | RabbitMQ (consumes "tank-events"), MongoDB (propanedb/tank_readings) |
 | Inventory Service | inventory-service | 3002 | Propane catalog & pricing | Standalone |
+| Order Pricing Dependency | order-pricing-dependency | 4000 | Synthetic order-checkout pricing-lookup dependency (issue #22 dependency-latency scenario) | Standalone (config-driven delay only, no outbound target) |
+| Order Checkout Probe | order-checkout-probe | 4100 | Synthetic order-checkout traffic generator with deterministic correlation ids | order-pricing-dependency |
 | RabbitMQ | rabbitmq | 5672, 15672 | Message bus | None |
 | MongoDB | mongodb | 27017 | Data store (8Gi PVC) | None |
-| OTel Collector | otel-collector | 4317, 4318 | Telemetry pipeline to App Insights | None |
+| OTel Collector | otel-collector | 4317, 4318 | Telemetry pipeline (OTLP + Prometheus receiver; "logging" exporter active, App Insights export pending issue #25) | None |
 | Usage Simulator | usage-simulator | — | Synthetic load generator | tank-monitor |
 | Order Worker | order-worker | — | DISABLED (0 replicas, AMQP mismatch) | order-service |
 
@@ -41,7 +43,7 @@ The platform runs in AKS namespace "propane" with these services:
 - If RabbitMQ goes down → tank-monitor can't publish → order-service can't consume
 
 ## Healthy Baseline
-- Expected pods: 12-13 (order-worker is 0/0 by design)
+- Expected pods: 14-15 (order-worker is 0/0 by design)
 - customer-portal: 2 replicas
 - dispatch-console: 1 replica
 - tank-monitor: 2 replicas
@@ -51,6 +53,8 @@ The platform runs in AKS namespace "propane" with these services:
 - mongodb: 1 replica (with PVC)
 - otel-collector: 1 replica
 - usage-simulator: 1 replica
+- order-pricing-dependency: 1 replica
+- order-checkout-probe: 1 replica
 - order-worker: 0 replicas (disabled)
 
 ## Known Breakable Scenarios
@@ -66,6 +70,7 @@ These may be intentionally applied for demo/training:
 8. **Missing Config** (config) — "delivery-zone-config" references non-existent ConfigMaps
 9. **MongoDB Down** (mongodb) — mongodb scaled to 0 replicas → cascading order-service failure
 10. **Service Mismatch** (service) — tank-monitor Service selector changed to "tank-monitor-v2" → empty endpoints
+11. **Dependency Latency** (latency) — order-pricing-dependency-config ConfigMap swapped from fixed ~45ms delay to a ramped delay toward ~950ms after an "emergency" config change; all targeted pods (order-pricing-dependency, order-checkout-probe) remain Running/Ready and error rate stays low — a genuinely latency-led incident, not a crash. Correlate p95 breach, OTLP trace spans, and the config_version/config_change_reason change.
 
 ## Diagnostic Approach
 1. Always start with get_cluster_health to get a full picture

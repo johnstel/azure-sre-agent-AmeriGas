@@ -83,7 +83,7 @@ function Start-DemoScenario {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('oom','crash','image','cpu','pending','probe','backlog','network','config','mongodb','service')]
+        [ValidateSet('oom','crash','image','cpu','pending','probe','backlog','network','config','mongodb','service','latency')]
         [string]$Id,
         [switch]$AllowStacking,
         [switch]$WhatIf
@@ -134,6 +134,7 @@ function break-network { Start-DemoScenario -Id 'network' @args }
 function break-config { Start-DemoScenario -Id 'config' @args }
 function break-mongodb { Start-DemoScenario -Id 'mongodb' @args }
 function break-service { Start-DemoScenario -Id 'service' @args }
+function break-latency { Start-DemoScenario -Id 'latency' @args }
 
 # Fix commands
 function ensure-credentials {
@@ -246,6 +247,7 @@ function menu {
 ║    break-config                - Missing ConfigMap                           ║
 ║    break-mongodb               - MongoDB down (cascading failure)            ║
 ║    break-service               - Service selector mismatch                   ║
+║    break-latency               - Dependency latency (SLO breach)             ║
 ║                                                                              ║
 ║  Scenario lifecycle:                                                         ║
 ║    Start-DemoScenario -Id <id> - Run a known scenario with baseline checks   ║
