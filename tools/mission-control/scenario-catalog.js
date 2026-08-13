@@ -19,11 +19,11 @@ const SCENARIO_MAP = {
   pending: 'pending-pods.yaml',
   probe: 'probe-failure.yaml',
   backlog: 'refill-order-backlog.yaml',
+  latency: 'dependency-latency.yaml',
   network: 'network-block.yaml',
   config: 'missing-config.yaml',
   mongodb: 'mongodb-down.yaml',
   service: 'service-mismatch.yaml',
-  latency: 'dependency-latency.yaml',
 };
 
 const SCENARIO_METADATA = {
@@ -76,6 +76,13 @@ const SCENARIO_METADATA = {
     narrative: 'RabbitMQ refill backlog grows while producers remain healthy and a malformed refill event is retried before DLQ routing',
     relatedIds: ['RO-1041', 'RO-1042', 'RO-1043', 'RO-1044', 'EV-REFILL-2047'],
   },
+  latency: {
+    name: 'Dependency Latency',
+    domain: 'Shared',
+    impactedService: 'order-pricing-dependency',
+    narrative: 'The pricing-lookup dependency gradually slows from 45ms up toward 950ms while the service remains Running/Ready and the SLO is breached without a crash.',
+    relatedIds: ['OPD-INC-22', 'ORD-PRICING-LOOKUP-LATENCY'],
+  },
   network: {
     name: 'Network Block',
     domain: 'Bulk Tank',
@@ -104,13 +111,20 @@ const SCENARIO_METADATA = {
     narrative: 'Tank monitor Service selector drift after a "v2 upgrade"',
     relatedIds: [],
   },
-  latency: {
-    name: 'Dependency Latency',
-    domain: 'Shared',
-    impactedService: 'order-pricing-dependency',
-    narrative: 'Order checkout pricing-lookup dependency gradually slows down after an emergency timeout config change, while all pods remain Ready and error rate stays low',
-    relatedIds: [],
-  },
 };
 
-module.exports = { SCENARIO_MAP, SCENARIO_METADATA };
+const SCENARIO_CATALOG = Object.entries(SCENARIO_MAP).map(([id, manifest]) => {
+  const metadata = SCENARIO_METADATA[id] || {};
+  return {
+    id,
+    manifest,
+    title: metadata.name || id,
+    name: metadata.name || id,
+    domain: metadata.domain || 'Shared',
+    impactedService: metadata.impactedService || '',
+    narrative: metadata.narrative || '',
+    relatedIds: Array.isArray(metadata.relatedIds) ? metadata.relatedIds : [],
+  };
+});
+
+module.exports = { SCENARIO_MAP, SCENARIO_METADATA, SCENARIO_CATALOG };
