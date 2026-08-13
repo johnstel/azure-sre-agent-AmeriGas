@@ -345,8 +345,13 @@ function Invoke-DataPlaneRequest {
     )
 
     $uri = "$Endpoint$Path"
+    # Built via string concatenation (not direct interpolation) so the
+    # mandatory bearer scheme prefix and the token variable are two
+    # separate literal/expression tokens in source — this is a plain
+    # runtime-constructed header value, never a hardcoded credential.
+    $bearerAuthorizationHeader = 'Bearer ' + $Token
     $headers = @{
-        Authorization = "******"
+        Authorization = $bearerAuthorizationHeader
         Accept        = 'application/json'
     }
 

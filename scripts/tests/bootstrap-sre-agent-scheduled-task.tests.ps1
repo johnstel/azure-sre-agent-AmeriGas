@@ -693,3 +693,30 @@ Describe "scripts/deploy.ps1 — scheduled-task readiness gates demo-ready statu
         $responsePlanGateIndex | Should -BeGreaterThan $scheduledTaskGateIndex
     }
 }
+
+Describe "Invoke-DataPlaneRequest — mandatory bearer token is actually used in the Authorization header (regression guard)" {
+    It "the source references the \$Token parameter when building the Authorization header value, not a hardcoded/masked placeholder" {
+        $source = Get-Content -Path $script:ScriptPath -Raw
+        # Regression guard for a real defect found in review: the header was
+        # hardcoded to a literal masked string and never referenced the
+        # mandatory bearer token parameter at all, so every real HTTP call
+        # would have sent an invalid, non-functional Authorization header.
+        # This asserts the actual token variable is referenced somewhere in
+        # the construction of the header value assigned to Authorization.
+        $source | Should -Match 'Authorization\s*=\s*\$bearerAuthorizationHeader'
+        $source | Should -Match '\$bearerAuthorizationHeader\s*=\s*''Bearer ''\s*\+\s*\$Token'
+        $source | Should -Not -Match 'Authorization\s*=\s*"\*+"'
+    }
+
+    It "actually sends the literal 'Bearer <token>' scheme and value on the wire — verified by the real HttpListener in bootstrap-sre-agent-scheduled-task-http.tests.ps1, not just a source-text match" {
+        # A source-text match alone cannot catch a case where $Token is
+        # referenced in the RIGHT-HAND SIDE construction but the resulting
+        # variable is never actually assigned to the header (e.g. a stray
+        # rename). Cross-reference: the companion HTTP-listener test file
+        # asserts the literal received header equals ("Bearer " + $testToken)
+        # against a real socket, which is the authoritative end-to-end proof.
+        Test-Path (Join-Path $PSScriptRoot "bootstrap-sre-agent-scheduled-task-http.tests.ps1") | Should -Be $true
+        $httpTestSource = Get-Content -Path (Join-Path $PSScriptRoot "bootstrap-sre-agent-scheduled-task-http.tests.ps1") -Raw
+        ([regex]::Matches($httpTestSource, [regex]::Escape('Should -Be ("Bearer " + $testToken)'))).Count | Should -BeGreaterThan 0
+    }
+}

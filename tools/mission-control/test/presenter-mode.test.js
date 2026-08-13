@@ -10,7 +10,7 @@ const {
   sanitizePresenterNotes,
   buildPresenterRehearsal,
 } = require('../presenter-mode');
-const { app, presenterStateMachine, sanitizePresenterRequestBody } = require('../server');
+const { app, presenterStateMachine, presenterStateStore, sanitizePresenterRequestBody, incidentStore, scheduledTaskEvidenceStore, __setClusterSnapshotProviderForTests } = require('../server');
 
 function createMemoryStore(initialState = null) {
   let currentState = initialState;
@@ -323,5 +323,191 @@ test('production presenter endpoints reject malicious all-true payloads and stal
     assert.match(staleBody.error, /no active presenter track|stale|different presenter run/i);
   } finally {
     await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  }
+});
+
+
+function fullyClearSharedPresenterState() {
+  presenterStateStore.write(presenterStateMachine.defaultState());
+}
+
+test("a raw top-level 'serverProof' in the /start request body is rejected outright, never merged into the trust context (regression guard for the raw-body-spread vulnerability)", async () => {
+  const server = app.listen(0);
+  try {
+    const { port } = server.address();
+    const base = `http://127.0.0.1:${port}`;
+
+    const spoofedStart = await fetch(`${base}/api/presenter/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trackId: 'fast-wow',
+        serverProof: { baselineReady: true, scenarioActive: true, scheduledTaskAvailable: true },
+      }),
+    });
+    assert.equal(spoofedStart.status, 400);
+    const spoofedBody = await spoofedStart.json();
+    assert.match(spoofedBody.error, /blocked client-supplied gate truth|gate truth/i);
+    assert.ok(spoofedBody.rejected.includes('serverProof'));
+  } finally {
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test('the server source never spreads the raw request body into a presenter-mutation operation call -- context is always built exclusively from sanitized fields plus the server-computed serverProof', () => {
+  const serverSource = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
+  assert.equal(/presenterStateMachine\.(startTrack|continueStep|pause|resume|abort|reconnect)\([^)]*\.\.\.(body|req\.body)/.test(serverSource), false);
+  assert.equal(serverSource.includes('startTrack(trackId, { ...context, ...body })'), false);
+});
+
+test('a valid Fast Wow run succeeds end-to-end through the real HTTP endpoints using ACTUAL trusted server evidence -- readiness/baseline from a real (faked) cluster snapshot, approval/recovery from the real incidentStore milestones -- and exact incident milestones unlock each gate strictly in sequence', async () => {
+  fullyClearSharedPresenterState();
+  const server = app.listen(0);
+  const healthySnapshot = {
+    deployments: [
+      'customer-portal', 'dispatch-console', 'tank-monitor', 'inventory-service', 'order-service',
+      'usage-simulator', 'order-worker', 'rabbitmq', 'mongodb', 'otel-collector',
+      'order-pricing-dependency', 'order-checkout-probe',
+    ].map((name) => ({ metadata: { name }, spec: { replicas: 1 }, status: { availableReplicas: 1, readyReplicas: 1 } })),
+    services: ['customer-portal', 'dispatch-console', 'tank-monitor', 'inventory-service', 'order-service', 'mongodb', 'rabbitmq']
+      .map((name) => ({ metadata: { name } })),
+    endpoints: ['customer-portal', 'dispatch-console', 'tank-monitor', 'inventory-service', 'order-service', 'mongodb', 'rabbitmq']
+      .map((name) => ({ metadata: { name }, subsets: [{ addresses: [{ ip: '10.0.0.1' }] }] })),
+    networkPolicies: [],
+    configMaps: [],
+  };
+  __setClusterSnapshotProviderForTests(async () => healthySnapshot);
+
+  const actionKey = `test-remediate-${Date.now()}`;
+  const incident = incidentStore.activate({ scenarioId: 'mongodb', impactedService: 'mongodb', runMode: 'operator-direct' });
+  const correlationId = incident.correlationId;
+
+  try {
+    const { port } = server.address();
+    const base = `http://127.0.0.1:${port}`;
+    const runCorrelationId = `RUN-${Date.now()}`;
+
+    // Step 1: start Fast Wow. The first gate ('readiness') must succeed
+    // purely because the (faked) cluster snapshot is healthy -- no client
+    // field can substitute for this.
+    const startRes = await fetch(`${base}/api/presenter/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trackId: 'fast-wow', correlationId: runCorrelationId, incidentCorrelationId: correlationId, scenarioId: 'mongodb' }),
+    });
+    assert.equal(startRes.status, 200, `expected readiness gate to pass with a healthy cluster snapshot: ${JSON.stringify(await startRes.clone().json())}`);
+    const startBody = await startRes.json();
+    assert.equal(startBody.ok, true);
+    assert.equal(startBody.state.currentStepId, 'readiness');
+
+    // Each `continue` call re-checks the CURRENT step's own gate before
+    // advancing to the next one (see presenter-mode.js's handleContinue),
+    // so leaving 'readiness' requires one continue call, landing on
+    // 'baseline-health' -- backed by the SAME healthy cluster snapshot.
+    const continue1 = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(continue1.status, 200, `expected readiness gate to still pass: ${JSON.stringify(await continue1.clone().json())}`);
+    const continue1Body = await continue1.json();
+    assert.equal(continue1Body.state.currentStepId, 'baseline-health');
+
+    // Leaving 'baseline-health' requires re-checking ITS gate (still
+    // backed by the same healthy snapshot), landing on 'review-approval'.
+    const continue2 = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(continue2.status, 200, `expected baseline gate to pass: ${JSON.stringify(await continue2.clone().json())}`);
+    const continue2Body = await continue2.json();
+    assert.equal(continue2Body.state.currentStepId, 'review-approval');
+
+    // Leaving 'review-approval' requires ITS OWN gate ('approval') to
+    // pass, bound to whatever actionKey the incident's most recent
+    // action_proposed milestone carries. Before any proposal/approval
+    // milestone exists, this MUST be blocked -- it must never unlock just
+    // because readiness/baseline already passed.
+    const prematureApproval = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(prematureApproval.status, 400, 'approval gate must not unlock before any action was proposed/approved');
+
+    // Now record the REAL milestones on the REAL incidentStore, exactly
+    // like a genuine operator-approved remediation would.
+    incidentStore.proposeAction(correlationId, { actionKey, toolName: 'kubectl_scale', params: { replicas: 1 } });
+    incidentStore.approveAction(correlationId, { actionKey, approver: 'test-operator', approved: true });
+
+    const continue3 = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(continue3.status, 200, `expected the approval gate to unlock once the exact matching milestones exist: ${JSON.stringify(await continue3.clone().json())}`);
+    const continue3Body = await continue3.json();
+    assert.equal(continue3Body.state.currentStepId, 'verified-recovery');
+
+    // Leaving 'verified-recovery' requires ITS OWN gate ('recovery') to
+    // pass -- must not unlock before a passing post-action assertion
+    // exists, even though the approval gate already passed.
+    const prematureRecovery = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(prematureRecovery.status, 400, 'recovery gate must not unlock before a passing post-action assertion is recorded');
+
+    incidentStore.recordActionResult(correlationId, { actionKey, toolName: 'kubectl_scale', success: true, summary: 'scaled mongodb back to 1 replica' });
+    incidentStore.recordPostActionAssertion(correlationId, { actionKey, passed: true, details: 'mongodb pod is Running and Ready again' });
+
+    const continue4 = await fetch(`${base}/api/presenter/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correlationId: runCorrelationId }),
+    });
+    assert.equal(continue4.status, 200, `expected the recovery gate to unlock once the exact matching post-action assertion exists: ${JSON.stringify(await continue4.clone().json())}`);
+    const continue4Body = await continue4.json();
+    assert.equal(continue4Body.state.status, 'complete');
+  } finally {
+    incidentStore.finalize(correlationId, 'recovered', { reason: 'test cleanup' });
+    __setClusterSnapshotProviderForTests(null);
+    fullyClearSharedPresenterState();
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test('scheduled-task evidence being present/absent never unlocks or blocks an unrelated readiness/baseline/approval/recovery gate, and vice versa', async () => {
+  fullyClearSharedPresenterState();
+  const server = app.listen(0);
+  __setClusterSnapshotProviderForTests(async () => { throw new Error('cluster unreachable in this test'); });
+
+  try {
+    const { port } = server.address();
+    const base = `http://127.0.0.1:${port}`;
+    const runCorrelationId = `RUN-SCHED-${Date.now()}`;
+
+    // No cluster snapshot is reachable, so readiness MUST fail closed --
+    // regardless of whether scheduled-task evidence happens to be fresh.
+    scheduledTaskEvidenceStore.recordExecutionEvidence({
+      taskId: 'daily-propane-health-report',
+      promptVersionHash: 'a'.repeat(64),
+      threadId: 'THREAD-unrelated',
+      timestamp: new Date().toISOString(),
+      status: 'Healthy',
+    });
+
+    const startRes = await fetch(`${base}/api/presenter/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trackId: 'fast-wow', correlationId: runCorrelationId }),
+    });
+    assert.equal(startRes.status, 400, 'readiness gate must still fail closed when the cluster is unreachable, even with fresh, unrelated scheduled-task evidence present');
+  } finally {
+    __setClusterSnapshotProviderForTests(null);
+    fullyClearSharedPresenterState();
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
 });
