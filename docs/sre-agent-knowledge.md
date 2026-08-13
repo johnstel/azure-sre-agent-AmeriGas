@@ -1,22 +1,24 @@
-# AmeriGas Propane Operations Platform — SRE Knowledge Base
+# ZavaGas Propane Operations Platform — SRE Knowledge Base
 
 ## Overview
 
-This is the AmeriGas Propane Operations Platform running on Azure Kubernetes Service (AKS). AmeriGas is the largest retail propane distributor in the United States, serving over 1.5 million residential, commercial, and industrial customers. This platform manages propane tank monitoring, inventory management, order fulfillment, and customer-facing operations.
+> ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.
+
+**Yes — ZavaGas and its retail partner sites are fictional demo entities.** This knowledge base describes a fictional propane operations platform running on Azure Kubernetes Service (AKS) for Azure SRE Agent demonstrations. It simulates propane tank monitoring, inventory management, order fulfillment, and customer-facing operations, and it does not describe a real company's size, history, customers, revenue, or service territory.
 
 **Kubernetes Namespace:** `propane`
 **Observability:** Azure Log Analytics (Container Insights), Application Insights (workspace-based), OpenTelemetry Collector (in-cluster), Azure Monitor (Prometheus), Managed Grafana
 
 ## Domain Model
 
-AmeriGas operates **two distinct propane business domains** in this platform. Every simulator, service, UI screen, operational metric, event, and breakable scenario belongs to exactly one of these domains (or is explicitly Shared infrastructure used by both). Vocabulary must never cross domains — gallons/percentage readings belong only to Bulk Tank, and full/empty/reserved counts belong only to Cylinder Exchange.
+ZavaGas operates **two distinct propane business domains** in this platform. Every simulator, service, UI screen, operational metric, event, and breakable scenario belongs to exactly one of these domains (or is explicitly Shared infrastructure used by both). Vocabulary must never cross domains — gallons/percentage readings belong only to Bulk Tank, and full/empty/reserved counts belong only to Cylinder Exchange.
 
 ### Bulk Tank Domain
 
 Residential and commercial customers who own or lease a bulk propane tank on their property, refilled by delivery truck.
 
 - **Vocabulary:** gallons, tank fill percentage, consumption rate (gal/day), estimated days until empty, refill recommendation, delivery scheduling, price per gallon, leak detection.
-- **Forecasting model:** deterministic tank profile calculations use capacity, reserve gallons, refill threshold, lead time, and weather-sensitive demand; the default values are simulated operational defaults that require AmeriGas SME validation before they are treated as production policy. Demand inputs are validated: baseDemandGalPerDay must be greater than zero, weatherSensitivity may be zero but cannot be negative or non-finite, and all values must stay finite to avoid invalid demand or date calculations.
+- **Forecasting model:** deterministic tank profile calculations use capacity, reserve gallons, refill threshold, lead time, and weather-sensitive demand; the default values are simulated operational defaults that require ZavaGas demo SME validation before they are treated as production policy. Demand inputs are validated: baseDemandGalPerDay must be greater than zero, weatherSensitivity may be zero but cannot be negative or non-finite, and all values must stay finite to avoid invalid demand or date calculations.
 - **Owning UI:** Customer Portal → **"My Bulk Tank"** section (tank gauge, days until empty, next delivery, price/gal, usage history in gallons).
 - **Owning service:** `tank-monitor` — IoT ingestion from smart sensors on customer bulk tanks (tank level %, leak detection, usage patterns). Publishes to the `tank-events` RabbitMQ queue and persists to the MongoDB `tank_readings` collection.
 - **Simulator:** `usage-simulator` — generates simulated residential/commercial bulk-tank consumption against `tank-monitor` only.
@@ -24,7 +26,7 @@ Residential and commercial customers who own or lease a bulk propane tank on the
 
 ### Cylinder Exchange Domain
 
-Retail propane cylinder exchange cages hosted at partner stores (Home Depot, Walmart, Lowe's, etc.), stocked with full/empty/reserved cylinders for walk-up exchange.
+Retail propane cylinder exchange cages hosted at fictional demo partner sites (for example, Contoso Market #104, Fabrikam Home & Garden #208, and Northwind Traders #412), stocked with full/empty/reserved cylinders for walk-up exchange.
 
 - **Vocabulary:** full/empty/reserved cylinder counts, cage capacity, cage replenishment/restock, exchange-location terminology, cylinders-in-field, daily cylinder turnover.
 - **Owning UI:** Dispatch Console → **"Retail Cage Operations Center"** (cage grid, delivery/restock priority queue, demand forecast in cylinders needed) and Customer Portal → **"Nearby Exchange Locations"** section (cage inventory dots, cylinder counts).
@@ -105,7 +107,7 @@ Telemetry Baseline ──→ OTel Collector ──→ workspace-based Applicatio
 Run `scripts/validate-telemetry.ps1`. It creates a known transaction ID, makes real calls to all three APIs, records one controlled HTTP failure and a Kubernetes event, then polls for at most five minutes. It fails on timeout, stale/no data, a missing service, or an operation-ID mismatch.
 
 ```kql
-let transactionId = "<32-lowercase-hex-id-from-validation>";
+let transactionId = "<32-char-hex-id-from-validation>";
 let cutoff = ago(5m);
 let requests = AppRequests
 | where TimeGenerated >= cutoff
@@ -122,7 +124,7 @@ requests
 ```
 
 ```kql
-let transactionId = "<32-lowercase-hex-id-from-validation>";
+let transactionId = "<32-char-hex-id-from-validation>";
 union
     (AppExceptions | project TimeGenerated, Signal="exception", OperationId, Properties),
     (AppTraces | project TimeGenerated, Signal="trace", OperationId, Properties)
@@ -283,7 +285,7 @@ kubectl delete deployment fleet-telemetry-monitor -n propane
 **Domain:** Bulk Tank
 
 **Symptoms:** `tank-monitor` continues running normally, but a simulated bulk tank safety alarm stays pending or delayed in the Dispatch Console and telemetry stream. Workload pods remain healthy while the alarm is suppressed.
-**Root cause:** The scenario creates a deterministic abnormal tank-level reading, then deliberately delays and suppresses alarm processing in `safety-compliance-monitor` to mimic a healthy-but-suppressed safety failure. The alert is explicitly labeled as simulated and requires AmeriGas safety SME validation before acting on it as production policy.
+**Root cause:** The scenario creates a deterministic abnormal tank-level reading, then deliberately delays and suppresses alarm processing in `safety-compliance-monitor` to mimic a healthy-but-suppressed safety failure. The alert is explicitly labeled as simulated and requires ZavaGas demo safety SME validation before acting on it as production policy.
 **Resolution:** Remove the scenario deployment and config, then restore the base environment:
 ```
 kubectl delete deployment safety-compliance-monitor -n propane --ignore-not-found
@@ -359,7 +361,7 @@ kubectl describe svc tank-monitor -n propane
 - **AKS cluster naming:** `aks-srelab-{suffix}`
 - **Resources deployed:** AKS, Azure Container Registry, Key Vault, Log Analytics, Application Insights, OpenTelemetry Collector (in-cluster), Azure Monitor Workspace, Managed Grafana, SRE Agent
 - **Telemetry configuration:** `propane-telemetry-config` contains only non-secret OTLP endpoint and sampling settings. `application-insights-connection` is a Kubernetes Secret containing the collector connection string.
-- **Tags on all resources:** `workload=amerigas-propane-demo`, `environment=demo`, `SecurityControl=Ignore`
+- **Tags on all resources:** `workload=zavagas-propane-demo`, `environment=demo`, `SecurityControl=Ignore`
 - **Supported regions:** East US 2, Sweden Central, Australia East
 
 ## Alert Rules
@@ -370,4 +372,4 @@ kubectl describe svc tank-monitor -n propane
 | Propane HTTP 5xx Alert | HTTP 500 errors exceed threshold |
 | Propane Pod Failure Alert | Pods in Failed state |
 | Propane CrashLoop/OOM Alert | CrashLoopBackOff or OOMKilled events detected |
-| AmeriGas Propane Demo - MongoDB Down (demo profile only) | Zero Running mongodb pods in the propane namespace — routed to a native SRE Agent response plan (custom agent `mongodb-down-responder`, Review autonomy). See `docs/sre-agent-response-plans/README.md`. |
+| ZavaGas Propane Demo - MongoDB Down (demo profile only) | Zero Running mongodb pods in the propane namespace — routed to a native SRE Agent response plan (custom agent `mongodb-down-responder`, Review autonomy). See `docs/sre-agent-response-plans/README.md`. |

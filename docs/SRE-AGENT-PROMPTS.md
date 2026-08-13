@@ -1,6 +1,6 @@
 # SRE Agent Prompt Library
 
-A comprehensive collection of prompts for Azure SRE Agent, organized by SRE discipline. Use these during AmeriGas propane demos, day-to-day operations, or to explore what SRE Agent can do.
+A comprehensive collection of prompts for Azure SRE Agent, organized by SRE discipline. Use these during ZavaGas propane demos, day-to-day operations, or to explore what SRE Agent can do.
 
 > **Tip:** Start with open-ended prompts and let SRE Agent guide the investigation. Follow up with targeted prompts to drill deeper.
 

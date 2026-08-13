@@ -1,6 +1,6 @@
 # SRE Agent & Mission Control Copilot — Prompts Guide
 
-A curated collection of prompts to use with **Azure SRE Agent** and the **Mission Control Copilot** when demoing the AmeriGas Propane SRE Lab. Organized by scenario and intent.
+A curated collection of prompts to use with **Azure SRE Agent** and the **Mission Control Copilot** when demoing the ZavaGas Propane SRE Lab. Organized by scenario and intent.
 
 > **Note**: Most diagnostic prompts work with both Azure SRE Agent (cloud) and Mission Control Copilot (local). Prompts marked with 🖥️ are Mission Control-specific; those marked with ☁️ require Azure SRE Agent's cloud observability access.
 

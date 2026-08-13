@@ -1,11 +1,12 @@
-# AmeriGas Propane — Azure SRE Agent Demo Script
+# ZavaGas Propane — Azure SRE Agent Demo Script
 
-> **Audience:** AmeriGas IT / Operations leadership
+> **Audience:** ZavaGas demo IT / Operations leadership
 > **Duration:** ~30–45 minutes (rehearsal pacing; see note below)
 > **Primary flow:** Presenter mode (Fast Wow or Deep Dive) is the default guided demo path; operator mode remains available for ad hoc exploration.
 > **Prerequisites:** Infrastructure already deployed (`deploy`), all 9 services running in the `propane` namespace
 
 > **Important:** These timings are simulated presentation budgets for a rehearsal script. They are not measured from a live `rg-srelab` environment, and no live rehearsal cluster is implied by the current repo state.
+> ZavaGas and all companies, people, locations, operational data, and incidents in this lab are fictional and used only for demonstration.
 
 ---
 
@@ -35,7 +36,7 @@ If the gate returns `blocking: true`, do not present the live demo. Stop and fix
 
 ### Talking Points
 
-> "We've built a full simulation of AmeriGas propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models **two distinct propane business domains**: residential/commercial **bulk tank** delivery accounts (gallons, tank percentage, refill scheduling) and retail **cylinder exchange** cage locations across PA and NJ (full/empty/reserved cylinder counts, cage replenishment). The customer-facing portal shows both; the dispatch console runs the Retail Cage Operations Center. A repo-owned probe observes real service responses and sends correlated OpenTelemetry to workspace-based Application Insights."
+> "We've built a full simulation of ZavaGas propane operations running on Azure Kubernetes Service. This isn't a generic demo — it models **two distinct propane business domains**: residential/commercial **bulk tank** delivery accounts (gallons, tank percentage, refill scheduling) and retail **cylinder exchange** cage locations across the fictional Zava-East, Zava-Central, and Zava-North regions (full/empty/reserved cylinder counts, cage replenishment). The customer-facing portal shows both; the dispatch console runs the Retail Cage Operations Center. A repo-owned probe observes real service responses and sends correlated OpenTelemetry to workspace-based Application Insights."
 
 > "The platform has **9 demo services** — including an OpenTelemetry Collector that exports traces, logs, and metrics into Azure Monitor — backed by MongoDB for bulk tank readings and order/delivery data, and RabbitMQ for tank alerts and dispatch events."
 
@@ -55,7 +56,7 @@ If the gate returns `blocking: true`, do not present the live demo. Stop and fix
 **Domain:** Cylinder Exchange
 
 4. Walk through the **"Nearby Exchange Locations"** section:
-   - Point out the 8 real PA/NJ retail locations: Home Depot King of Prussia, Walmart Collegeville, Lowe's Exton, ACE Hardware Lansdale, Wawa Wayne, ShopRite Norristown, Giant Pottstown, and Costco Plymouth Meeting
+   - Point out several fictional demo partner sites from the shared catalog: Contoso Market #104 (Zava-East, Route Z-12), Fabrikam Home & Garden #208 (Zava-East, Route Z-19), Adventure Works Outfitters #1142 (Zava-Central, Route Z-63), and Woodgrove Market #819 (Zava-North, Route Z-76)
    - **Cage inventory visualization** — each location shows colored cylinder dots: 🔵 blue = full, ⚪ grey = empty, 🟠 orange = reserved
    - **Stock status badges** — "In Stock" (green), "Low Stock" (yellow), "Out of Stock" (red)
 
@@ -130,7 +131,7 @@ Every scenario you break here is captured live in Mission Control's **🎯 Incid
 **Why this one:** Shows cascading failures and root cause analysis — the most impressive SRE Agent capability.
 
 **1. Set the scene:**
-> "Imagine the operations team at AmeriGas HQ notices the Retail Cage Operations Center dashboard suddenly shows stale data — cage inventory isn't updating, the delivery priority queue is frozen, and the operations log has stopped scrolling. Something is very wrong."
+> "Imagine the operations team at ZavaGas HQ notices the Retail Cage Operations Center dashboard suddenly shows stale data — cage inventory isn't updating, the delivery priority queue is frozen, and the operations log has stopped scrolling. Something is very wrong."
 
 **2. Break it** — click **"MongoDB Down"** in Mission Control, or run:
 ```bash
@@ -282,7 +283,7 @@ kubectl apply -f k8s/base/application.yaml
 **Why this one:** The strongest "application-level reasoning" scenario in the catalog — every pod stays Running/Ready, so a naive pod-status check tells you nothing. It demonstrates SLO/trace/metric correlation and root-causing a recent config change.
 
 **1. Set the scene:**
-> "An on-call engineer just pushed an emergency config change to the pricing-lookup dependency. Nothing crashed — but checkout is getting slower by the second."
+> "An on-call engineer just pushed an emergency config change to the pricing-lookup dependency. Nothing crashed — but checkout latency is climbing by the second."
 
 **2. Break it** — click **"Dependency Latency"**, or run:
 ```bash
