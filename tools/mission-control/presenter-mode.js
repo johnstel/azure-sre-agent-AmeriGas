@@ -315,7 +315,45 @@ const CLIENT_GATE_TRUTH_KEYS = new Set([
   'expired',
   'bypass',
   'skipGate',
+  'valueStatus',
+  'approval',
+  'recovery',
+  'evidence',
+  'value',
 ]);
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Issue #24 integration: the `scheduled-task` gate no longer trusts a bare
+ * `scheduledTaskAvailable` boolean (which had no way to prove it came from
+ * a real execution). It now requires the FULL structured evidence contract
+ * — exact task id, prompt version hash, thread id, timestamp, and status —
+ * as recorded by the authenticated `/api/scheduled-task/evidence` route
+ * (see server.js and scheduled-task-evidence.js) from a genuine
+ * `bootstrap-sre-agent-scheduled-task.ps1 -Action RunNow`/`-Action History`
+ * result. `evidence.available` itself already encodes server-side
+ * freshness AND excludes an `Insufficient evidence` outcome (see
+ * scheduled-task-evidence.js's STATUSES_THAT_NEVER_UNLOCK) — this function
+ * additionally re-checks every identity field is a non-empty string so a
+ * malformed/partial evidence object can never unlock the gate even if
+ * `available` were somehow set incorrectly upstream.
+ */
+function hasTrustedScheduledTaskEvidence(serverState = {}) {
+  const evidence = serverState.scheduledTaskEvidence;
+  if (!evidence || typeof evidence !== 'object') return false;
+  return Boolean(
+    evidence.available === true &&
+      isNonEmptyString(evidence.taskId) &&
+      isNonEmptyString(evidence.promptVersionHash) &&
+      isNonEmptyString(evidence.threadId) &&
+      isNonEmptyString(evidence.timestamp) &&
+      isNonEmptyString(evidence.status) &&
+      evidence.status !== 'Insufficient evidence',
+  );
+}
 
 function getIncidentForTrustContext(currentState = {}, serverState = {}) {
   const incident = serverState.activeIncident || serverState.incident || null;
@@ -545,8 +583,14 @@ function resolveTrustedPresenterGate(step, currentState = {}, serverState = {}) 
     }
     case 'incident-value':
       return { allowed: Boolean(valueObserved || serverState.valueSummaryRecorded === true || serverState.incidentValueRecorded === true), reason: valueObserved ? 'incident value summary is backed by the measured incident run' : 'incident value summary requires observed evidence' };
-    case 'scheduled-task':
-      return { allowed: Boolean(serverState.scheduledTaskAvailable === true), reason: 'Unavailable / requires scheduled-task setup' };
+    case 'scheduled-task': {
+      const trusted = hasTrustedScheduledTaskEvidence(serverState);
+      if (trusted) {
+        const evidence = serverState.scheduledTaskEvidence;
+        return { allowed: true, reason: `fresh scheduled-task execution evidence (task ${evidence.taskId}, thread ${evidence.threadId}, status ${evidence.status}) unlocked this gate` };
+      }
+      return { allowed: false, reason: 'Unavailable / requires scheduled-task setup' };
+    }
     default:
       return { allowed: true, reason: 'no additional gate logic required' };
   }
@@ -934,6 +978,7 @@ module.exports = {
   createPresenterStateMachine,
   resolveTrustedPresenterGate,
   rejectClientGeneratedGateTruth,
+  hasTrustedScheduledTaskEvidence,
   getTrackById,
   getTrackStep,
   buildPresenterRehearsal(trackId, options = {}) {

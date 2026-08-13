@@ -152,13 +152,24 @@ Show that SRE Agent can take action, not just report:
 
 Demo proactive SRE automation:
 
+**Source-controlled and scripted (recommended for this demo):** the
+`daily-propane-health-report` scheduled task — a versioned prompt, an
+idempotent bootstrap script, and a documented output contract (executive
+summary, evidence table, next actions, `Healthy`/`Degraded`/`Insufficient
+evidence`). See [docs/sre-agent-scheduled-tasks/README.md](sre-agent-scheduled-tasks/README.md)
+for setup and the 90-second presenter segment.
+
+```powershell
+.\scripts\bootstrap-sre-agent-scheduled-task.ps1 -ResourceGroupName <rg> -AgentName <agent> -AksClusterName <cluster> -Action RunNow
+```
+
 | Prompt | What It Sets Up |
 |--------|----------------|
 | "Check the health of my AKS cluster every hour and alert if anything is unhealthy" | Recurring health check |
 | "Monitor pod restarts in the propane namespace and notify me if any pod restarts more than 3 times" | Threshold-based alerting |
 | "Run a daily capacity analysis and report if any node is above 80% utilization" | Capacity monitoring |
 
-To set these up in the portal:
+To set up a DIFFERENT ad hoc task in the portal instead:
 1. Go to **Subagent builder** in your SRE Agent resource
 2. Click **Create scheduled task**
 3. Enter the prompt and set the schedule (e.g., cron: `0 * * * *` for hourly)

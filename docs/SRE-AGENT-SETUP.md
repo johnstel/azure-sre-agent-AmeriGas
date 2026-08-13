@@ -205,7 +205,16 @@ Once connected, you can interact with SRE Agent using natural language:
 
 ### Scheduled Tasks
 
-Create automated diagnosis tasks:
+This repo ships a source-controlled, idempotent scheduled task —
+`daily-propane-health-report` — instead of asking you to configure one by
+hand. See [docs/sre-agent-scheduled-tasks/README.md](sre-agent-scheduled-tasks/README.md)
+for the full setup, capability-detection notes, and validation runbook.
+
+```powershell
+.\scripts\bootstrap-sre-agent-scheduled-task.ps1 -ResourceGroupName <rg> -AgentName <agent> -AksClusterName <cluster>
+```
+
+To create a DIFFERENT ad hoc scheduled task manually instead:
 
 1. Go to **Subagent builder** in SRE Agent
 2. Click **Create scheduled task**
