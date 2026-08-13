@@ -24,7 +24,6 @@ const SCENARIO_MAP = {
   config: 'missing-config.yaml',
   mongodb: 'mongodb-down.yaml',
   service: 'service-mismatch.yaml',
-  latency: 'dependency-latency.yaml',
 };
 
 const SCENARIO_METADATA = {
@@ -112,13 +111,20 @@ const SCENARIO_METADATA = {
     narrative: 'Tank monitor Service selector drift after a "v2 upgrade"',
     relatedIds: [],
   },
-  latency: {
-    name: 'Dependency Latency',
-    domain: 'Shared',
-    impactedService: 'order-pricing-dependency',
-    narrative: 'Order checkout pricing-lookup dependency gradually slows down after an emergency timeout config change, while all pods remain Ready and error rate stays low',
-    relatedIds: [],
-  },
 };
 
-module.exports = { SCENARIO_MAP, SCENARIO_METADATA };
+const SCENARIO_CATALOG = Object.entries(SCENARIO_MAP).map(([id, manifest]) => {
+  const metadata = SCENARIO_METADATA[id] || {};
+  return {
+    id,
+    manifest,
+    title: metadata.name || id,
+    name: metadata.name || id,
+    domain: metadata.domain || 'Shared',
+    impactedService: metadata.impactedService || '',
+    narrative: metadata.narrative || '',
+    relatedIds: Array.isArray(metadata.relatedIds) ? metadata.relatedIds : [],
+  };
+});
+
+module.exports = { SCENARIO_MAP, SCENARIO_METADATA, SCENARIO_CATALOG };

@@ -327,6 +327,11 @@ const CLIENT_GATE_TRUTH_KEYS = new Set([
   'expired',
   'bypass',
   'skipGate',
+  'valueStatus',
+  'approval',
+  'recovery',
+  'evidence',
+  'value',
 ]);
 
 function isNonEmptyString(value) {

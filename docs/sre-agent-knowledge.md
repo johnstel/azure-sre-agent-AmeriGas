@@ -53,7 +53,7 @@ Services and scenarios used by both domains: `inventory-service` (Bulk Tank pric
 | Order Pricing Dependency | `order-pricing-dependency` | 4000 | Synthetic order-checkout pricing-lookup dependency hop for the dependency-latency scenario (issue #22) | Shared | Node.js |
 | Order Checkout Probe | `order-checkout-probe` | 4100 | Synthetic order-checkout traffic generator with deterministic transaction/run correlation ids (issue #22) | Shared | Node.js |
 | OTel Collector | `otel-collector` | 4317 / 4318 | OpenTelemetry Collector — receives OTLP telemetry and exports through the Azure Monitor exporter | Shared | OTel Contrib 0.158.0 |
-| Telemetry Baseline | `telemetry-baseline` | — | Repo-owned probe that observes real HTTP responses from the three service APIs and emits correlated OTLP signals | Shared | Node.js 22.14 |
+| Telemetry Baseline | `telemetry-baseline` | — | Repo-owned `telemetry-probe` client that observes real HTTP responses without impersonating the target services | Shared | Node.js 22.14 |
 | RabbitMQ | `rabbitmq` | 5672 / 15672 | Event bus for bulk tank events, order alerts, dispatch coordination | Shared | RabbitMQ 3.13 |
 | MongoDB | `mongodb` | 27017 | Stores bulk tank readings, delivery/order records, customer accounts | Shared | MongoDB 7.0 |
 
@@ -68,6 +68,7 @@ Inventory Service ──→ (standalone catalog, no DB dependency)
 Usage Simulator ──→ Tank Monitor (HTTP, generates load)
 Order Worker ──→ Order Service (disabled, 0 replicas)
 Telemetry Baseline ──→ Tank Monitor, Inventory Service, Order Service (real HTTP health requests with W3C trace context)
+Telemetry Baseline ──→ Order Pricing Dependency `/controlled-failure` (deterministic repo-owned HTTP 503)
 Telemetry Baseline ──→ OTel Collector ──→ workspace-based Application Insights (traces/metrics/logs)
 ```
 
@@ -77,8 +78,10 @@ Telemetry Baseline ──→ OTel Collector ──→ workspace-based Applicatio
 
 - The third-party service images are not represented as natively instrumented. Their `OTEL_*` environment variables alone do not prove SDK instrumentation.
 - The repo-owned `telemetry-baseline` probe makes real in-cluster HTTP calls and emits telemetry based on the actual responses and measured latency.
-- The probe propagates a W3C `traceparent` header and emits server/request plus child client/dependency spans with the same trace ID.
-- Probe resources include `service.name`, `service.namespace=propane`, `deployment.environment=demo`, `scenario.id`, `run.correlation_id`, and `transaction.id`.
+- Every probe resource is truthfully identified as `service.name=telemetry-probe`; it never attributes telemetry to tank-monitor, inventory-service, or order-service.
+- Each observed call is a CLIENT dependency span beneath an INTERNAL synthetic-transaction span owned by `telemetry-probe`. `peer.service`, `server.address`, `http.route`, and the observed HTTP status identify the real target.
+- The controlled error is the explicit repo-owned `order-pricing-dependency` `GET /controlled-failure` endpoint, which deterministically returns HTTP 503 and emits its own truthful server-side error telemetry.
+- Probe resources also include `service.namespace=propane`, `deployment.environment=demo`, `scenario.id`, `run.correlation_id`, and `transaction.id`.
 - An **OpenTelemetry Collector** (`otel-collector`) runs in-cluster receiving OTLP (gRPC:4317, HTTP:4318) and scraping Prometheus metrics from services
 - The collector's `azuremonitor` exporter sends traces, metrics, and logs to workspace-based Application Insights. A `debug` exporter is defined for opt-in diagnostics but is not enabled in baseline pipelines.
 - The connection string comes only from the `application-insights-connection` Kubernetes Secret. It is never stored in a ConfigMap.
@@ -104,23 +107,57 @@ Telemetry Baseline ──→ OTel Collector ──→ workspace-based Applicatio
 
 ### Proving Fresh Correlation
 
-Run `scripts/validate-telemetry.ps1`. It creates a known transaction ID, makes real calls to all three APIs, records one controlled HTTP failure and a Kubernetes event, then polls for at most five minutes. It fails on timeout, stale/no data, a missing service, or an operation-ID mismatch.
+Run `scripts/validate-telemetry.ps1`. It creates a known transaction ID, makes real calls to all three APIs, observes the deterministic repo-owned HTTP 503, and only then records the correlated Kubernetes event. It polls for at most five minutes and fails on timeout, stale/no data, a missing dependency target, parent/child mismatch, unexpected target-service resource attribution, or missing failure/event correlation.
 
 ```kql
 let transactionId = "<32-char-hex-id-from-validation>";
 let cutoff = ago(5m);
-let requests = AppRequests
-| where TimeGenerated >= cutoff
-| where tostring(Properties["transaction.id"]) == transactionId;
 let dependencies = AppDependencies
 | where TimeGenerated >= cutoff
 | where tostring(Properties["transaction.id"]) == transactionId;
-requests
-| project RequestTime=TimeGenerated, OperationId, RequestName=Name, RequestRole=AppRoleName
+let transactions = dependencies
+| where tostring(Properties["span.role"]) == "synthetic-transaction";
+let observedCalls = dependencies
+| where tostring(Properties["span.role"]) == "observed-http-client"
+| where tostring(Properties["http.route"]) == "/health"
+| where ResultCode == "200";
+transactions
+| project OperationId, TransactionSpanId=Id, TransactionName=Name
 | join kind=inner (
-    dependencies
-    | project DependencyTime=TimeGenerated, OperationId, DependencyName=Name, Target, DependencyRole=AppRoleName
+    observedCalls
+    | project TimeGenerated, OperationId, ParentId, Name, Target, Data,
+        PeerService=tostring(Properties["peer.service"]),
+        Route=tostring(Properties["http.route"]),
+        ResultCode
 ) on OperationId
+| where ParentId == TransactionSpanId
+| project TimeGenerated, OperationId, TransactionName, PeerService, Route, Target, Data, ResultCode
+```
+
+The only request/dependency pair required by the proof is truthful on both
+sides: the repo-owned dependency service emits the request span for its own
+controlled endpoint, while `telemetry-probe` emits the client dependency span.
+
+```kql
+let transactionId = "<32-lowercase-hex-id-from-validation>";
+let controlledRequest = AppRequests
+| where TimeGenerated >= ago(5m)
+| where tostring(Properties["transaction.id"]) == transactionId
+| where AppRoleName == "order-pricing-dependency"
+| where Name == "GET /controlled-failure" and ResultCode == "503";
+let controlledDependency = AppDependencies
+| where TimeGenerated >= ago(5m)
+| where tostring(Properties["transaction.id"]) == transactionId
+| where AppRoleName == "telemetry-probe"
+| where tostring(Properties["peer.service"]) == "order-pricing-dependency"
+| where tostring(Properties["http.route"]) == "/controlled-failure";
+controlledRequest
+| project OperationId, RequestParentId=ParentId, RequestTime=TimeGenerated, RequestName=Name, RequestRole=AppRoleName
+| join kind=inner (
+    controlledDependency
+    | project OperationId, DependencySpanId=Id, DependencyTime=TimeGenerated, DependencyName=Name, Target, Data
+) on OperationId
+| where RequestParentId == DependencySpanId
 ```
 
 ```kql

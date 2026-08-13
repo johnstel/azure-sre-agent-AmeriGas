@@ -92,7 +92,7 @@ function loadOrderDependencyLatencyRuntime() {
 
   vm.createContext(context);
   vm.runInContext(
-    `${runtimeSource}; this.__orderDependencyLatency = { latency: ORDER_DEPENDENCY_LATENCY, renderOrderDependencyLatency, startOrderDependencyLatencyIncident, advanceOrderDependencyLatencyRamp, recoverOrderDependencyLatency };`,
+    `${runtimeSource}; this.__orderDependencyLatency = { latency: ORDER_DEPENDENCY_LATENCY, renderOrderDependencyLatency, startOrderDependencyLatencyIncident, advanceOrderDependencyLatencyRamp, recoverOrderDependencyLatency, sanitizeOrderDependencyLatencyStatus, applyOrderDependencyLatencyStatus, fetchOrderDependencyLatencyStatus, ORDER_DEPENDENCY_LATENCY_POLL_INTERVAL_MS, ORDER_DEPENDENCY_LATENCY_STALE_AFTER_MS };`,
     context,
   );
 
@@ -254,4 +254,59 @@ test('the otel-collector Prometheus receiver scrapes both new services for laten
   const manifestText = readManifest();
   assert.match(manifestText, /order-pricing-dependency\.propane\.svc\.cluster\.local:4000/);
   assert.match(manifestText, /order-checkout-probe\.propane\.svc\.cluster\.local:4100/);
+});
+
+test('the dispatch console only polls the exact readonly latency-status route and rejects malformed live payloads', () => {
+  const manifestText = readManifest();
+  assert.match(manifestText, /location = \/api\/orders\/latency-status \{/);
+  assert.match(manifestText, /limit_except GET \{/);
+  assert.match(manifestText, /proxy_pass http:\/\/order-checkout-probe\.propane\.svc\.cluster\.local:4100\/status;/);
+  assert.match(manifestText, /location \/api\/ \{\n\s*return 404;/);
+  assert.doesNotMatch(manifestText, /location\s*=\s*\/api\/orders\/\$\{.*\}/);
+
+  const runtime = loadOrderDependencyLatencyRuntime();
+  const valid = runtime.sanitizeOrderDependencyLatencyStatus({
+    mode: 'ramp',
+    p50Ms: 125,
+    p95Ms: 640,
+    p99Ms: 820,
+    errorRatePct: 1.4,
+    readiness: 0.91,
+    runId: 'run-ok-1',
+    configVersion: 'incident-v3',
+    configChangeReason: 'live status is actively ramping',
+    configChangedBy: 'platform-live',
+    lastUpdatedAt: new Date().toISOString(),
+  });
+  assert.ok(valid, 'valid live payloads must pass sanitization');
+  assert.equal(valid.mode, 'ramp');
+
+  const malformed = runtime.sanitizeOrderDependencyLatencyStatus({
+    mode: 'bogus',
+    p50Ms: 100,
+    p95Ms: 50,
+    p99Ms: 10,
+    errorRatePct: 101,
+    readiness: 2,
+    runId: '',
+    configVersion: '',
+    lastUpdatedAt: 'not-a-date',
+  });
+  assert.equal(malformed, null, 'malformed or out-of-range status must be rejected');
+
+  const stale = runtime.applyOrderDependencyLatencyStatus({
+    mode: 'baseline',
+    p50Ms: 45,
+    p95Ms: 58,
+    p99Ms: 72,
+    errorRatePct: 0.2,
+    readiness: 1,
+    runId: 'stale-run',
+    configVersion: 'baseline-v1',
+    configChangeReason: 'stale baseline',
+    configChangedBy: 'platform-live',
+    lastUpdatedAt: new Date(Date.now() - 60000).toISOString(),
+  });
+  assert.equal(stale, true);
+  assert.equal(runtime.latency.status, 'stale');
 });

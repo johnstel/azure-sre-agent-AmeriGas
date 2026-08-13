@@ -105,7 +105,7 @@ BeforeAll {
 
 Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
     Context "GET request against the scheduled-task path" {
-        It "sends 'Authorization: ******' and 'Accept: application/json', and never leaks the token" {
+        It "sends the exact Bearer-scheme Authorization header with the real token and Accept: application/json, and never leaks the raw token in host/verbose/error output" {
             $testToken = 'exec-test-token-' + [guid]::NewGuid().ToString('N')
             $bound = Get-EphemeralLoopbackListener
             $listener = $bound.Listener
@@ -139,7 +139,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
 
                 $receivedMethod | Should -Be 'GET'
                 $receivedUrl | Should -Be '/api/v2/extendedAgent/scheduledtasks/daily-propane-health-report'
-                $receivedAuthHeader | Should -Be "******"
+                $receivedAuthHeader | Should -Be ("Bearer " + $testToken)
                 $receivedAcceptHeader | Should -Match 'application/json'
 
                 $functionResult.StatusCode | Should -Be 200
@@ -196,7 +196,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
                 Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 
                 $receivedMethod | Should -Be 'PUT'
-                $receivedAuthHeader | Should -Be "******"
+                $receivedAuthHeader | Should -Be ("Bearer " + $testToken)
                 $receivedContentType | Should -Match '^application/json'
                 $bodyText | Should -Match ([regex]::Escape("daily-propane-health-report-$uniqueMarker"))
 
@@ -258,7 +258,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
                 Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 
                 $receivedMethod | Should -Be 'PATCH'
-                $receivedAuthHeader | Should -Be "******"
+                $receivedAuthHeader | Should -Be ("Bearer " + $testToken)
                 if ($rawBodyBytes.Length -ge 3) {
                     $hasBom = ($rawBodyBytes[0] -eq 0xEF) -and ($rawBodyBytes[1] -eq 0xBB) -and ($rawBodyBytes[2] -eq 0xBF)
                     $hasBom | Should -Be $false
@@ -277,7 +277,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
     }
 
     Context "POST request with no body (RunNow candidate trigger)" {
-        It "sends 'Authorization: ******' and 'Accept: application/json' with no body" {
+        It "sends the exact Bearer-scheme Authorization header with the real token and Accept: application/json, with no body" {
             $testToken = 'exec-test-token-' + [guid]::NewGuid().ToString('N')
             $bound = Get-EphemeralLoopbackListener
             $listener = $bound.Listener
@@ -309,7 +309,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
                 Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 
                 $receivedMethod | Should -Be 'POST'
-                $receivedAuthHeader | Should -Be "******"
+                $receivedAuthHeader | Should -Be ("Bearer " + $testToken)
                 $receivedHasBody | Should -Be $false
 
                 $functionResult.StatusCode | Should -Be 202
@@ -326,7 +326,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
     }
 
     Context "DELETE request" {
-        It "sends 'Authorization: ******' with no body" {
+        It "sends the exact Bearer-scheme Authorization header with the real token, with no body" {
             $testToken = 'exec-test-token-' + [guid]::NewGuid().ToString('N')
             $bound = Get-EphemeralLoopbackListener
             $listener = $bound.Listener
@@ -355,7 +355,7 @@ Describe "Invoke-DataPlaneRequest — real HTTP execution (no mocking)" {
                 Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 
                 $receivedMethod | Should -Be 'DELETE'
-                $receivedAuthHeader | Should -Be "******"
+                $receivedAuthHeader | Should -Be ("Bearer " + $testToken)
                 $receivedHasBody | Should -Be $false
 
                 $functionResult.StatusCode | Should -Be 204

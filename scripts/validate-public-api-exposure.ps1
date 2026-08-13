@@ -34,10 +34,15 @@ foreach ($name in $targetNames) {
     $requiredRoutes = @(
         @{ Path = '/api/inventory/health'; Proxy = 'http://inventory-service.propane.svc.cluster.local:3002/health' },
         @{ Path = '/api/tanks/health'; Proxy = 'http://tank-monitor.propane.svc.cluster.local:3000/health' },
-        @{ Path = '/api/orders/health'; Proxy = 'http://order-service.propane.svc.cluster.local:3001/health' }
+        @{ Path = '/api/orders/health'; Proxy = 'http://order-service.propane.svc.cluster.local:3001/health' },
+        @{ Path = '/api/orders/latency-status'; Proxy = 'http://order-checkout-probe.propane.svc.cluster.local:4100/status'; IsDispatchOnly = $true }
     )
 
     foreach ($route in $requiredRoutes) {
+        if ($route.IsDispatchOnly -and $name -ne 'dispatch-console-nginx') {
+            continue
+        }
+
         $locationText = "location = $($route.Path) {"
         if (-not $block.Contains($locationText)) {
             $failures.Add("$name is missing required route: $locationText")
@@ -61,6 +66,21 @@ foreach ($name in $targetNames) {
                 $failures.Add("$name is missing required policy in $($route.Path): $required")
             }
         }
+
+        if ($route.Path -like '/api/orders/latency-status') {
+            foreach ($forbidden in @(
+                'if ($request_method',
+                'if ($request_method !~',
+                'if ($request_method !=',
+                'proxy_pass http://order-checkout-probe.propane.svc.cluster.local:4100/;',
+                'proxy_pass http://order-checkout-probe.propane.svc.cluster.local:4100/\$uri;',
+                'proxy_pass http://order-checkout-probe.propane.svc.cluster.local:4100;'
+            )) {
+                if ($routeBlock.Contains($forbidden)) {
+                    $failures.Add("$name has a method or target bypass in the latency-status route: $forbidden")
+                }
+            }
+        }
     }
 
     if (-not ($block -match '(?m)location\s*/health\s*\{')) {
@@ -79,7 +99,7 @@ foreach ($name in $targetNames) {
         $failures.Add("$name is missing the /api/ 404 guard")
     }
 
-    $broadRoutePattern = '(?im)location\s+(?:=|\^~|~\*?|~)?\s*(?:\^)?/api/(?:inventory|tanks|orders)/(?!health\b)'
+    $broadRoutePattern = '(?im)location\s+(?:=|\^~|~\*?|~)?\s*(?:\^)?/api/(?:inventory|tanks|orders)/(?!health\b)(?!latency-status\b)'
     if ($block -match $broadRoutePattern) {
         $failures.Add("$name still contains a broad /api/<service>/ route that bypasses the exact health-only policy")
     }
@@ -92,6 +112,11 @@ foreach ($name in $targetNames) {
         if ($block.Contains($proxy)) {
             $failures.Add("$name still proxies the broad $($proxy.Split(':')[-1]) backend without the health-only route restriction")
         }
+    }
+
+    $methodBypassPattern = '(?im)if\s*\(\s*\$request_method\s*(?:!~|!=|==)\s*[''\"]?GET[''\"]?\s*\)'
+    if ($block -match $methodBypassPattern) {
+        $failures.Add("$name still uses a request-method bypass that would allow non-GET access to the exact public API route")
     }
 }
 

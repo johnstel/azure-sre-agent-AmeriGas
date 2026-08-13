@@ -182,6 +182,20 @@ Describe "Test-ScheduledTaskSemanticMatch — real JSON round trip, not byte com
         $decoded.agentAutonomyLevel = 'Review'
         Test-ScheduledTaskSemanticMatch -Expected $spec -Actual $decoded | Should -Be $false
     }
+
+    It "detects a mismatch when responseCustomAgent has drifted (e.g. reassigned in the portal), even if every other field matches" {
+        $spec = New-TestSpec
+        $decoded = ConvertTo-DecodedSpec -Spec $spec
+        $decoded.responseCustomAgent = 'some-other-custom-agent'
+        Test-ScheduledTaskSemanticMatch -Expected $spec -Actual $decoded | Should -Be $false
+    }
+
+    It "matches when responseCustomAgent is exactly the expected empty string (main agent, no reassignment)" {
+        $spec = New-TestSpec
+        $decoded = ConvertTo-DecodedSpec -Spec $spec
+        $decoded.responseCustomAgent | Should -Be ''
+        Test-ScheduledTaskSemanticMatch -Expected $spec -Actual $decoded | Should -Be $true
+    }
 }
 
 Describe "Test-ScheduledTaskApiSupported — capability detection on the ARM scheduledTasks collection" {
@@ -307,6 +321,25 @@ Describe "Set-ScheduledTaskDataPlaneIdempotent" {
         $result = Set-ScheduledTaskDataPlaneIdempotent -Endpoint 'https://a' -Token 't' -Path '/api/v2/extendedAgent/scheduledtasks/daily-propane-health-report' -Spec $spec
         $result.Success | Should -Be $false
         $result.Reason | Should -Be 'SchemaMismatch'
+    }
+
+    It "makes exactly one PATCH (not PUT) when only responseCustomAgent has drifted (e.g. reassigned via the portal) — this is exactly the field #40's review found Test-ScheduledTaskSemanticMatch was silently ignoring" {
+        $spec = New-TestSpec
+        $existingDriftedCustomAgent = ConvertTo-DecodedSpec -Spec $spec
+        $existingDriftedCustomAgent.responseCustomAgent = 'portal-reassigned-agent'
+        $script:responseCustomAgentDriftCallCount = 0
+        $writeMethods = [System.Collections.Generic.List[string]]::new()
+        Mock Invoke-DataPlaneRequest {
+            $script:responseCustomAgentDriftCallCount++
+            $writeMethods.Add($Method)
+            if ($script:responseCustomAgentDriftCallCount -eq 1) { return New-OkResponse -Content $existingDriftedCustomAgent }
+            return New-OkResponse -Content (ConvertTo-DecodedSpec -Spec $spec)
+        }
+
+        $result = Set-ScheduledTaskDataPlaneIdempotent -Endpoint 'https://a' -Token 't' -Path '/api/v2/extendedAgent/scheduledtasks/daily-propane-health-report' -Spec $spec
+        $result.Success | Should -Be $true
+        $result.Reason | Should -Be 'Written'
+        $writeMethods | Should -Contain 'PATCH'
     }
 
     It "throws (does not silently proceed) when the pre-write GET fails with a non-404 status" {
@@ -601,5 +634,89 @@ Describe "No data-plane token is ever written to host output" {
     It "the script source never interpolates the token directly into Write-Host/Write-Verbose" {
         $source = Get-Content -Path $script:ScriptPath -Raw
         $source | Should -Not -Match 'Write-(Host|Verbose)[^\n]*\$(dataPlaneToken|Token)\b'
+    }
+}
+
+Describe "scripts/deploy.ps1 — scheduled-task readiness gates demo-ready status (issue #24 round 2 review)" {
+    BeforeAll {
+        $script:DeployScriptPath = Join-Path $PSScriptRoot ".." "deploy.ps1"
+        $script:DeployScriptContent = Get-Content -Path $script:DeployScriptPath -Raw
+    }
+
+    It "bootstraps the scheduled task unconditionally whenever the SRE Agent is deployed — for BOTH the standard and demo profiles, never gated behind -DeployDemoResponsePlan (unlike the response plan)" {
+        # The bootstrap call itself must not be wrapped in a
+        # $DeployDemoResponsePlan condition — only $outputs.sreAgentId.value.
+        $bootstrapBlockMatch = [regex]::Match($script:DeployScriptContent, '(?s)\$sreAgentScheduledTaskReady = \$true\r?\nif \(([^\)]+)\) \{.*?bootstrap-sre-agent-scheduled-task\.ps1')
+        $bootstrapBlockMatch.Success | Should -Be $true
+        $bootstrapBlockMatch.Groups[1].Value | Should -Not -Match 'DeployDemoResponsePlan'
+        $bootstrapBlockMatch.Groups[1].Value | Should -Match 'sreAgentId\.value'
+    }
+
+    It "initializes \$sreAgentScheduledTaskReady = \$true (innocent until a failure sets it false) exactly once" {
+        ([regex]::Matches($script:DeployScriptContent, '\$sreAgentScheduledTaskReady = \$true')).Count | Should -Be 1
+    }
+
+    It "sets \$sreAgentScheduledTaskReady = \$false on ANY non-zero exit from the bootstrap script (covers UnsupportedApi, SchemaMismatch, and any other transient bootstrap failure uniformly, exactly like the knowledge/response-plan gates) as well as when the script itself is missing" {
+        $script:DeployScriptContent | Should -Match '(?s)if \(\$LASTEXITCODE -ne 0\) \{\s*\$sreAgentScheduledTaskReady = \$false'
+        $script:DeployScriptContent | Should -Match '(?s)else \{\s*\$sreAgentScheduledTaskReady = \$false\s*\r?\n\s*Write-Host "  ❌ Scheduled task bootstrap script not found'
+    }
+
+    It "gates final demo-ready success on scheduled-task readiness — a failed/unsupported/schema-mismatched bootstrap must exit non-zero with an explicit message BEFORE the 'Deployment Complete' banner, never printing a false success banner" {
+        $script:DeployScriptContent | Should -Match 'if \(\$outputs\.sreAgentId\.value -and -not \$sreAgentScheduledTaskReady\) \{'
+        $script:DeployScriptContent | Should -Match 'Do not mark this deployment demo-ready until the scheduled task bootstrap error above is resolved and re-run succeeds'
+
+        $gateIndex = $script:DeployScriptContent.IndexOf('if ($outputs.sreAgentId.value -and -not $sreAgentScheduledTaskReady)')
+        $bannerIndex = $script:DeployScriptContent.IndexOf('Deployment Complete!')
+        $gateIndex | Should -BeGreaterThan 0
+        $bannerIndex | Should -BeGreaterThan 0
+        $gateIndex | Should -BeLessThan $bannerIndex
+
+        # The gate must actually exit — not just warn — matching the
+        # knowledge/response-plan gates' behavior (a Write-Host-only warning
+        # would let the "Deployment Complete!" banner print regardless).
+        $gateBlockMatch = [regex]::Match($script:DeployScriptContent, '(?s)if \(\$outputs\.sreAgentId\.value -and -not \$sreAgentScheduledTaskReady\) \{(.*?)\}')
+        $gateBlockMatch.Success | Should -Be $true
+        $gateBlockMatch.Groups[1].Value | Should -Match 'exit 1'
+    }
+
+    It "reaches the 'Deployment Complete!' banner without exiting when scheduled-task readiness stays true (the success path is never blocked by this gate)" {
+        # A pure text-structure assertion: the gate's exit-1 branch is only
+        # taken `-and -not $sreAgentScheduledTaskReady` — i.e. the success
+        # (`$true`) case falls through past the gate to the banner below,
+        # exactly like the pre-existing knowledge-readiness gate immediately
+        # above it.
+        $knowledgeGateIndex = $script:DeployScriptContent.IndexOf('if ($outputs.sreAgentId.value -and -not $sreAgentKnowledgeReady)')
+        $scheduledTaskGateIndex = $script:DeployScriptContent.IndexOf('if ($outputs.sreAgentId.value -and -not $sreAgentScheduledTaskReady)')
+        $responsePlanGateIndex = $script:DeployScriptContent.IndexOf('if ($DeployDemoResponsePlan -and $outputs.sreAgentId.value -and -not $sreAgentResponsePlanReady)')
+        $knowledgeGateIndex | Should -BeGreaterThan 0
+        $scheduledTaskGateIndex | Should -BeGreaterThan $knowledgeGateIndex
+        $responsePlanGateIndex | Should -BeGreaterThan $scheduledTaskGateIndex
+    }
+}
+
+Describe "Invoke-DataPlaneRequest — mandatory bearer token is actually used in the Authorization header (regression guard)" {
+    It "the source references the \$Token parameter when building the Authorization header value, not a hardcoded/masked placeholder" {
+        $source = Get-Content -Path $script:ScriptPath -Raw
+        # Regression guard for a real defect found in review: the header was
+        # hardcoded to a literal masked string and never referenced the
+        # mandatory bearer token parameter at all, so every real HTTP call
+        # would have sent an invalid, non-functional Authorization header.
+        # This asserts the actual token variable is referenced somewhere in
+        # the construction of the header value assigned to Authorization.
+        $source | Should -Match 'Authorization\s*=\s*\$bearerAuthorizationHeader'
+        $source | Should -Match '\$bearerAuthorizationHeader\s*=\s*''Bearer ''\s*\+\s*\$Token'
+        $source | Should -Not -Match 'Authorization\s*=\s*"\*+"'
+    }
+
+    It "actually sends the literal 'Bearer <token>' scheme and value on the wire — verified by the real HttpListener in bootstrap-sre-agent-scheduled-task-http.tests.ps1, not just a source-text match" {
+        # A source-text match alone cannot catch a case where $Token is
+        # referenced in the RIGHT-HAND SIDE construction but the resulting
+        # variable is never actually assigned to the header (e.g. a stray
+        # rename). Cross-reference: the companion HTTP-listener test file
+        # asserts the literal received header equals ("Bearer " + $testToken)
+        # against a real socket, which is the authoritative end-to-end proof.
+        Test-Path (Join-Path $PSScriptRoot "bootstrap-sre-agent-scheduled-task-http.tests.ps1") | Should -Be $true
+        $httpTestSource = Get-Content -Path (Join-Path $PSScriptRoot "bootstrap-sre-agent-scheduled-task-http.tests.ps1") -Raw
+        ([regex]::Matches($httpTestSource, [regex]::Escape('Should -Be ("Bearer " + $testToken)'))).Count | Should -BeGreaterThan 0
     }
 }

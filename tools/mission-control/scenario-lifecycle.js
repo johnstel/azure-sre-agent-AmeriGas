@@ -17,6 +17,27 @@ const UNRESOLVED_LIFECYCLE_PHASES = new Set([
   'apply-failed',
   'activation-timeout',
 ]);
+const ALLOWED_RESET_KINDS = new Set(['Deployment', 'Service', 'ConfigMap', 'NetworkPolicy']);
+const FORBIDDEN_CLUSTER_SCOPED_KINDS = new Set([
+  'Namespace',
+  'ClusterRole',
+  'ClusterRoleBinding',
+  'CustomResourceDefinition',
+  'PriorityClass',
+  'Node',
+  'PersistentVolume',
+  'StorageClass',
+  'VolumeAttachment',
+  'APIService',
+  'MutatingWebhookConfiguration',
+  'ValidatingWebhookConfiguration',
+  'PodSecurityPolicy',
+  'IngressClass',
+  'RuntimeClass',
+  'Role',
+  'RoleBinding',
+  'ServiceAccount',
+]);
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -113,6 +134,82 @@ function manifestIdForFile(fileName) {
   return aliasMap[name] || name;
 }
 
+function normalizeResourceKind(kind) {
+  if (!kind || typeof kind !== 'string') {
+    return '';
+  }
+
+  const direct = kind.trim();
+  const lowered = direct.toLowerCase();
+  const aliasMap = {
+    deployment: 'Deployment',
+    service: 'Service',
+    configmap: 'ConfigMap',
+    config_map: 'ConfigMap',
+    networkpolicy: 'NetworkPolicy',
+    network_policy: 'NetworkPolicy',
+  };
+
+  return aliasMap[lowered] || direct;
+}
+
+function isSafeResourceName(value) {
+  if (!value || typeof value !== 'string') {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 253) {
+    return false;
+  }
+
+  return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.test(trimmed);
+}
+
+function normalizeLifecycleNamespace(namespace, context = 'operation') {
+  const raw = namespace == null || String(namespace).trim() === '' ? DEFAULT_NAMESPACE : String(namespace).trim();
+  if (!raw) {
+    return DEFAULT_NAMESPACE;
+  }
+
+  if (!isSafeResourceName(raw)) {
+    throw new Error(`${context} declares invalid namespace ${raw}.`);
+  }
+
+  if (raw !== DEFAULT_NAMESPACE) {
+    throw new Error(`${context} namespace must be exactly "${DEFAULT_NAMESPACE}". Received "${raw}".`);
+  }
+
+  return DEFAULT_NAMESPACE;
+}
+
+function validateOwnedResource(resource, scenarioId, manifestPath) {
+  const rawKind = resource && resource.kind ? String(resource.kind) : '';
+  const kind = normalizeResourceKind(rawKind);
+
+  if (!kind) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} has a resource without a kind.`);
+  }
+
+  if (FORBIDDEN_CLUSTER_SCOPED_KINDS.has(kind)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares forbidden reset kind ${kind}.`);
+  }
+
+  if (!ALLOWED_RESET_KINDS.has(kind)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares unsupported reset kind ${kind}.`);
+  }
+
+  const metadataName = resource && resource.metadata && resource.metadata.name ? String(resource.metadata.name) : '';
+  if (!isSafeResourceName(metadataName)) {
+    throw new Error(`Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} declares invalid resource name ${metadataName || '<empty>'} for kind ${kind}.`);
+  }
+
+  const explicitNamespace = resource && resource.metadata && typeof resource.metadata.namespace !== 'undefined' ? String(resource.metadata.namespace).trim() : '';
+  const namespace = normalizeLifecycleNamespace(explicitNamespace || DEFAULT_NAMESPACE, `Scenario ${scenarioId || 'unknown'} in ${manifestPath || 'manifest'} for kind ${kind}`);
+
+  return { kind, name: metadataName, namespace };
+}
+
 function readClusterJson(runner, args) {
   if (runner && typeof runner.readJson === 'function') {
     return Promise.resolve(runner.readJson(args));
@@ -146,19 +243,20 @@ function isUnresolvedLifecycleState(state = {}) {
 }
 
 async function collectClusterSnapshot(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Cluster snapshot');
   const args = [
-    ['get', 'pods', '-n', namespace, '-o', 'json'],
-    ['get', 'deployments', '-n', namespace, '-o', 'json'],
-    ['get', 'svc', '-n', namespace, '-o', 'json'],
-    ['get', 'endpoints', '-n', namespace, '-o', 'json'],
-    ['get', 'networkpolicy', '-n', namespace, '-o', 'json'],
-    ['get', 'configmaps', '-n', namespace, '-o', 'json'],
+    ['get', 'pods', '-n', lifecycleNamespace, '-o', 'json'],
+    ['get', 'deployments', '-n', lifecycleNamespace, '-o', 'json'],
+    ['get', 'svc', '-n', lifecycleNamespace, '-o', 'json'],
+    ['get', 'endpoints', '-n', lifecycleNamespace, '-o', 'json'],
+    ['get', 'networkpolicy', '-n', lifecycleNamespace, '-o', 'json'],
+    ['get', 'configmaps', '-n', lifecycleNamespace, '-o', 'json'],
   ];
 
   const results = await Promise.all(args.map((cmd) => readClusterJson(runner, cmd)));
   return {
     repoRoot,
-    namespace,
+    namespace: lifecycleNamespace,
     pods: results[0] && results[0].items ? results[0].items : [],
     deployments: results[1] && results[1].items ? results[1].items : [],
     services: results[2] && results[2].items ? results[2].items : [],
@@ -424,13 +522,14 @@ function buildOwnerToken() {
 }
 
 function readLifecycleState(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Lifecycle state read');
   const statePath = path.join(repoRoot, '.data', 'scenario-lifecycle-state.json');
-  if (runner && typeof runner.readState === 'function') return Promise.resolve(runner.readState(namespace));
-  if (runner && typeof runner.readLifecycleState === 'function') return Promise.resolve(runner.readLifecycleState(namespace));
+  if (runner && typeof runner.readState === 'function') return Promise.resolve(runner.readState(lifecycleNamespace));
+  if (runner && typeof runner.readLifecycleState === 'function') return Promise.resolve(runner.readLifecycleState(lifecycleNamespace));
 
   return (async () => {
     try {
-      const configMap = await readConfigMapValue(runner, STATE_CONFIGMAP_NAME, namespace);
+      const configMap = await readConfigMapValue(runner, STATE_CONFIGMAP_NAME, lifecycleNamespace);
       if (configMap && typeof configMap === 'object' && configMap.component) {
         return configMap;
       }
@@ -448,20 +547,21 @@ function readLifecycleState(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
 }
 
 function writeLifecycleState(repoRoot, runner, state, namespace = DEFAULT_NAMESPACE) {
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Lifecycle state write');
   const statePath = path.join(repoRoot, '.data', 'scenario-lifecycle-state.json');
   if (runner && typeof runner.writeState === 'function') {
-    return Promise.resolve(runner.writeState(namespace, state));
+    return Promise.resolve(runner.writeState(lifecycleNamespace, state));
   }
   if (runner && typeof runner.writeLifecycleState === 'function') {
-    return Promise.resolve(runner.writeLifecycleState(namespace, state));
+    return Promise.resolve(runner.writeLifecycleState(lifecycleNamespace, state));
   }
 
   return (async () => {
     try {
-      const result = await writeConfigMapValue(runner, STATE_CONFIGMAP_NAME, namespace, {
+      const result = await writeConfigMapValue(runner, STATE_CONFIGMAP_NAME, lifecycleNamespace, {
         ...state,
         updatedAt: nowIso(),
-        namespace,
+        namespace: lifecycleNamespace,
       });
       if (result && result.ok) {
         return result.state || { ...state, namespace, updatedAt: nowIso() };
@@ -483,13 +583,14 @@ function writeLifecycleState(repoRoot, runner, state, namespace = DEFAULT_NAMESP
 }
 
 function readLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Lifecycle lock read');
   const lockPath = path.join(repoRoot, '.data', 'scenario-lifecycle-lock.json');
-  if (runner && typeof runner.readLock === 'function') return Promise.resolve(runner.readLock(namespace));
-  if (runner && typeof runner.readLifecycleLock === 'function') return Promise.resolve(runner.readLifecycleLock(namespace));
+  if (runner && typeof runner.readLock === 'function') return Promise.resolve(runner.readLock(lifecycleNamespace));
+  if (runner && typeof runner.readLifecycleLock === 'function') return Promise.resolve(runner.readLifecycleLock(lifecycleNamespace));
 
   return (async () => {
     try {
-      const lock = await readConfigMapValue(runner, LOCK_CONFIGMAP_NAME, namespace);
+      const lock = await readConfigMapValue(runner, LOCK_CONFIGMAP_NAME, lifecycleNamespace);
       if (lock && typeof lock === 'object' && ('locked' in lock || 'scenarioId' in lock || 'ownerToken' in lock)) {
         return lock;
       }
@@ -507,23 +608,24 @@ function readLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE) {
 }
 
 function writeLifecycleLock(repoRoot, runner, state, namespace = DEFAULT_NAMESPACE, options = {}) {
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Lifecycle lock write');
   const lockPath = path.join(repoRoot, '.data', 'scenario-lifecycle-lock.json');
   if (runner && typeof runner.writeLock === 'function') {
-    return Promise.resolve(runner.writeLock(namespace, state));
+    return Promise.resolve(runner.writeLock(lifecycleNamespace, state));
   }
   if (runner && typeof runner.writeLifecycleLock === 'function') {
-    return Promise.resolve(runner.writeLifecycleLock(namespace, state));
+    return Promise.resolve(runner.writeLifecycleLock(lifecycleNamespace, state));
   }
 
   return (async () => {
     const lockState = {
       ...state,
-      namespace,
+      namespace: lifecycleNamespace,
       updatedAt: nowIso(),
     };
 
     try {
-      const result = await writeConfigMapValue(runner, LOCK_CONFIGMAP_NAME, namespace, lockState, {
+      const result = await writeConfigMapValue(runner, LOCK_CONFIGMAP_NAME, lifecycleNamespace, lockState, {
         expectedResourceVersion: options.expectedResourceVersion || null,
       });
       if (result && result.ok) {
@@ -546,7 +648,8 @@ function writeLifecycleLock(repoRoot, runner, state, namespace = DEFAULT_NAMESPA
 }
 
 async function releaseLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE, options = {}) {
-  const current = await readLifecycleLock(repoRoot, runner, namespace);
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Lifecycle lock release');
+  const current = await readLifecycleLock(repoRoot, runner, lifecycleNamespace);
   const ownerToken = options.ownerToken || current && current.ownerToken;
   const resourceVersion = options.resourceVersion || current && current.resourceVersion;
 
@@ -576,7 +679,7 @@ async function releaseLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESP
 
   const releasedState = {
     locked: false,
-    namespace,
+    namespace: lifecycleNamespace,
     scenarioId: current.scenarioId || null,
     ownerToken: null,
     runId: current.runId || null,
@@ -588,7 +691,7 @@ async function releaseLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESP
 
   let written;
   try {
-    written = await writeLifecycleLock(repoRoot, runner, releasedState, namespace, {
+    written = await writeLifecycleLock(repoRoot, runner, releasedState, lifecycleNamespace, {
       expectedResourceVersion: current.resourceVersion || null,
     });
   } catch (error) {
@@ -604,7 +707,8 @@ async function releaseLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESP
 }
 
 async function acquireLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESPACE, scenarioId = null, { allowStacking = false, ownerToken = null, ttlMs = LOCK_TTL_MS } = {}) {
-  const current = await readLifecycleLock(repoRoot, runner, namespace);
+  const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Lifecycle lock acquisition');
+  const current = await readLifecycleLock(repoRoot, runner, lifecycleNamespace);
   const runId = `scenario-${scenarioId || 'reset'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const freshOwnerToken = ownerToken || buildOwnerToken();
   const expired = current && isLockExpired(current, Date.now());
@@ -626,7 +730,7 @@ async function acquireLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESP
 
   const lockState = {
     locked: true,
-    namespace,
+    namespace: lifecycleNamespace,
     scenarioId,
     allowStacking,
     runId,
@@ -639,7 +743,7 @@ async function acquireLifecycleLock(repoRoot, runner, namespace = DEFAULT_NAMESP
 
   let writeResult;
   try {
-    writeResult = await writeLifecycleLock(repoRoot, runner, lockState, namespace, {
+    writeResult = await writeLifecycleLock(repoRoot, runner, lockState, lifecycleNamespace, {
       expectedResourceVersion: current && current.resourceVersion ? current.resourceVersion : null,
     });
   } catch (error) {
@@ -685,21 +789,39 @@ function inventoryScenarioResources(repoRoot) {
     const resources = yamlDocs.map((part) => {
       const kindMatch = part.match(/^kind:\s*(.+)$/m);
       const nameMatch = part.match(/(?:^|\n)metadata:\s*\n(?:.*\n)*?\s*name:\s*(.+)$/m);
+      const namespaceMatch = part.match(/(?:^|\n)metadata:\s*\n(?:.*\n)*?\s*namespace:\s*(.+)$/m);
       const labelsMatch = part.match(/(?:^|\n)metadata:\s*\n(?:.*\n)*?\s*labels:\s*\n((?:\s{2,}.*\n)+)/m);
       return {
         kind: kindMatch ? kindMatch[1].trim() : null,
         name: nameMatch ? nameMatch[1].trim() : null,
+        namespace: namespaceMatch ? namespaceMatch[1].trim() : undefined,
         labels: labelsMatch ? labelsMatch[1].trim() : null,
       };
     }).filter((resource) => resource.kind && resource.name);
 
     const scenarioId = manifestIdForFile(file);
+    const normalizedResources = resources.map((resource) => {
+      const validated = validateOwnedResource({
+        kind: resource.kind,
+        metadata: {
+          name: resource.name,
+          namespace: resource.namespace,
+        },
+      }, scenarioId, filePath);
+      return {
+        ...resource,
+        kind: validated.kind,
+        name: validated.name,
+        namespace: validated.namespace,
+      };
+    });
+
     return {
       scenarioId,
       file,
       filePath,
       manifestHash,
-      resources,
+      resources: normalizedResources,
       metadata: SCENARIO_METADATA[scenarioId] || {},
     };
   });
@@ -809,94 +931,125 @@ async function applyScenarioJob(runner, manifestPath, { whatIf = false } = {}) {
 }
 
 async function listScenarioOwnedResources(runner, namespace, { kind, scenarioIds = [] } = {}) {
-  const selector = scenarioIds.length > 0 ? `sre-demo=breakable,scenario in (${scenarioIds.join(',')})` : 'sre-demo=breakable';
-  const args = ['get', kind, '-n', namespace, '-l', selector, '-o', 'json'];
-  const result = await executeKubectl(runner, args);
-  if (!result.ok) {
-    if (isNotFoundError(result)) return [];
-    throw new Error(`kubectl get ${kind} -n ${namespace} -l ${selector} failed: ${result.stderr || result.stdout || result.error || 'unknown error'}`);
-  }
+const lifecycleNamespace = normalizeLifecycleNamespace(namespace, `Resource query for ${kind || 'resource'}`);
+const canonicalKind = normalizeResourceKind(kind);
+if (!canonicalKind || !ALLOWED_RESET_KINDS.has(canonicalKind)) {
+  throw new Error(`Refusing to query unsupported or dangerous resource kind ${String(kind || '<empty>')}.`);
+}
 
-  try {
-    const parsed = JSON.parse(result.stdout || '{}');
-    const items = Array.isArray(parsed.items) ? parsed.items : [];
-    return items.map((item) => ({
-      kind,
-      name: item && item.metadata ? item.metadata.name : null,
-      labels: item && item.metadata ? item.metadata.labels || {} : {},
-    })).filter((item) => item.name);
-  } catch {
-    return [];
-  }
+const selector = scenarioIds.length > 0 ? `sre-demo=breakable,scenario in (${scenarioIds.join(',')})` : 'sre-demo=breakable';
+const args = ['get', canonicalKind, '-n', lifecycleNamespace, '-l', selector, '-o', 'json'];
+const result = await executeKubectl(runner, args);
+if (!result.ok) {
+  if (isNotFoundError(result)) return [];
+  throw new Error(`kubectl get ${kind} -n ${lifecycleNamespace} -l ${selector} failed: ${result.stderr || result.stdout || result.error || 'unknown error'}`);
+}
+
+try {
+  const parsed = JSON.parse(result.stdout || '{}');
+  const items = Array.isArray(parsed.items) ? parsed.items : [];
+  return items.map((item) => ({
+    kind,
+    name: item && item.metadata ? item.metadata.name : null,
+    namespace: (item && item.metadata && item.metadata.namespace) ? String(item.metadata.namespace) : lifecycleNamespace,
+    labels: item && item.metadata ? item.metadata.labels || {} : {},
+  })).filter((item) => item.name);
+} catch {
+  return [];
+}
 }
 
 async function resetScenarioOwnedResources(repoRoot, runner, { scope = 'all', whatIf = false, namespace = DEFAULT_NAMESPACE } = {}) {
-  const inventory = inventoryScenarioResources(repoRoot);
-  const namesByKind = new Map();
-  const scenarioIds = inventory.map((item) => item.scenarioId);
-  for (const scenario of inventory) {
-    for (const resource of scenario.resources) {
-      if (!resource.kind || !resource.name) continue;
-      if (scope === 'network' && resource.kind.toLowerCase() !== 'networkpolicy') continue;
-      if (scope === 'extras' && resource.kind.toLowerCase() !== 'deployment' && resource.kind.toLowerCase() !== 'configmap') continue;
-      const key = resource.kind.toLowerCase();
-      if (!namesByKind.has(key)) namesByKind.set(key, []);
-      namesByKind.get(key).push(resource.name);
+const lifecycleNamespace = normalizeLifecycleNamespace(namespace, 'Reset operation');
+const inventory = inventoryScenarioResources(repoRoot);
+const namesByKind = new Map();
+const scenarioIds = inventory.map((item) => item.scenarioId);
+
+for (const scenario of inventory) {
+  for (const resource of scenario.resources) {
+    if (!resource.kind || !resource.name) continue;
+    const kind = normalizeResourceKind(resource.kind);
+    if (!kind || !ALLOWED_RESET_KINDS.has(kind)) {
+      throw new Error(`Scenario ${scenario.scenarioId} declares unsupported reset kind ${kind || resource.kind}.`);
+      }
+    const normalizedResourceNamespace = normalizeLifecycleNamespace(resource.namespace || lifecycleNamespace, `Scenario ${scenario.scenarioId} resource ${kind}/${resource.name}`);
+    if (normalizedResourceNamespace !== lifecycleNamespace) {
+      throw new Error(`Scenario ${scenario.scenarioId} declares invalid namespace ${normalizedResourceNamespace} for ${kind}/${resource.name}; lifecycle namespace is ${lifecycleNamespace}.`);
     }
+    if (!isSafeResourceName(resource.name)) {
+      throw new Error(`Scenario ${scenario.scenarioId} declares invalid reset target ${kind}/${resource.name} in namespace ${normalizedResourceNamespace}.`);
+    }
+    if (scope === 'network' && kind !== 'NetworkPolicy') continue;
+    if (scope === 'extras' && !['Deployment', 'ConfigMap'].includes(kind)) continue;
+    if (!namesByKind.has(kind)) namesByKind.set(kind, []);
+    namesByKind.get(kind).push({ name: resource.name, namespace: normalizedResourceNamespace });
+  }
+}
+
+const failures = [];
+const results = [];
+for (const [kind, entries] of namesByKind.entries()) {
+  const uniqueEntries = [...new Map(entries.map((entry) => [entry.name, entry])).values()];
+  if (uniqueEntries.length === 0) continue;
+  if (whatIf) {
+    results.push({ kind, names: uniqueEntries.map((entry) => entry.name), message: `WhatIf: would delete ${uniqueEntries.map((entry) => `${entry.name}@${entry.namespace}`).join(', ')}` });
+    continue;
   }
 
-  const failures = [];
-  const results = [];
-  for (const [kind, names] of namesByKind.entries()) {
-    const uniqueNames = [...new Set(names)];
-    if (uniqueNames.length === 0) continue;
-    if (whatIf) {
-      results.push({ kind, names: uniqueNames, message: `WhatIf: would delete ${uniqueNames.join(', ')}` });
+  for (const entry of uniqueEntries) {
+    const { name, namespace: resourceNamespace } = entry;
+    if (!isSafeResourceName(name)) {
+      failures.push({ kind, name, command: `kubectl delete ${kind} ${name} -n ${resourceNamespace}`, message: `Refusing to delete unsafe resource name ${name}.` });
       continue;
     }
-
-    for (const name of uniqueNames) {
-      const commandArgs = ['delete', kind, name, '-n', namespace];
-      const commandText = ['kubectl', ...commandArgs].join(' ');
-      const deleteResult = await executeKubectl(runner, commandArgs);
-      if (!deleteResult.ok) {
-        const detail = deleteResult.stderr || deleteResult.stdout || deleteResult.error || 'unknown error';
-        if (isNotFoundError(deleteResult)) {
-          results.push({ kind, name, command: commandText, message: `NotFound: ${name} already absent` });
-          continue;
-        }
-        failures.push({ kind, name, command: commandText, error: detail, message: detail });
+    const effectiveNamespace = normalizeLifecycleNamespace(resourceNamespace || lifecycleNamespace, `Reset cleanup for ${kind}/${name}`);
+    if (effectiveNamespace !== lifecycleNamespace) {
+      failures.push({ kind, name, command: `kubectl delete ${kind} ${name} -n ${effectiveNamespace}`, message: `Refusing to delete ${kind}/${name} in unapproved namespace ${effectiveNamespace}.` });
         continue;
       }
-      results.push({ kind, name, command: commandText, message: `Deleted ${name}` });
+
+    const commandArgs = ['delete', kind, name, '-n', effectiveNamespace];
+    const commandText = ['kubectl', ...commandArgs].join(' ');
+    const deleteResult = await executeKubectl(runner, commandArgs);
+    if (!deleteResult.ok) {
+      const detail = deleteResult.stderr || deleteResult.stdout || deleteResult.error || 'unknown error';
+      if (isNotFoundError(deleteResult)) {
+        results.push({ kind, name, namespace: effectiveNamespace, command: commandText, message: `NotFound: ${name} already absent` });
+        continue;
+      }
+      failures.push({ kind, name, namespace: effectiveNamespace, command: commandText, error: detail, message: detail });
+      continue;
+    }
+    results.push({ kind, name, namespace: effectiveNamespace, command: commandText, message: `Deleted ${name}` });
     }
 
-    const survivors = await listScenarioOwnedResources(runner, namespace, { kind, scenarioIds }).catch(() => []);
-    const remainingNames = survivors.map((item) => item.name).filter((name) => uniqueNames.includes(name));
-    for (const survivorName of remainingNames) {
-      const commandText = ['kubectl', 'get', kind, '-n', namespace, '-l', `sre-demo=breakable,scenario in (${scenarioIds.join(',')})`].join(' ');
-      failures.push({
-        kind,
-        name: survivorName,
-        command: commandText,
-        error: `surviving scenario-owned resource detected after delete`,
-        message: `surviving scenario-owned resource detected after delete: ${kind}/${survivorName}`,
-      });
-    }
+  const survivors = await listScenarioOwnedResources(runner, lifecycleNamespace, { kind, scenarioIds }).catch(() => []);
+  const remainingNames = survivors.map((item) => item.name).filter((name) => uniqueEntries.map((entry) => entry.name).includes(name));
+  for (const survivorName of remainingNames) {
+    const commandText = ['kubectl', 'get', kind, '-n', lifecycleNamespace, '-l', `sre-demo=breakable,scenario in (${scenarioIds.join(',')})`].join(' ');
+    failures.push({
+      kind,
+      name: survivorName,
+      namespace: lifecycleNamespace,
+      command: commandText,
+      error: 'surviving scenario-owned resource detected after delete',
+      message: `surviving scenario-owned resource detected after delete: ${kind}/${survivorName}`,
+    });
   }
+}
 
-  if (failures.length > 0) {
-    return {
-      ok: false,
-      scope,
-      code: 'SCENARIO_RESOURCE_CLEANUP_FAILED',
-      failures,
-      results,
-      message: failures.map((failure) => `${failure.kind}/${failure.name}: ${failure.message}`).join('; '),
-    };
-  }
+if (failures.length > 0) {
+  return {
+    ok: false,
+    scope,
+    code: 'SCENARIO_RESOURCE_CLEANUP_FAILED',
+    failures,
+    results,
+    message: failures.map((failure) => `${failure.kind}/${failure.name}: ${failure.message}`).join('; '),
+  };
+}
 
-  return { ok: true, results, scope };
+return { ok: true, results, scope };
 }
 
 async function waitForActivation(scenarioId, repoRoot, runner, options = {}) {
@@ -940,7 +1093,7 @@ async function waitForActivation(scenarioId, repoRoot, runner, options = {}) {
 
 async function startDemoScenario(scenarioId, options = {}) {
   const repoRoot = options.repoRoot || DEFAULT_REPO_ROOT;
-  const namespace = options.namespace || DEFAULT_NAMESPACE;
+  const namespace = normalizeLifecycleNamespace(options.namespace || DEFAULT_NAMESPACE, 'Scenario start');
   const allowStacking = Boolean(options.allowStacking);
   const scenarioKey = normalizeScenarioId(scenarioId);
   const runner = options.runner || null;
@@ -1081,7 +1234,7 @@ async function startDemoScenario(scenarioId, options = {}) {
 
 async function resetDemoBaseline(options = {}) {
   const repoRoot = options.repoRoot || DEFAULT_REPO_ROOT;
-  const namespace = options.namespace || DEFAULT_NAMESPACE;
+  const namespace = normalizeLifecycleNamespace(options.namespace || DEFAULT_NAMESPACE, 'Baseline reset');
   const scope = options.scope || 'all';
   const runner = options.runner || null;
   const whatIf = Boolean(options.whatIf);
@@ -1264,6 +1417,8 @@ async function runCli(argv, options = {}) {
     };
   }
 
+  namespace = normalizeLifecycleNamespace(namespace, 'CLI namespace');
+
   if (operation === 'start') {
     if (!scenarioId) {
       return {
@@ -1305,7 +1460,9 @@ module.exports = {
   STATE_CONFIGMAP_NAME,
   LOCK_CONFIGMAP_NAME,
   UNRESOLVED_LIFECYCLE_PHASES,
+  normalizeLifecycleNamespace,
   normalizeScenarioId,
+  validateOwnedResource,
   inventoryScenarioResources,
   collectClusterSnapshot,
   computeBaselineFingerprint,

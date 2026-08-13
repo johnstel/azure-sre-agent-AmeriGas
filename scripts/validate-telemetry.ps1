@@ -49,6 +49,10 @@ let matchingRequests = AppRequests
 let matchingDependencies = AppDependencies
     | where TimeGenerated >= cutoff
     | where tostring(Properties["transaction.id"]) == transactionId;
+let observedDependencies = matchingDependencies
+    | where tostring(Properties["span.role"]) == "observed-http-client";
+let syntheticTransactions = matchingDependencies
+    | where tostring(Properties["span.role"]) == "synthetic-transaction";
 let matchingExceptions = AppExceptions
     | where TimeGenerated >= cutoff
     | where tostring(Properties["transaction.id"]) == transactionId;
@@ -59,17 +63,57 @@ let matchingMetrics = AppMetrics
     | where TimeGenerated >= cutoff
     | where tostring(Properties["transaction.id"]) == transactionId;
 print
-    RequestCount=toscalar(matchingRequests | count),
-    DependencyCount=toscalar(matchingDependencies | count),
-    CorrelatedOperationCount=toscalar(
-        matchingRequests
-        | project OperationId
-        | join kind=inner (matchingDependencies | project OperationId) on OperationId
+    DependencyCount=toscalar(observedDependencies | count),
+    CorrelatedTransactionCount=toscalar(
+        syntheticTransactions
+        | project OperationId, TransactionSpanId=Id
+        | join kind=inner (observedDependencies | project OperationId, ParentId) on OperationId
+        | where ParentId == TransactionSpanId
         | count
     ),
-    ServiceCount=toscalar(
-        union matchingRequests, matchingDependencies, matchingTraces, matchingMetrics
-        | summarize dcount(tostring(Properties["service.name"]))
+    RequiredTargetCount=toscalar(
+        observedDependencies
+        | where tostring(Properties["peer.service"]) in ("tank-monitor", "inventory-service", "order-service")
+        | where tostring(Properties["http.route"]) == "/health"
+        | where ResultCode == "200"
+        | where
+            (tostring(Properties["peer.service"]) == "tank-monitor" and Target contains_cs "tank-monitor" and Data contains_cs "/health")
+            or (tostring(Properties["peer.service"]) == "inventory-service" and Target contains_cs "inventory-service" and Data contains_cs "/health")
+            or (tostring(Properties["peer.service"]) == "order-service" and Target contains_cs "order-service" and Data contains_cs "/health")
+        | summarize dcount(tostring(Properties["peer.service"]))
+    ),
+    ControlledFailureCount=toscalar(
+        observedDependencies
+        | where tostring(Properties["peer.service"]) == "order-pricing-dependency"
+        | where tostring(Properties["http.route"]) == "/controlled-failure"
+        | where ResultCode == "503"
+        | count
+    ),
+    ControlledRequestCount=toscalar(
+        matchingRequests
+        | where AppRoleName == "order-pricing-dependency"
+        | where Name == "GET /controlled-failure"
+        | where ResultCode == "503"
+        | count
+    ),
+    EndToEndCorrelationCount=toscalar(
+        matchingRequests
+        | where AppRoleName == "order-pricing-dependency"
+        | where Name == "GET /controlled-failure"
+        | project OperationId, RequestParentId=ParentId
+        | join kind=inner (
+            observedDependencies
+            | where tostring(Properties["peer.service"]) == "order-pricing-dependency"
+            | where tostring(Properties["http.route"]) == "/controlled-failure"
+            | project OperationId, DependencySpanId=Id
+        ) on OperationId
+        | where RequestParentId == DependencySpanId
+        | count
+    ),
+    ExternalServiceResourceCount=toscalar(
+        union matchingRequests, matchingDependencies, matchingExceptions, matchingTraces, matchingMetrics
+        | where AppRoleName in ("tank-monitor", "inventory-service", "order-service")
+        | count
     ),
     MetricCount=toscalar(matchingMetrics | count),
     ExceptionCount=toscalar(matchingExceptions | count),
@@ -109,13 +153,15 @@ function Test-TelemetryProof {
     param([Parameter(Mandatory)]$Proof)
 
     $requiredMinimums = @{
-        RequestCount = 3
         DependencyCount = 4
-        CorrelatedOperationCount = 1
-        ServiceCount = 3
-        MetricCount = 3
+        CorrelatedTransactionCount = 4
+        RequiredTargetCount = 3
+        ControlledFailureCount = 1
+        ControlledRequestCount = 1
+        EndToEndCorrelationCount = 1
+        MetricCount = 4
         ExceptionCount = 1
-        TraceCount = 3
+        TraceCount = 4
         KubernetesEventCount = 1
     }
 
@@ -123,6 +169,9 @@ function Test-TelemetryProof {
         if ($null -eq $Proof.PSObject.Properties[$entry.Key] -or [int]$Proof.($entry.Key) -lt $entry.Value) {
             return $false
         }
+    }
+    if ($null -eq $Proof.PSObject.Properties['ExternalServiceResourceCount'] -or [int]$Proof.ExternalServiceResourceCount -ne 0) {
+        return $false
     }
     return $true
 }
@@ -176,6 +225,38 @@ function Start-TelemetryProbe {
         throw 'Could not create the telemetry proof Job.'
     }
 
+    kubectl wait "--for=condition=complete" "job/$jobName" --namespace propane --timeout=120s | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        $probeLog = kubectl logs "job/$jobName" --namespace propane 2>&1 | Out-String
+        throw "Telemetry proof Job did not complete: $($probeLog.Trim())"
+    }
+
+    $output = kubectl logs "job/$jobName" --namespace propane | ConvertFrom-Json
+    if ($output.runCorrelationId -ne $TransactionId) {
+        throw 'Telemetry proof Job returned a mismatched correlation identifier.'
+    }
+    $requiredServices = @('tank-monitor', 'inventory-service', 'order-service')
+    foreach ($requiredService in $requiredServices) {
+        $healthyResult = @($output.results | Where-Object {
+            $_.service -eq $requiredService -and
+            $_.route -eq '/health' -and
+            [int]$_.statusCode -eq 200 -and
+            $_.controlledFailure -eq $false
+        })
+        if ($healthyResult.Count -ne 1) {
+            throw "Telemetry proof Job did not observe a healthy HTTP 200 response from '$requiredService'."
+        }
+    }
+    $controlledFailure = @($output.results | Where-Object {
+        $_.service -eq 'order-pricing-dependency' -and
+        $_.route -eq '/controlled-failure' -and
+        [int]$_.statusCode -eq 503 -and
+        $_.controlledFailure -eq $true
+    })
+    if ($controlledFailure.Count -ne 1) {
+        throw 'Telemetry proof Job did not observe the deterministic repo-owned controlled failure.'
+    }
+
     $event = [ordered]@{
         apiVersion          = 'events.k8s.io/v1'
         kind                = 'Event'
@@ -192,7 +273,7 @@ function Start-TelemetryProbe {
             name       = $jobName
             namespace  = 'propane'
         }
-        note                = "Observed controlled HTTP failure; transaction.id=$TransactionId"
+        note                = "Observed order-pricing-dependency GET /controlled-failure HTTP 503; transaction.id=$TransactionId"
         type                = 'Warning'
         reportingController = 'zavagas.telemetry.validation'
         reportingInstance   = 'validate-telemetry'
@@ -200,17 +281,6 @@ function Start-TelemetryProbe {
     $event | ConvertTo-Json -Depth 10 -Compress | kubectl create -f - | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not create the correlated Kubernetes event.'
-    }
-
-    kubectl wait "--for=condition=complete" "job/$jobName" --namespace propane --timeout=120s | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        $probeLog = kubectl logs "job/$jobName" --namespace propane 2>&1 | Out-String
-        throw "Telemetry proof Job did not complete: $($probeLog.Trim())"
-    }
-
-    $output = kubectl logs "job/$jobName" --namespace propane | ConvertFrom-Json
-    if ($output.runCorrelationId -ne $TransactionId) {
-        throw 'Telemetry proof Job returned a mismatched correlation identifier.'
     }
 }
 
@@ -318,10 +388,13 @@ function Invoke-TelemetryValidation {
         transactionId = $transactionId
         verifiedAt = [DateTimeOffset]::UtcNow.ToString('o')
         maxAgeMinutes = 5
-        requestCount = [int]$proof.RequestCount
         dependencyCount = [int]$proof.DependencyCount
-        correlatedOperationCount = [int]$proof.CorrelatedOperationCount
-        serviceCount = [int]$proof.ServiceCount
+        correlatedTransactionCount = [int]$proof.CorrelatedTransactionCount
+        requiredTargetCount = [int]$proof.RequiredTargetCount
+        controlledFailureCount = [int]$proof.ControlledFailureCount
+        controlledRequestCount = [int]$proof.ControlledRequestCount
+        endToEndCorrelationCount = [int]$proof.EndToEndCorrelationCount
+        externalServiceResourceCount = [int]$proof.ExternalServiceResourceCount
         metricCount = [int]$proof.MetricCount
         exceptionCount = [int]$proof.ExceptionCount
         traceCount = [int]$proof.TraceCount
@@ -334,7 +407,7 @@ function Invoke-TelemetryValidation {
     Move-Item -LiteralPath $temporaryProofPath -Destination $ProofOutputPath -Force
 
     Write-Host "  Telemetry proof transaction: $transactionId" -ForegroundColor Gray
-    Write-Host "  Requests=$($proof.RequestCount), Dependencies=$($proof.DependencyCount), Correlated=$($proof.CorrelatedOperationCount), Services=$($proof.ServiceCount), Metrics=$($proof.MetricCount), Exceptions=$($proof.ExceptionCount), Traces=$($proof.TraceCount), KubeEvents=$($proof.KubernetesEventCount)" -ForegroundColor Gray
+    Write-Host "  Dependencies=$($proof.DependencyCount), CorrelatedTransactions=$($proof.CorrelatedTransactionCount), RequiredTargets=$($proof.RequiredTargetCount), ControlledFailures=$($proof.ControlledFailureCount), ControlledRequests=$($proof.ControlledRequestCount), EndToEnd=$($proof.EndToEndCorrelationCount), ExternalServiceResources=$($proof.ExternalServiceResourceCount), Metrics=$($proof.MetricCount), Exceptions=$($proof.ExceptionCount), Traces=$($proof.TraceCount), KubeEvents=$($proof.KubernetesEventCount)" -ForegroundColor Gray
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
