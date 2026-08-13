@@ -47,6 +47,12 @@ param uniqueSuffix string
 ])
 param apiVersion string = '2026-01-01'
 
+@description('Declaratively connect Azure Monitor as the incident management platform (properties.incidentManagementConfiguration.type = AzMonitor), per the documented AgentProperties schema (issue #19). Off by default; the demo profile turns this on. Per Microsoft docs, Azure Monitor also auto-connects on agent creation regardless of this flag — this makes the intent explicit and idempotent in source control rather than relying on that implicit behavior.')
+param enableAzureMonitorIncidents bool = false
+
+@description('When true, restricts the resource-group-scope RBAC granted to the SRE Agent managed identity to Reader + Log Analytics Reader ONLY — regardless of accessLevel. Used exclusively by the demo response-plan profile (issue #19 round 2) so the agent does NOT receive resource-group-scope Contributor, which would make the least-scope AKS custom remediation role (sre-agent-demo-rbac.bicep) redundant as an actual restriction. This does NOT change actionConfiguration.accessLevel (the platform-level flag controlling whether the agent may propose/execute write actions at all, per https://learn.microsoft.com/azure/sre-agent/agent-permissions) — that stays whatever accessLevel resolves to. Actual write ability remains bounded strictly by whichever RBAC is granted: the narrow RG-scope roles here, plus any additional resource-scoped roles (e.g. the AKS remediation role) granted separately. Off by default; standard-profile behavior (accessLevel-driven roleDefinitions bundle) is completely unchanged when this is false.')
+param demoLeastPrivilegeRbac bool = false
+
 // =============================================================================
 // VARIABLES
 // =============================================================================
@@ -88,6 +94,23 @@ var roleDefinitions = {
   ]
 }
 
+// The demo response-plan profile (issue #19 round 2) forces the narrowest
+// possible RG-scope bundle (Reader + Log Analytics Reader — the same set as
+// Low) regardless of accessLevel, so the SRE identity never receives
+// resource-group-scope Contributor. Its actual remediation write ability for
+// the one demo scenario comes exclusively from the separately-granted,
+// AKS-cluster-scoped custom role (sre-agent-demo-rbac.bicep), which is a
+// real restriction only when this RG-scope bundle excludes Contributor.
+// Standard-profile behavior (demoLeastPrivilegeRbac = false) is completely
+// unchanged: it still resolves to roleDefinitions[accessLevel] exactly as
+// before.
+var effectiveRoleDefinitions = demoLeastPrivilegeRbac
+  ? [
+      roleDefinitionIds.reader
+      roleDefinitionIds.logAnalyticsReader
+    ]
+  : roleDefinitions[accessLevel]
+
 var agentIdentityConfig = {
   type: 'SystemAssigned, UserAssigned'
   userAssignedIdentities: {
@@ -95,6 +118,14 @@ var agentIdentityConfig = {
   }
 }
 
+// incidentManagementConfiguration.type is a documented AgentProperties field
+// (Microsoft.App/agents ARM template reference: 'PagerDuty' | 'AzMonitor' |
+// 'ServiceNow' | 'None'). Kept as a plain object (rather than swapping the
+// entire agentProperties object via union/conditional) so every other key —
+// knowledgeGraphConfiguration, actionConfiguration, logConfiguration — stays
+// a directly-resolvable literal in the compiled template regardless of this
+// parameter's value; only the incidentManagementConfiguration property
+// itself is conditional.
 var agentProperties = {
   knowledgeGraphConfiguration: {
     identity: managedIdentity.id
@@ -113,6 +144,11 @@ var agentProperties = {
       connectionString: appInsightsConnectionString
     }
   }
+  incidentManagementConfiguration: enableAzureMonitorIncidents
+    ? {
+        type: 'AzMonitor'
+      }
+    : null
 }
 
 // =============================================================================
@@ -131,7 +167,7 @@ resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-
 }
 
 // Role assignments for the managed identity, scoped to this resource group only
-resource roleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (roleId, index) in roleDefinitions[accessLevel]: {
+resource roleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (roleId, index) in effectiveRoleDefinitions: {
   name: guid(resourceGroup().id, managedIdentity.id, roleId)
   properties: {
     roleDefinitionId: resourceId('Microsoft.Authorization/roleDefinitions', roleId)
@@ -207,4 +243,6 @@ output apiVersionUsed string = apiVersion
 output managedResourceGroupId string = managedResourceGroupId
 output appInsightsResourceIdBound string = appInsightsResourceId
 output accessLevel string = accessLevel
-output assignedRoleDefinitionIds array = roleDefinitions[accessLevel]
+output assignedRoleDefinitionIds array = effectiveRoleDefinitions
+output incidentManagementConfigured bool = enableAzureMonitorIncidents
+output demoLeastPrivilegeRbacApplied bool = demoLeastPrivilegeRbac

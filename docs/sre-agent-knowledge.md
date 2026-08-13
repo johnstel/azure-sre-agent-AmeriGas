@@ -325,3 +325,4 @@ kubectl describe svc tank-monitor -n propane
 | Propane HTTP 5xx Alert | HTTP 500 errors exceed threshold |
 | Propane Pod Failure Alert | Pods in Failed state |
 | Propane CrashLoop/OOM Alert | CrashLoopBackOff or OOMKilled events detected |
+| AmeriGas Propane Demo - MongoDB Down (demo profile only) | Zero Running mongodb pods in the propane namespace — routed to a native SRE Agent response plan (custom agent `mongodb-down-responder`, Review autonomy). See `docs/sre-agent-response-plans/README.md`. |

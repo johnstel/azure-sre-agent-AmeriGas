@@ -58,6 +58,12 @@ param incidentWebhookServiceUri string = ''
 @description('Optional action group resource IDs to notify when alerts fire')
 param alertActionGroupIds array = []
 
+@description('Deploy the dedicated demo alert-to-approved-remediation response plan wiring for the MongoDB-down scenario (issue #19): the demo MongoDB-down alert, incidentManagementConfiguration=AzMonitor, and the least-scope custom RBAC role for `az aks command invoke`. Off by default — the standard profile (main.bicepparam) never enables this; only main.demo.bicepparam does. Requires deployAlerts=true and deploySreAgent=true.')
+param deployDemoResponsePlan bool = false
+
+@description('Explicit operator acknowledgement that the demo response plan requires granting the built-in Monitoring Contributor role to the SRE Agent managed identity at SUBSCRIPTION scope. This is not a design choice — Microsoft documents this as the minimum scope required for the Azure Monitor alert scanner to discover and manage alert lifecycle (see https://learn.microsoft.com/azure/sre-agent/azure-monitor-alerts and https://learn.microsoft.com/azure/sre-agent/agent-permissions). Must be explicitly set true (never implied by deployDemoResponsePlan alone) for infra/bicep/modules/sre-agent-monitoring-rbac.bicep to deploy; scripts/deploy.ps1 requires a separate -AcceptSubscriptionScopeMonitoringRbac switch before it will pass this as true. Off by default; the standard profile never sets this.')
+param acknowledgeSubscriptionScopeMonitoringRbac bool = false
+
 @description('AKS Kubernetes version')
 param kubernetesVersion string = '1.32'
 
@@ -229,6 +235,46 @@ module sreAgent 'modules/sre-agent.bicep' = if (deploySreAgent) {
     appInsightsConnectionString: appInsights.outputs.connectionString
     uniqueSuffix: uniqueSuffix
     apiVersion: sreAgentApiVersion
+    enableAzureMonitorIncidents: deployDemoResponsePlan
+    // Force the narrowest RG-scope RBAC bundle (Reader + Log Analytics
+    // Reader — never Contributor) whenever the demo response plan is
+    // active, so the exact-scope AKS remediation role below is a real
+    // restriction rather than redundant with a broader Contributor grant.
+    // Standard-profile behavior (deployDemoResponsePlan = false) is
+    // unaffected — this resolves to false there, exactly as before.
+    demoLeastPrivilegeRbac: deployDemoResponsePlan
+  }
+}
+
+// Least-scope custom RBAC for the demo response plan's exact remediation
+// (issue #19) — scoped to only the AKS cluster resource, granting only the
+// actions `az aks command invoke` requires. Deployed only when both the SRE
+// Agent and the demo response plan are enabled. Combined with sreAgent's
+// demoLeastPrivilegeRbac=true above (which withholds RG-scope Contributor in
+// this profile), this role is what actually grants write ability for the
+// one demo remediation — not an additive/redundant restriction.
+module sreAgentDemoRbac 'modules/sre-agent-demo-rbac.bicep' = if (deploySreAgent && deployDemoResponsePlan) {
+  scope: resourceGroup
+  name: 'deploy-sre-agent-demo-rbac'
+  params: {
+    aksId: aks.outputs.aksId
+    sreAgentPrincipalId: sreAgent!.outputs.managedIdentityPrincipalId
+    uniqueSuffix: uniqueSuffix
+    workloadName: workloadName
+  }
+}
+
+// Azure Monitor alert-scanner RBAC (issue #19 round 2) — subscription-scope
+// Monitoring Contributor, required per Microsoft's own documentation for the
+// SRE Agent's Azure Monitor scanner to discover and manage alert lifecycle
+// (see infra/bicep/modules/sre-agent-monitoring-rbac.bicep for citations).
+// Deployed ONLY when the demo response plan is enabled AND the operator has
+// explicitly acknowledged this unavoidable subscription-scope requirement —
+// deployDemoResponsePlan alone is never sufficient to grant this.
+module sreAgentMonitoringRbac 'modules/sre-agent-monitoring-rbac.bicep' = if (deploySreAgent && deployDemoResponsePlan && acknowledgeSubscriptionScopeMonitoringRbac) {
+  name: 'deploy-sre-agent-monitoring-rbac'
+  params: {
+    sreAgentPrincipalId: sreAgent!.outputs.managedIdentityPrincipalId
   }
 }
 
@@ -274,7 +320,7 @@ var effectiveAlertActionGroupIds = deployActionGroup
   ? concat(alertActionGroupIds, [defaultActionGroup!.outputs.actionGroupId])
   : alertActionGroupIds
 
-module alerts 'modules/alerts.bicep' = if (deployAlerts) {
+module alerts 'modules/alerts.bicep' = if (deployAlerts || deployDemoResponsePlan) {
   scope: resourceGroup
   name: 'deploy-alerts'
   params: {
@@ -284,6 +330,8 @@ module alerts 'modules/alerts.bicep' = if (deployAlerts) {
     logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
     appNamespace: 'propane'
     actionGroupIds: effectiveAlertActionGroupIds
+    deployStandardAlerts: deployAlerts
+    deployMongoDbDownDemoAlert: deployDemoResponsePlan
   }
 }
 
@@ -313,6 +361,9 @@ output podRestartAlertId string = deployAlerts ? alerts!.outputs.podRestartAlert
 output http5xxAlertId string = deployAlerts ? alerts!.outputs.http5xxAlertId : ''
 output podFailureAlertId string = deployAlerts ? alerts!.outputs.podFailureAlertId : ''
 output crashLoopOomAlertId string = deployAlerts ? alerts!.outputs.crashLoopOomAlertId : ''
+output mongoDbDownDemoAlertId string = deployDemoResponsePlan ? alerts!.outputs.mongoDbDownDemoAlertId : ''
+output mongoDbDownDemoAlertTitle string = deployDemoResponsePlan ? alerts!.outputs.mongoDbDownDemoAlertTitleUsed : ''
+output mongoDbDownDemoAlertSeverity int = deployDemoResponsePlan ? alerts!.outputs.mongoDbDownDemoAlertSeverityUsed : -1
 output sreAgentId string = deploySreAgent ? sreAgent!.outputs.agentId : ''
 output sreAgentPortalUrl string = deploySreAgent ? sreAgent!.outputs.agentPortalUrl : ''
 output sreAgentName string = deploySreAgent ? sreAgent!.outputs.agentName : ''
@@ -323,5 +374,10 @@ output sreAgentManagedResourceGroupId string = deploySreAgent ? sreAgent!.output
 output sreAgentAppInsightsResourceId string = deploySreAgent ? sreAgent!.outputs.appInsightsResourceIdBound : ''
 output sreAgentAccessLevel string = deploySreAgent ? sreAgent!.outputs.accessLevel : ''
 output sreAgentAssignedRoleDefinitionIds array = deploySreAgent ? sreAgent!.outputs.assignedRoleDefinitionIds : []
+output sreAgentIncidentManagementConfigured bool = deploySreAgent ? sreAgent!.outputs.incidentManagementConfigured : false
+output sreAgentDemoLeastPrivilegeRbacApplied bool = deploySreAgent ? sreAgent!.outputs.demoLeastPrivilegeRbacApplied : false
+output sreAgentDemoRbacRoleDefinitionId string = (deploySreAgent && deployDemoResponsePlan) ? sreAgentDemoRbac!.outputs.roleDefinitionId : ''
+output sreAgentDemoRbacScopedActions array = (deploySreAgent && deployDemoResponsePlan) ? sreAgentDemoRbac!.outputs.scopedActions : []
+output sreAgentMonitoringRbacRoleAssignmentId string = (deploySreAgent && deployDemoResponsePlan && acknowledgeSubscriptionScopeMonitoringRbac) ? sreAgentMonitoringRbac!.outputs.roleAssignmentId : ''
 output adxClusterUri string = deployDataExplorer ? dataExplorer!.outputs.clusterUri : ''
 output adxDatabaseName string = deployDataExplorer ? dataExplorer!.outputs.databaseName : ''

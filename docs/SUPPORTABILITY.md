@@ -739,6 +739,7 @@ The chat panel (accessed via the Copilot button or top banner) provides a conver
 | **Breakable Scenarios Guide** | `docs/BREAKABLE-SCENARIOS.md` |
 | **Cost Estimates** | `docs/COSTS.md` |
 | **SRE Agent Setup** | `docs/SRE-AGENT-SETUP.md` |
+| **Response Plan (issue #19)** | `docs/sre-agent-response-plans/README.md` |
 | **Demo Script** | `docs/DEMO-SCRIPT.md` |
 | **Prompt Guide** | `docs/PROMPTS-GUIDE.md` |
 | **Supportability Guide** | `docs/SUPPORTABILITY.md` |

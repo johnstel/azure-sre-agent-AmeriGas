@@ -55,7 +55,14 @@ param(
     [switch]$WhatIf,
 
     [Parameter()]
-    [switch]$Yes
+    [switch]$Yes,
+
+    [Parameter()]
+    [Alias('Demo')]
+    [switch]$DeployDemoResponsePlan,
+
+    [Parameter()]
+    [switch]$AcceptSubscriptionScopeMonitoringRbac
 )
 
 $ErrorActionPreference = 'Stop'
@@ -572,13 +579,50 @@ else {
 $resourceGroupName = "rg-$WorkloadName-$Location"
 $deploymentName = "sre-demo-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $bicepFile = Join-Path $PSScriptRoot "..\infra\bicep\main.bicep"
-$parametersFile = Join-Path $PSScriptRoot "..\infra\bicep\main.bicepparam"
+$parametersFile = if ($DeployDemoResponsePlan) {
+    Join-Path $PSScriptRoot "..\infra\bicep\main.demo.bicepparam"
+}
+else {
+    Join-Path $PSScriptRoot "..\infra\bicep\main.bicepparam"
+}
+
+if ($DeployDemoResponsePlan -and $SkipSreAgent) {
+    Write-Error "-DeployDemoResponsePlan (issue #19 alert-to-approved-remediation response plan) requires the SRE Agent to be deployed. Remove -SkipSreAgent or omit -DeployDemoResponsePlan."
+    exit 1
+}
+
+# EXPLICIT OPERATOR ACKNOWLEDGEMENT (issue #19 round 2): the SRE Agent's
+# Azure Monitor alert scanner requires the built-in Monitoring Contributor
+# role (749f88d5-cbae-40b8-bcfc-e573ddc772fa) on the SRE identity at
+# SUBSCRIPTION scope — documented by Microsoft as the minimum scope for the
+# scanner to discover and manage alert lifecycle (see
+# https://learn.microsoft.com/azure/sre-agent/azure-monitor-alerts and
+# https://learn.microsoft.com/azure/sre-agent/agent-permissions). This is
+# NEVER implied by -DeployDemoResponsePlan alone — -AcceptSubscriptionScopeMonitoringRbac
+# must be passed explicitly, deliberately independent of -Yes, so this
+# specific subscription-scope grant always requires its own conscious
+# decision rather than being swept up in a general "skip prompts" flag.
+if ($DeployDemoResponsePlan -and -not $AcceptSubscriptionScopeMonitoringRbac) {
+    Write-Host "`n⚠️  The demo response plan requires granting 'Monitoring Contributor' to the SRE Agent's managed identity at SUBSCRIPTION scope (not resource-group scope)." -ForegroundColor Red
+    Write-Host "   This is not a design choice made by this script — Microsoft documents it as the minimum scope required for the Azure Monitor alert scanner:" -ForegroundColor Yellow
+    Write-Host "     https://learn.microsoft.com/azure/sre-agent/azure-monitor-alerts" -ForegroundColor Gray
+    Write-Host "     https://learn.microsoft.com/azure/sre-agent/agent-permissions" -ForegroundColor Gray
+    Write-Host "   Monitoring Contributor cannot modify non-monitoring resources; it is scoped to acknowledging/closing Azure Monitor alerts and managing monitoring settings." -ForegroundColor Gray
+    Write-Host "   Re-run with -AcceptSubscriptionScopeMonitoringRbac to explicitly accept this subscription-scope grant, or omit -DeployDemoResponsePlan to deploy the standard profile (no subscription-scope RBAC at all)." -ForegroundColor Yellow
+    Write-Error "Refusing to deploy the demo response plan without explicit subscription-scope RBAC acknowledgement."
+    exit 1
+}
 
 Write-Host "`n📦 Deployment Configuration:" -ForegroundColor Cyan
 Write-Host "  • Location:        $Location" -ForegroundColor White
 Write-Host "  • Workload Name:   $WorkloadName" -ForegroundColor White
 Write-Host "  • Resource Group:  $resourceGroupName" -ForegroundColor White
 Write-Host "  • Deployment Name: $deploymentName" -ForegroundColor White
+Write-Host "  • Profile:         $(if ($DeployDemoResponsePlan) { 'Demo (main.demo.bicepparam) — response plan enabled' } else { 'Standard (main.bicepparam)' })" -ForegroundColor White
+if ($DeployDemoResponsePlan) {
+    Write-Host "  • Subscription RBAC: Monitoring Contributor for SRE identity (ACKNOWLEDGED via -AcceptSubscriptionScopeMonitoringRbac)" -ForegroundColor Yellow
+    Write-Host "  • RG-scope RBAC:   Least-privilege (Reader + Log Analytics Reader only — no Contributor)" -ForegroundColor White
+}
 Write-Host "  • SRE Agent:       $(if ($deploySreAgent) { 'Enabled' } else { 'Disabled' })" -ForegroundColor White
 if ($sreAgentSkipReason) {
     Write-Host "  • SRE Agent Note:  $sreAgentSkipReason" -ForegroundColor Gray
@@ -593,6 +637,17 @@ Write-Host "`n🔍 Validating Bicep template..." -ForegroundColor Yellow
 $sreAgentBicepParams = @("deploySreAgent=$deploySreAgentValue")
 if ($sreAgentApiVersion) {
     $sreAgentBicepParams += "sreAgentApiVersion=$sreAgentApiVersion"
+}
+if ($DeployDemoResponsePlan) {
+    # Explicit even though main.demo.bicepparam already sets these — belt
+    # and suspenders so this behavior can never silently depend only on
+    # which parameters file happens to be selected above.
+    $sreAgentBicepParams += "deployDemoResponsePlan=true"
+    $sreAgentBicepParams += "deployAlerts=true"
+    # Only ever passed true here because the acknowledgement gate above
+    # already required -AcceptSubscriptionScopeMonitoringRbac to reach this
+    # point — this is not a second independent path to grant it silently.
+    $sreAgentBicepParams += "acknowledgeSubscriptionScopeMonitoringRbac=true"
 }
 
 if ($WhatIf) {
@@ -822,6 +877,41 @@ if ($outputs.sreAgentId.value) {
     }
 }
 
+# Bootstrap the demo alert-to-approved-remediation response plan (issue #19)
+# — only when the demo profile is active and the agent was actually deployed.
+$sreAgentResponsePlanReady = $true
+if ($DeployDemoResponsePlan -and $outputs.sreAgentId.value) {
+    Write-Host "`n🧭 Bootstrapping SRE Agent response plan (MongoDB-down demo scenario)..." -ForegroundColor Yellow
+    $responsePlanScript = Join-Path $PSScriptRoot "bootstrap-sre-agent-response-plan.ps1"
+    if (Test-Path $responsePlanScript) {
+        $responsePlanParams = @(
+            '-ResourceGroupName', $resourceGroupName,
+            '-AgentName', $outputs.sreAgentName.value,
+            '-AksClusterName', $outputs.aksClusterName.value,
+            '-ApiVersion', $outputs.sreAgentApiVersionUsed.value
+        )
+        if ($outputs.mongoDbDownDemoAlertTitle.value) {
+            $responsePlanParams += @('-AlertTitle', $outputs.mongoDbDownDemoAlertTitle.value)
+        }
+        if ($null -ne $outputs.mongoDbDownDemoAlertSeverity.value -and [int]$outputs.mongoDbDownDemoAlertSeverity.value -ge 0) {
+            $responsePlanParams += @('-AlertSeverity', [string]$outputs.mongoDbDownDemoAlertSeverity.value)
+        }
+
+        & pwsh -NoLogo -NoProfile -File $responsePlanScript @responsePlanParams
+        if ($LASTEXITCODE -ne 0) {
+            $sreAgentResponsePlanReady = $false
+            Write-Host "  ❌ SRE Agent response plan bootstrap failed. See output above for the explicit error." -ForegroundColor Red
+        }
+        else {
+            Write-Host "  ✅ SRE Agent response plan is configured (Review autonomy)" -ForegroundColor Green
+        }
+    }
+    else {
+        $sreAgentResponsePlanReady = $false
+        Write-Host "  ❌ Response plan bootstrap script not found: $responsePlanScript" -ForegroundColor Red
+    }
+}
+
 # Deploy application
 Write-Host "`n📦 Deploying demo application to AKS..." -ForegroundColor Yellow
 $k8sPath = Join-Path $PSScriptRoot "..\k8s\base\application.yaml"
@@ -942,6 +1032,13 @@ if ($outputs.sreAgentId.value -and -not $sreAgentKnowledgeReady) {
     Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
     Write-Host "   The SRE Agent was created, but its knowledge base could not be bootstrapped or verified." -ForegroundColor Red
     Write-Host "   Do not mark this deployment demo-ready until the knowledge bootstrap error above is resolved and re-run succeeds." -ForegroundColor Red
+    exit 1
+}
+
+if ($DeployDemoResponsePlan -and $outputs.sreAgentId.value -and -not $sreAgentResponsePlanReady) {
+    Write-Host "`n❌ Deployment did not reach demo-ready state." -ForegroundColor Red
+    Write-Host "   The SRE Agent was created, but its alert-to-approved-remediation response plan could not be bootstrapped or verified." -ForegroundColor Red
+    Write-Host "   Do not mark this deployment demo-ready until the response plan bootstrap error above is resolved and re-run succeeds." -ForegroundColor Red
     exit 1
 }
 

@@ -61,6 +61,7 @@ foreach ($resource in $resources) {
 }
 
 $keyVaultNames = @($resources | Where-Object { $_.type -eq 'Microsoft.KeyVault/vaults' } | ForEach-Object { $_.name })
+$sreAgentResource = $resources | Where-Object { $_.type -eq 'Microsoft.App/agents' } | Select-Object -First 1
 
 Write-Host "`n  Total: $($resources.Count) resources" -ForegroundColor White
 
@@ -72,6 +73,30 @@ if (-not $Force) {
     if ($confirm -ne 'DELETE') {
         Write-Host "`nDestroy cancelled." -ForegroundColor Green
         exit 0
+    }
+}
+
+# Best-effort teardown of the demo response plan (issue #19) sub-resources
+# BEFORE the resource group itself is deleted. Deleting the resource group
+# would remove these anyway, but tearing them down explicitly here exercises
+# the same idempotent teardown path used when disabling the demo profile
+# without destroying the whole lab, and leaves a clean audit trail.
+if ($sreAgentResource) {
+    $responsePlanScript = Join-Path $PSScriptRoot "bootstrap-sre-agent-response-plan.ps1"
+    $aksResource = $resources | Where-Object { $_.type -eq 'Microsoft.ContainerService/managedClusters' } | Select-Object -First 1
+    if ((Test-Path $responsePlanScript) -and $aksResource) {
+        Write-Host "`n🧭 Tearing down SRE Agent response plan (if configured)..." -ForegroundColor Yellow
+        & pwsh -NoLogo -NoProfile -File $responsePlanScript `
+            -ResourceGroupName $ResourceGroupName `
+            -AgentName $sreAgentResource.name `
+            -AksClusterName $aksResource.name `
+            -Teardown
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ⚠️  Response plan teardown reported an error — continuing with resource group deletion, which will remove it regardless." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "  ✅ Response plan torn down (or was already absent)" -ForegroundColor Green
+        }
     }
 }
 
