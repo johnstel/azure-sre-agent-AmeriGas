@@ -7,6 +7,8 @@ const SCENARIOS = [
   { id:'cpu',     name:'High CPU',         desc:'Demand forecast calculation overload',      icon:'🔥' },
   { id:'pending', name:'Pending Pods',     desc:'Fleet telemetry over-provisioned requests', icon:'⏳' },
   { id:'probe',   name:'Bulk Tank Safety Alarm', desc:'Healthy workload + delayed safety alarm', icon:'💓' },
+  { id:'backlog', name:'Refill Order Backlog', desc:'Poison refill event and queue backlog', icon:'🧵' },
+  { id:'latency', name:'Dependency Latency', desc:'Order-pricing dependency SLO breach', icon:'⏱️' },
   { id:'network', name:'Network Block',    desc:'Tank monitor network policy isolation',     icon:'🌐' },
   { id:'config',  name:'Missing Config',   desc:'Delivery zone missing ConfigMap',           icon:'📄' },
   { id:'mongodb', name:'MongoDB Down',     desc:'Database outage — cascading failure',       icon:'🗄️' },
@@ -22,6 +24,8 @@ const SCENARIO_INDICATORS = {
   cpu:     p => p.name.startsWith('demand-forecast'),
   pending: p => p.name.startsWith('fleet-telemetry'),
   probe:   p => p.name.startsWith('safety-compliance'),
+  backlog: p => p.name.startsWith('refill-order-backlog'),
+  latency: null, // Dependency latency is a ConfigMap-driven SLO breach; reported via telemetry/metrics rather than generic pod state.
   config:  p => p.name.startsWith('delivery-zone'),
   mongodb: null, // detected via a dedicated check below: mongodb-down scales the Deployment to 0, so "any matching pod" is not a safe indicator (see isMongoPodReady)
   network: null, // detected via networkpolicies API

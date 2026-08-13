@@ -1,0 +1,639 @@
+{
+  "version": 1,
+  "generatedFrom": [
+    "k8s/scenarios/*.yaml",
+    "tools/mission-control/scenario-lifecycle.js"
+  ],
+  "scenarios": [
+    {
+      "id": "oom",
+      "title": "OOMKilled",
+      "domain": "Bulk Tank",
+      "narrative": "Tank monitor overwhelmed by winter peak bulk-tank sensor readings.",
+      "manifest": "oom-killed.yaml",
+      "ownedResources": [
+        "Deployment/tank-monitor",
+        "Pod/tank-monitor-*"
+      ],
+      "baselinePreconditions": [
+        "Baseline application manifests are deployed in propane namespace.",
+        "No tank-monitor pod is currently restarting with OOMKilled or CrashLoopBackOff."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "tank-monitor pod reports OOMKilled or repeated restarts",
+          "query": "kubectl get pods -n propane -l app=tank-monitor -o json",
+          "operator": "matches",
+          "expected": "state.waiting.reason = OOMKilled || restartCount > 2",
+          "rootCause": "Memory pressure in tank-monitor caused by winter peak readings."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl describe pod -l app=tank-monitor -n propane --show-events",
+        "kubectl get events -n propane --field-selector involvedObject.name=tank-monitor --sort-by=.lastTimestamp"
+      ],
+      "prompts": [
+        "Why is the tank-monitor pod restarting repeatedly?",
+        "I see OOMKilled events. What memory should I allocate for tank level processing?"
+      ],
+      "recoveryAction": "Apply the healthy base application manifest to clear the OOMKilled deployment and restore the stable tank-monitor baseline.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "tank-monitor pod is Running and Ready after reset",
+          "query": "kubectl get pods -n propane -l app=tank-monitor -o json",
+          "operator": "all",
+          "expected": "status.phase = Running and ready containers = true"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh Application Insights / Log Analytics data for tank-monitor memory usage must exist before asserting pod-level memory SLO recovery",
+          "assertion": "Telemetry confirms tank-monitor memory usage has returned below the alert threshold."
+        }
+      ]
+    },
+    {
+      "id": "crash",
+      "title": "CrashLoopBackOff",
+      "domain": "Shared",
+      "narrative": "Inventory service crash from invalid pricing configuration.",
+      "manifest": "crash-loop.yaml",
+      "ownedResources": [
+        "Deployment/inventory-service",
+        "Pod/inventory-service-*"
+      ],
+      "baselinePreconditions": [
+        "Healthy base deployment is active in propane namespace.",
+        "inventory-service is not already restarting or exiting with code 1."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "inventory-service pod enters CrashLoopBackOff",
+          "query": "kubectl get pods -n propane -l app=inventory-service -o json",
+          "operator": "matches",
+          "expected": "state.waiting.reason = CrashLoopBackOff || status = Error",
+          "rootCause": "Invalid pricing configuration caused inventory-service to exit repeatedly."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl logs -l app=inventory-service -n propane --previous",
+        "kubectl describe pod -l app=inventory-service -n propane"
+      ],
+      "prompts": [
+        "Why is inventory-service in CrashLoopBackOff?",
+        "Show me the logs for the crashing inventory service pods."
+      ],
+      "recoveryAction": "Apply the baseline inventory-service manifest and restore the valid pricing configuration.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "inventory-service is back to Running and Ready",
+          "query": "kubectl get pods -n propane -l app=inventory-service -o json",
+          "operator": "all",
+          "expected": "status.phase = Running and ready containers = true"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh exporter data for inventory-service crashes must exist before claiming the restart-rate alert is healthy again",
+          "assertion": "Telemetry confirms the restart spike has cleared and the error-rate is back below alert thresholds."
+        }
+      ]
+    },
+    {
+      "id": "image",
+      "title": "ImagePullBackOff",
+      "domain": "Shared",
+      "narrative": "Order service fails after a botched image release.",
+      "manifest": "image-pull-backoff.yaml",
+      "ownedResources": [
+        "Deployment/order-service",
+        "Pod/order-service-*"
+      ],
+      "baselinePreconditions": [
+        "The healthy base order-service deployment exists and is reachable.",
+        "No image pull failures for order-service are currently active."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "order-service pod is stuck in ImagePullBackOff or ErrImagePull",
+          "query": "kubectl get pods -n propane -l app=order-service -o json",
+          "operator": "matches",
+          "expected": "state.waiting.reason = ImagePullBackOff || ErrImagePull",
+          "rootCause": "The deployment points to an invalid container image tag or registry path."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl describe pod -l app=order-service -n propane",
+        "kubectl get events -n propane --field-selector involvedObject.name=order-service --sort-by=.lastTimestamp"
+      ],
+      "prompts": [
+        "Why can't my order-service pods start? I see ImagePullBackOff.",
+        "Help me troubleshoot the container image issue for order fulfillment."
+      ],
+      "recoveryAction": "Apply the base application manifest to restore the known-good image tag and restart the order-service deployment.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "order-service pod reaches Running and Ready after the image rollback",
+          "query": "kubectl get pods -n propane -l app=order-service -o json",
+          "operator": "all",
+          "expected": "status.phase = Running and ready containers = true"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh telemetry for registry pull failures must be captured before claiming the deployment event stream is recovered",
+          "assertion": "Telemetry confirms the image-pull failure count has returned to baseline."
+        }
+      ]
+    },
+    {
+      "id": "cpu",
+      "title": "High CPU",
+      "domain": "Cylinder Exchange",
+      "narrative": "Demand forecast overload during peak heating season.",
+      "manifest": "high-cpu.yaml",
+      "ownedResources": [
+        "Deployment/demand-forecast-overload",
+        "Pod/demand-forecast-overload-*"
+      ],
+      "baselinePreconditions": [
+        "The baseline workload is healthy and no demand forecast jobs are consuming abnormal CPU.",
+        "The cluster still has enough free CPU for the baseline application."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "demand-forecast-overload pod is consuming extreme CPU and saturates the cluster",
+          "query": "kubectl top pods -n propane --sort-by=cpu",
+          "operator": "matches",
+          "expected": "pod name starts with demand-forecast-overload and CPU usage is far above baseline",
+          "rootCause": "A runaway demand-forecast workload is exhausting CPU for the cylinder exchange service."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl top pods -n propane --sort-by=cpu",
+        "kubectl top nodes"
+      ],
+      "prompts": [
+        "Propane services are slow. What's consuming all the CPU?",
+        "Analyze CPU usage across pods in the propane namespace."
+      ],
+      "recoveryAction": "Delete the overloaded demand-forecast-overload deployment and restore the baseline resource profile.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "the demand-forecast-overload deployment is removed and cluster CPU returns to normal range",
+          "query": "kubectl get deployments -n propane",
+          "operator": "matches",
+          "expected": "demand-forecast-overload no longer exists and baseline pods report healthy CPU usage"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh CPU metrics for the node and the demand-forecast workload must be visible before citing restored SLOs",
+          "assertion": "Telemetry confirms the cluster CPU pressure has returned below the alert threshold."
+        }
+      ]
+    },
+    {
+      "id": "pending",
+      "title": "Pending Pods",
+      "domain": "Shared",
+      "narrative": "Fleet telemetry monitor cannot be scheduled because cluster capacity is exhausted.",
+      "manifest": "pending-pods.yaml",
+      "ownedResources": [
+        "Deployment/fleet-telemetry-monitor",
+        "Pod/fleet-telemetry-monitor-*"
+      ],
+      "baselinePreconditions": [
+        "The cluster has healthy baseline workloads with available scheduling capacity.",
+        "fleet-telemetry-monitor is not already pending or unschedulable."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "fleet-telemetry-monitor pods remain Pending due to insufficient scheduling capacity",
+          "query": "kubectl get pods -n propane -l app=fleet-telemetry-monitor -o json",
+          "operator": "matches",
+          "expected": "status.phase = Pending and nodeName missing or scheduling failure reason present",
+          "rootCause": "The fleet telemetry monitor requests more resources than the cluster can schedule."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl describe pod -l app=fleet-telemetry-monitor -n propane",
+        "kubectl get events -n propane --sort-by=.lastTimestamp"
+      ],
+      "prompts": [
+        "Why are the fleet telemetry monitoring pods stuck in Pending?",
+        "I can't schedule new fleet monitoring workloads. What's wrong?"
+      ],
+      "recoveryAction": "Delete the oversized fleet-telemetry-monitor workload or restore cluster capacity before re-applying the healthy baseline.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "fleet-telemetry-monitor pods are no longer Pending and the cluster can schedule the baseline workload again",
+          "query": "kubectl get pods -n propane -l app=fleet-telemetry-monitor -o json",
+          "operator": "all",
+          "expected": "pods no longer exist or phase = Running and Ready"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh node and pod metrics must be available before claiming cluster capacity has recovered",
+          "assertion": "Telemetry confirms scheduling pressure has returned to baseline and no pod remains pending for resource constraints."
+        }
+      ]
+    },
+    {
+      "id": "probe",
+      "title": "Bulk Tank Safety Alarm",
+      "domain": "Bulk Tank",
+      "narrative": "Simulated rapid tank-level drop with suppressed alarm processing.",
+      "manifest": "probe-failure.yaml",
+      "ownedResources": [
+        "ConfigMap/tank-safety-alarm-config",
+        "Deployment/safety-compliance-monitor",
+        "Pod/safety-compliance-monitor-*"
+      ],
+      "baselinePreconditions": [
+        "Tank safety alarm configuration is present and the safety-compliance-monitor deployment is healthy.",
+        "No safety alarm backlog or suppressed alarm event is currently active."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "config",
+          "assertion": "tank-safety-alarm-config is missing or the alarm path is incorrect",
+          "query": "kubectl get configmaps -n propane tank-safety-alarm-config -o yaml",
+          "operator": "exists",
+          "expected": "ConfigMap present with the expected safety alarm configuration",
+          "rootCause": "The simulated tank-level alarm is being suppressed because the alarm monitor configuration is wrong or absent."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl get configmaps -n propane tank-safety-alarm-config -o yaml",
+        "kubectl logs -l app=safety-compliance-monitor -n propane"
+      ],
+      "prompts": [
+        "The bulk tank safety alarm is delayed. What's wrong?",
+        "Why are safety alarms being suppressed for tank-level anomalies?"
+      ],
+      "recoveryAction": "Restore the valid safety-alarm ConfigMap and restart the safety-compliance-monitor deployment to clear the suppressed alarm backlog.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "safety-compliance-monitor is Running and Ready and alarm data is flowing again",
+          "query": "kubectl get pods -n propane -l app=safety-compliance-monitor -o json",
+          "operator": "all",
+          "expected": "status.phase = Running and ready containers = true"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh workload and alert telemetry must be available before confirming alarm delivery recovered",
+          "assertion": "Telemetry confirms no safety alarm backlog remains and the alert pipeline is healthy."
+        }
+      ]
+    },
+    {
+      "id": "backlog",
+      "title": "Refill Order Backlog",
+      "domain": "Shared",
+      "narrative": "RabbitMQ refill backlog grows while producers remain healthy and a malformed refill event retries before DLQ routing.",
+      "manifest": "refill-order-backlog.yaml",
+      "ownedResources": [
+        "ConfigMap/refill-order-backlog-config",
+        "Deployment/refill-order-backlog-simulator",
+        "Pod/refill-order-backlog-simulator-*"
+      ],
+      "baselinePreconditions": [
+        "The refill-order backlog config is healthy and the simulator is idle or processing normally.",
+        "No abnormal DLQ growth is visible for refill orders."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "broker",
+          "assertion": "refill queue backlog grows and messages are retried into a DLQ pattern",
+          "query": "kubectl logs -l app=refill-order-backlog-simulator -n propane",
+          "operator": "matches",
+          "expected": "retries, deadLetterQueue, pending backlog, or consumerPaused indicators",
+          "rootCause": "A malformed refill event or blocked consumer is causing queue backlog and DLQ buildup."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl logs -l app=refill-order-backlog-simulator -n propane",
+        "kubectl get configmaps -n propane refill-order-backlog-config -o yaml"
+      ],
+      "prompts": [
+        "Why is the refill queue growing even though producers still look healthy?",
+        "Show me the backlog and DLQ evidence for the propane refill pipeline."
+      ],
+      "recoveryAction": "Clear the malformed refill backlog, restore the consumer flow, and reapply the healthy version of the refill-order backlog configuration.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "broker",
+          "assertion": "backlog drains and the DLQ count returns to zero or normal baseline",
+          "query": "kubectl logs -l app=refill-order-backlog-simulator -n propane",
+          "operator": "matches",
+          "expected": "backlog drains and no repeated DLQ or retry storm remains"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh broker and queue telemetry must be collected before claiming the refill backlog is recovered",
+          "assertion": "Telemetry confirms queue age and DLQ counts are back within the normal SLO band."
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "title": "Network Block",
+      "domain": "Bulk Tank",
+      "narrative": "Tank monitor is isolated by an overly restrictive NetworkPolicy.",
+      "manifest": "network-block.yaml",
+      "ownedResources": [
+        "NetworkPolicy/deny-tank-monitor"
+      ],
+      "baselinePreconditions": [
+        "The propane namespace is healthy and the tank-monitor deployment is reachable.",
+        "No deny-tank-monitor NetworkPolicy is present in the namespace."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "deny-tank-monitor NetworkPolicy blocks tank-monitor traffic",
+          "query": "kubectl get networkpolicy -n propane deny-tank-monitor -o json",
+          "operator": "exists",
+          "expected": "NetworkPolicy named deny-tank-monitor exists with ingress/egress policies that isolate tank-monitor",
+          "rootCause": "The deny-tank-monitor NetworkPolicy prevents network egress and ingress to the tank-monitor service."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl get networkpolicy -n propane -o yaml",
+        "kubectl get endpoints -n propane tank-monitor -o yaml"
+      ],
+      "prompts": [
+        "Why is tank-monitor isolated from the rest of the namespace?",
+        "Check the network policy and endpoints for tank-monitor."
+      ],
+      "recoveryAction": "Remove the deny-tank-monitor NetworkPolicy or restore the healthy base network policy set for the propane namespace.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "tank-monitor endpoints and connectivity are restored after the network policy is removed",
+          "query": "kubectl get endpoints -n propane tank-monitor -o yaml",
+          "operator": "matches",
+          "expected": "at least one active endpoint address is present and the network policy is absent or corrected"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh network telemetry and control-plane logs must be available before claiming connectivity is healthy again",
+          "assertion": "Telemetry confirms network traffic has returned to normal levels and the policy block no longer triggers."
+        }
+      ]
+    },
+    {
+      "id": "config",
+      "title": "Missing Config",
+      "domain": "Shared",
+      "narrative": "Delivery zone configuration is missing after a release or config mismatch.",
+      "manifest": "missing-config.yaml",
+      "ownedResources": [
+        "Deployment/delivery-zone-config",
+        "ConfigMap/delivery-zone-config",
+        "Pod/delivery-zone-config-*"
+      ],
+      "baselinePreconditions": [
+        "The healthy ConfigMap for delivery zone configuration is present.",
+        "delivery-zone-config is not running with a missing config path."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "delivery-zone-config pod cannot start because the expected ConfigMap is missing",
+          "query": "kubectl get pods -n propane -l app=delivery-zone-config -o json",
+          "operator": "matches",
+          "expected": "status.phase = Pending or CrashLoopBackOff with missing config path or configVolume error",
+          "rootCause": "The deployment is referencing a required ConfigMap that is missing from the namespace."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl get configmaps -n propane -o yaml",
+        "kubectl describe pod -l app=delivery-zone-config -n propane"
+      ],
+      "prompts": [
+        "Why is the delivery-zone-config app failing to start?",
+        "Check the ConfigMap and startup environment for the delivery-zone service."
+      ],
+      "recoveryAction": "Restore the missing ConfigMap and reapply the healthy shipping and delivery configuration manifest.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "delivery-zone-config pod is Running and Ready after the ConfigMap is recreated",
+          "query": "kubectl get pods -n propane -l app=delivery-zone-config -o json",
+          "operator": "all",
+          "expected": "status.phase = Running and ready containers = true"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh config and app telemetry must be visible before claiming config recovery is complete",
+          "assertion": "Telemetry confirms the deployment error and config warning count have returned to baseline."
+        }
+      ]
+    },
+    {
+      "id": "mongodb",
+      "title": "MongoDB Down",
+      "domain": "Shared",
+      "narrative": "Tank database outage causing a cascading failure across the platform.",
+      "manifest": "mongodb-down.yaml",
+      "ownedResources": [
+        "Deployment/mongodb",
+        "Pod/mongodb-*",
+        "Service/mongodb"
+      ],
+      "baselinePreconditions": [
+        "The MongoDB deployment is healthy and at least one pod is Running and Ready.",
+        "No dependency outage is currently active for database-backed services."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "mongodb Deployment is scaled to zero or has no Running/Ready pods",
+          "query": "kubectl get deployments -n propane mongodb -o json && kubectl get pods -n propane -l app=mongodb -o json",
+          "operator": "matches",
+          "expected": "replicas = 0 or zero Ready/Running mongodb pods",
+          "rootCause": "The MongoDB deployment scaled down or failed, causing downstream service dependencies to degrade."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl get deployments -n propane mongodb -o yaml",
+        "kubectl get pods -n propane -l app=mongodb -o yaml"
+      ],
+      "prompts": [
+        "Why is the tank database unavailable?",
+        "Trace the dependency failure from the MongoDB service to customer portal errors."
+      ],
+      "recoveryAction": "Scale MongoDB back to its healthy replica count and restore the baseline database deployment.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "MongoDB has a Running and Ready pod and endpoints are restored",
+          "query": "kubectl get pods -n propane -l app=mongodb -o json && kubectl get endpoints -n propane mongodb -o yaml",
+          "operator": "all",
+          "expected": "at least one mongodb pod is ready and service endpoints are present"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh MongoDB and application dependency telemetry must exist before claiming the database is recovered",
+          "assertion": "Telemetry confirms database latency and error-rate metrics have returned to the normal range."
+        }
+      ]
+    },
+    {
+      "id": "service",
+      "title": "Service Mismatch",
+      "domain": "Bulk Tank",
+      "narrative": "Tank monitor service selector drift after a v2 upgrade.",
+      "manifest": "service-mismatch.yaml",
+      "ownedResources": [
+        "Service/tank-monitor",
+        "Deployment/tank-monitor",
+        "Endpoints/tank-monitor"
+      ],
+      "baselinePreconditions": [
+        "The tank-monitor service and deployment selectors are aligned with the healthy baseline.",
+        "No empty endpoint set is currently visible for tank-monitor."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "tank-monitor Service points to a selector that no longer matches any running pod",
+          "query": "kubectl get service -n propane tank-monitor -o yaml && kubectl get endpoints -n propane tank-monitor -o yaml",
+          "operator": "matches",
+          "expected": "service selector does not match any running pod and the endpoint list is empty or zero-address",
+          "rootCause": "The Service selector drift caused the tank-monitor service to route to no endpoints."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl get service -n propane tank-monitor -o yaml",
+        "kubectl get endpoints -n propane tank-monitor -o yaml"
+      ],
+      "prompts": [
+        "Why is the tank-monitor service failing even though the pod is still running?",
+        "Check the service selector and endpoints for tank-monitor."
+      ],
+      "recoveryAction": "Restore the correct selector or reapply the healthy tank-monitor Service and Deployment manifests so endpoints are populated again.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "kubernetes",
+          "assertion": "tank-monitor service has active endpoints again",
+          "query": "kubectl get endpoints -n propane tank-monitor -o yaml",
+          "operator": "matches",
+          "expected": "endpoints contains at least one address and the Service selector matches the running pod"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh endpoint and service telemetry must be present before claiming the selector drift is resolved",
+          "assertion": "Telemetry confirms the service health and end-to-end pipeline both return to normal."
+        }
+      ]
+    },
+    {
+      "id": "latency",
+      "title": "Dependency Latency",
+      "domain": "Shared",
+      "narrative": "The order-pricing dependency gradually slows from 45 ms to 950 ms while all targeted pods remain Running and Ready, raising p95 latency above the SLO without a crash or scheduling failure.",
+      "manifest": "dependency-latency.yaml",
+      "ownedResources": [
+        "ConfigMap/order-pricing-dependency-config",
+        "Deployment/order-pricing-dependency",
+        "Service/order-pricing-dependency"
+      ],
+      "baselinePreconditions": [
+        "The baseline application is healthy and only the default low-delay pricing dependency config is active.",
+        "No current SLO breach or order-pricing dependency slowdown is being observed in the cluster."
+      ],
+      "activationTimeoutMs": 60000,
+      "brokenAssertions": [
+        {
+          "kind": "http",
+          "assertion": "the order-pricing dependency latency route breaches the SLO while the workload remains Ready",
+          "query": "kubectl get configmap order-pricing-dependency-config -n propane -o yaml && kubectl logs -l app=order-pricing-dependency -n propane --tail=100",
+          "operator": "gt",
+          "expected": "ConfigMap delay values ramp above the documented SLO while pods remain Running/Ready and error rate stays below the crash ceiling",
+          "rootCause": "The order-pricing dependency ConfigMap injects a delay ramp from 45 ms to 950 ms, causing a genuine latency-led incident without pod restarts."
+        }
+      ],
+      "safeEvidenceQueries": [
+        "kubectl get configmap order-pricing-dependency-config -n propane -o yaml",
+        "kubectl logs -l app=order-pricing-dependency -n propane --tail=200",
+        "kubectl get pods -n propane -l app=order-pricing-dependency -o json"
+      ],
+      "prompts": [
+        "Why are order-checkout requests slow even though the order-pricing dependency pods are still healthy?",
+        "Trace the latency spike to the pricing-lookup dependency and the config that raised its delay."
+      ],
+      "recoveryAction": "Delete the override configmap and reapply the healthy base application manifest so the original low-delay dependency settings are restored.",
+      "postRecoveryAssertions": [
+        {
+          "kind": "http",
+          "assertion": "order-pricing latency returns to baseline and stays inside the SLO after the config override is removed",
+          "query": "kubectl get configmap order-pricing-dependency-config -n propane -o yaml && kubectl get pods -n propane -l app=order-pricing-dependency -o json",
+          "operator": "lte",
+          "expected": "p95 latency has returned inside the documented 500 ms threshold and the config is back to the baseline low-delay values"
+        }
+      ],
+      "telemetryAssertions": [
+        {
+          "kind": "telemetry",
+          "status": "blocked",
+          "prerequisite": "fresh latency telemetry and a verified SLO workspace must exist before asserting end-to-end recovery for the order-pricing dependency path",
+          "assertion": "Telemetry confirms p95 and p99 latency are back within the accepted SLO band for the affected checkout flow."
+        }
+      ]
+    }
+  ]
+}

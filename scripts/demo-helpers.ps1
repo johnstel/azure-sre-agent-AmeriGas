@@ -83,7 +83,7 @@ function Start-DemoScenario {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('oom','crash','image','cpu','pending','probe','backlog','network','config','mongodb','service','latency')]
+        [ValidateSet('oom','crash','image','cpu','pending','probe','backlog','latency','network','config','mongodb','service')]
         [string]$Id,
         [switch]$AllowStacking,
         [switch]$WhatIf
@@ -130,11 +130,11 @@ function break-cpu { Start-DemoScenario -Id 'cpu' @args }
 function break-pending { Start-DemoScenario -Id 'pending' @args }
 function break-probe { Start-DemoScenario -Id 'probe' @args }
 function break-backlog { Start-DemoScenario -Id 'backlog' @args }
+function break-latency { Start-DemoScenario -Id 'latency' @args }
 function break-network { Start-DemoScenario -Id 'network' @args }
 function break-config { Start-DemoScenario -Id 'config' @args }
 function break-mongodb { Start-DemoScenario -Id 'mongodb' @args }
 function break-service { Start-DemoScenario -Id 'service' @args }
-function break-latency { Start-DemoScenario -Id 'latency' @args }
 
 # Fix commands
 function ensure-credentials {
