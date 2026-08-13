@@ -42,7 +42,7 @@ var alertActions = {
   actionGroups: actionGroupIds
   customProperties: {
     source: 'azure-sre-agent-sandbox'
-    workload: 'zavagas-propane'
+    workload: 'zavagas-propane-demo'
   }
 }
 
