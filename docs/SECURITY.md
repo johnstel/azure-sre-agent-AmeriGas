@@ -45,8 +45,11 @@ delivery orders.
   `rabbitmq-credentials`.
 - `scripts/deploy.ps1` now generates a cryptographically random 24-character password
   at deploy time and stores it in the Secret.
-- `scripts/demo-helpers.ps1` `fix-all` ensures the Secret exists (with demo-only defaults
-  if not yet generated) before applying the application manifest.
+- `scripts/demo-helpers.ps1` `ensure-credentials` (used by `fix-all`) previously fell
+  back to a static, hardcoded demo password when the Secret did not already exist. That
+  static credential was flagged as a leaked/exposed secret by an external scanner
+  (2026-08). It has been replaced with a password generated at runtime via
+  `RandomNumberGenerator`, so no static credential exists in source control.
 
 ---
 
