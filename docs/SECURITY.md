@@ -26,7 +26,8 @@
 
 **File**: `k8s/base/application.yaml`  
 **Severity**: Critical  
-**Status**: ✅ Remediated
+**Status**: ✅ Remediated in source by PR #45 — ⚠️ rotate RabbitMQ credentials in any
+environment created through the old fallback (see **Required follow-up**)
 
 **Description**: The RabbitMQ message broker was deployed using well-known default
 credentials (`guest` / `guest`) as plaintext environment variables in three separate
@@ -45,11 +46,28 @@ delivery orders.
   `rabbitmq-credentials`.
 - `scripts/deploy.ps1` now generates a cryptographically random 24-character password
   at deploy time and stores it in the Secret.
-- `scripts/demo-helpers.ps1` `ensure-credentials` (used by `fix-all`) previously fell
-  back to a static, hardcoded demo password when the Secret did not already exist. That
-  static credential was flagged as a leaked/exposed secret by an external scanner
-  (2026-08). It has been replaced with a password generated at runtime via
-  `RandomNumberGenerator`, so no static credential exists in source control.
+- `scripts/demo-helpers.ps1` `ensure-credentials` (used by `fix-all`) previously created
+  the Secret with a hard-coded RabbitMQ fallback password whenever the Secret was missing.
+  That value has been public in git history since 2026-04-14 and must be treated as
+  compromised. PR #45 removes the static fallback: the password is now generated at
+  runtime with `RandomNumberGenerator`.
+- `scripts/tests/no-hardcoded-pwd.tests.ps1`, run in CI by
+  `.github/workflows/no-hardcoded-pwd.yml`, fails if a PowerShell script hard-codes a
+  password again. GitHub's built-in secret scanning does not detect this kind of custom
+  password.
+
+**Required follow-up**: Rotate RabbitMQ credentials in any environment whose
+`rabbitmq-credentials` Secret was created through the old fallback. Delete the Secret,
+recreate it, then restart the deployments that read it:
+
+```bash
+kubectl delete secret rabbitmq-credentials -n propane
+# Recreate it: run scripts/deploy.ps1, or dot-source scripts/demo-helpers.ps1 and run ensure-credentials
+kubectl rollout restart deployment rabbitmq tank-monitor order-service -n propane
+```
+
+RabbitMQ has no persistent volume in this lab, so the restart applies the new password.
+Rewriting git history is optional; rotation is the required control.
 
 ---
 
