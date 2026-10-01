@@ -141,15 +141,19 @@ function ensure-credentials {
     <#
     .SYNOPSIS
         Ensures the rabbitmq-credentials Kubernetes Secret exists in the propane namespace.
-        Creates the secret with demo defaults if it does not already exist.
+        Creates the secret with a randomly generated password if it does not already exist.
         For production-grade randomized credentials, use deploy.ps1 instead.
     #>
     $null = kubectl get secret rabbitmq-credentials -n propane --output=name 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  🔐 Creating demo RabbitMQ credentials secret..." -ForegroundColor Yellow
-        Write-Host "     ⚠️  Using default DEMO credentials. Run deploy.ps1 for randomized credentials." -ForegroundColor Gray
+        Write-Host "     ⚠️  Using randomly generated DEMO credentials. Run deploy.ps1 for full randomized deployment credentials." -ForegroundColor Gray
         $demoUser = 'zavagas-rmq'
-        $demoPass = 'Amg!P3#rMQ@xDm09'
+        # Generate a random demo password at runtime instead of using a static,
+        # hardcoded credential (avoids committing a long-lived secret to source control).
+        $demoPassBytes = [byte[]]::new(18)
+        [System.Security.Cryptography.RandomNumberGenerator]::Fill($demoPassBytes)
+        $demoPass = [Convert]::ToBase64String($demoPassBytes) -replace '[^A-Za-z0-9]', ''
         $demoUserEscaped = [System.Uri]::EscapeDataString($demoUser)
         $demoPassEscaped = [System.Uri]::EscapeDataString($demoPass)
         $demoUri  = "amqp://${demoUserEscaped}:${demoPassEscaped}@rabbitmq:5672/"

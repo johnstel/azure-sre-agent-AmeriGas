@@ -191,6 +191,7 @@ coverage/
 htmlcov/
 .tox/
 .pytest_cache/
+testResults.xml
 
 # =============================================================================
 # Temporary Files
